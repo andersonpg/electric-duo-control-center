@@ -3,6 +3,7 @@
 const { google } = require("googleapis");
 const axios = require("axios");
 const db = require("./db").articleDb;
+const { getAuthenticatedClient, isOAuthConnected } = require("./youtube-analytics");
 
 function getYoutubeApiKey() {
   try {
@@ -21,9 +22,17 @@ function getYoutubeChannelId() {
 }
 
 function getYoutubeClient() {
+  // If OAuth2 is connected, prefer OAuth client
+  if (isOAuthConnected()) {
+    const oauthClient = getAuthenticatedClient();
+    if (oauthClient) {
+      return google.youtube({ version: "v3", auth: oauthClient });
+    }
+  }
+
   const apiKey = getYoutubeApiKey();
   if (!apiKey) {
-    throw new Error("YouTube API Key is not configured. Please set YOUTUBE_API_KEY in Admin Settings.");
+    throw new Error("YouTube API Key is not configured. Please set YOUTUBE_API_KEY or connect via Google OAuth in Admin Settings.");
   }
   return google.youtube({
     version: "v3",
@@ -57,14 +66,12 @@ async function fetchExactPublishDate(vId) {
     });
     const html = res.data;
 
-    // 1. Try dateText in initial JSON
     const dateTextMatch = html.match(/"dateText":\{"simpleText":"([^"]+)"\}/);
     if (dateTextMatch && dateTextMatch[1]) {
       const d = new Date(dateTextMatch[1]);
       if (!isNaN(d.getTime())) return d.toISOString();
     }
 
-    // 2. Try publishDate / uploadDate microformat in JSON
     const publishDateMatch = html.match(/"publishDate":"([^"]+)"/);
     if (publishDateMatch && publishDateMatch[1]) {
       const d = new Date(publishDateMatch[1]);
@@ -81,35 +88,97 @@ async function fetchExactPublishDate(vId) {
   return null;
 }
 
+// Convert "18:06", "1:24:10", or "0:45" to ISO 8601 duration "PT18M6S"
+function formatDurationToIso(timeStr) {
+  if (!timeStr || typeof timeStr !== "string") return "PT15M00S";
+  const parts = timeStr.trim().split(":").map((p) => parseInt(p, 10));
+  if (parts.some((n) => isNaN(n))) return "PT15M00S";
+
+  if (parts.length === 2) {
+    const [min, sec] = parts;
+    return `PT${min}M${sec}S`;
+  } else if (parts.length === 3) {
+    const [hr, min, sec] = parts;
+    return `PT${hr}H${min}M${sec}S`;
+  }
+  return "PT15M00S";
+}
+
+// Extract video duration directly from search result without quota usage
+async function fetchVideoDurationDirect(vId) {
+  try {
+    const res = await axios.get(`https://www.youtube.com/results?search_query=${vId}`, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+      timeout: 5000,
+    });
+    const html = res.data;
+    const match = html.match(/"lengthText":\{"accessibility":\{"accessibilityData":\{"label":"[^"]+"\}\},"simpleText":"([^"]+)"\}/);
+    if (match && match[1]) {
+      return formatDurationToIso(match[1]);
+    }
+  } catch (e) {}
+  return null;
+}
+
 // Backfill real exact durations across all videos in the database
 async function syncAllVideoDurations() {
-  const youtube = getYoutubeClient();
-  const videos = db.prepare("SELECT youtube_id, title FROM videos").all();
+  const videos = db.prepare("SELECT youtube_id, title, duration FROM videos").all();
   if (!videos || videos.length === 0) return { updated: 0, total: 0 };
 
   const updateStmt = db.prepare("UPDATE videos SET duration = ? WHERE youtube_id = ?");
   let updatedCount = 0;
-  const videoIds = videos.map((v) => v.youtube_id);
+  let apiSuccess = false;
 
-  for (let i = 0; i < videoIds.length; i += 50) {
-    const chunk = videoIds.slice(i, i + 50);
-    const res = await youtube.videos.list({
-      part: "contentDetails,snippet",
-      id: chunk.join(","),
-    });
+  // 1. Try YouTube Data API (OAuth or API Key)
+  try {
+    const youtube = getYoutubeClient();
+    const videoIds = videos.map((v) => v.youtube_id);
 
-    const items = res.data.items || [];
-    for (const item of items) {
-      const vId = item.id;
-      const duration = item.contentDetails?.duration;
-      if (duration) {
-        updateStmt.run(duration, vId);
-        updatedCount++;
+    for (let i = 0; i < videoIds.length; i += 50) {
+      const chunk = videoIds.slice(i, i + 50);
+      const res = await youtube.videos.list({
+        part: "contentDetails,snippet",
+        id: chunk.join(","),
+      });
+
+      const items = res.data.items || [];
+      for (const item of items) {
+        const vId = item.id;
+        const duration = item.contentDetails?.duration;
+        if (duration) {
+          updateStmt.run(duration, vId);
+          updatedCount++;
+        }
       }
+    }
+    apiSuccess = true;
+  } catch (apiErr) {
+    console.warn("YouTube API quota exceeded or error, using direct duration parser fallback:", apiErr.message);
+  }
+
+  // 2. If API was blocked by quota, run direct zero-quota extractor
+  if (!apiSuccess) {
+    const targets = videos.filter((v) => !v.duration || v.duration === "PT15M00S" || v.duration === "PT15M");
+    const listToProcess = targets.length > 0 ? targets : videos;
+
+    for (let i = 0; i < listToProcess.length; i += 8) {
+      const chunk = listToProcess.slice(i, i + 8);
+      await Promise.all(
+        chunk.map(async (v) => {
+          const exactDuration = await fetchVideoDurationDirect(v.youtube_id);
+          if (exactDuration && exactDuration !== "PT15M00S") {
+            updateStmt.run(exactDuration, v.youtube_id);
+            updatedCount++;
+          }
+        })
+      );
     }
   }
 
-  return { updated: updatedCount, total: videos.length };
+  return { updated: updatedCount, total: videos.length, apiSuccess };
 }
 
 // 1. YouTube Data API v3 Sync Engine
