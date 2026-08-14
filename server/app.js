@@ -14,6 +14,7 @@ const auth = require("./auth");
 const { syncCatalog } = require("./youtube");
 const { generateArticle } = require("./gemini");
 const { createWordPressDraft } = require("./wordpress");
+const { getOrRunAudit, getAuditsSummary } = require("./audit");
 
 const app = express();
 app.use(cors());
@@ -443,6 +444,38 @@ app.post("/api/process", auth.requireAuth(), async (req, res) => {
     }
 
     res.json({ results });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/* ---------------- Video Audit endpoints ---------------- */
+
+app.get("/api/audits/summary", auth.requireAuth(), (req, res) => {
+  try {
+    const summary = getAuditsSummary();
+    res.json(summary);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/audit/:youtubeId", auth.requireAuth(), async (req, res) => {
+  try {
+    const { youtubeId } = req.params;
+    const forceRefresh = req.query.refresh === "true";
+    const audit = await getOrRunAudit(youtubeId, forceRefresh);
+    res.json(audit);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/audit/:youtubeId", auth.requireAuth(), async (req, res) => {
+  try {
+    const { youtubeId } = req.params;
+    const audit = await getOrRunAudit(youtubeId, true);
+    res.json(audit);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

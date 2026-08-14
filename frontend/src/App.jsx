@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from "react";
-import { CheckSquare, Zap, LogOut, User, Sparkles } from "lucide-react";
+import { CheckSquare, Zap, LogOut, User, Sparkles, BarChart3 } from "lucide-react";
 import PlanChecklist from "./PlanChecklist";
 import ArticleGenerator from "./ArticleGenerator";
+import VideoAudit from "./VideoAudit";
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState(null);
@@ -74,10 +75,10 @@ export default function App() {
         </div>
 
         {/* Master Navigation Switcher */}
-        <div className="flex items-center bg-slate-900/90 p-1 rounded-2xl border border-slate-800 shadow-inner">
+        <div className="flex items-center bg-slate-900/90 p-1 rounded-2xl border border-slate-800 shadow-inner gap-1">
           <button
             onClick={() => handleModuleSwitch("checklist")}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all ${
               activeModule === "checklist"
                 ? "bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 shadow-md shadow-cyan-500/20"
                 : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
@@ -89,7 +90,7 @@ export default function App() {
 
           <button
             onClick={() => handleModuleSwitch("article")}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all ${
               activeModule === "article"
                 ? "bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 shadow-md shadow-cyan-500/20"
                 : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
@@ -97,6 +98,18 @@ export default function App() {
           >
             <Sparkles className="w-3.5 h-3.5" />
             <span>Article Generator</span>
+          </button>
+
+          <button
+            onClick={() => handleModuleSwitch("audit")}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all ${
+              activeModule === "audit"
+                ? "bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 shadow-md shadow-cyan-500/20"
+                : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+            }`}
+          >
+            <BarChart3 className="w-3.5 h-3.5" />
+            <span>Video Audit</span>
           </button>
         </div>
 
@@ -123,11 +136,9 @@ export default function App() {
 
       {/* Main View Area */}
       <main className="flex-1 w-full">
-        {activeModule === "checklist" ? (
-          <PlanChecklist currentUser={currentUser} />
-        ) : (
-          <ArticleGenerator currentUser={currentUser} />
-        )}
+        {activeModule === "checklist" && <PlanChecklist currentUser={currentUser} />}
+        {activeModule === "article" && <ArticleGenerator currentUser={currentUser} />}
+        {activeModule === "audit" && <VideoAudit currentUser={currentUser} />}
       </main>
     </div>
   );

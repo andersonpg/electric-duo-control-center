@@ -62,7 +62,7 @@ controlDb.exec(`
   );
 `);
 
-// 2. Article Generator DB (YouTube Videos Catalog, Content Templates, App Settings)
+// 2. Article Generator & Video Audit DB (YouTube Videos Catalog, Content Templates, App Settings, Video Audits)
 const articleDbPath = path.join(DATA_DIR, "database.sqlite");
 
 // Auto-seed pre-synced database if it doesn't exist in DATA_DIR
@@ -111,8 +111,18 @@ articleDb.exec(`
     value TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS video_audits (
+    youtube_id TEXT PRIMARY KEY REFERENCES videos(youtube_id),
+    metrics_json TEXT NOT NULL,
+    evaluation_json TEXT NOT NULL,
+    health_score INTEGER DEFAULT 75,
+    generated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
   CREATE INDEX IF NOT EXISTS idx_videos_published_at ON videos(published_at DESC);
   CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
+  CREATE INDEX IF NOT EXISTS idx_video_audits_updated ON video_audits(updated_at DESC);
 `);
 
 // Compatibility layer
