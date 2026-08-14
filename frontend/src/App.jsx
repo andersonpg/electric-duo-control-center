@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from "react";
-import { CheckSquare, Zap, LogOut, User, Sparkles, BarChart3 } from "lucide-react";
+import { CheckSquare, Zap, LogOut, User, Sparkles, BarChart3, Settings } from "lucide-react";
 import PlanChecklist from "./PlanChecklist";
 import ArticleGenerator from "./ArticleGenerator";
 import VideoAudit from "./VideoAudit";
+import AdminSettings from "./AdminSettings";
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState(null);
@@ -111,6 +112,18 @@ export default function App() {
             <BarChart3 className="w-3.5 h-3.5" />
             <span>Video Audit</span>
           </button>
+
+          <button
+            onClick={() => handleModuleSwitch("admin")}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all ${
+              activeModule === "admin"
+                ? "bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 shadow-md shadow-cyan-500/20"
+                : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+            }`}
+          >
+            <Settings className="w-3.5 h-3.5" />
+            <span>Admin</span>
+          </button>
         </div>
 
         {/* User Info & Logout */}
@@ -139,6 +152,7 @@ export default function App() {
         {activeModule === "checklist" && <PlanChecklist currentUser={currentUser} />}
         {activeModule === "article" && <ArticleGenerator currentUser={currentUser} />}
         {activeModule === "audit" && <VideoAudit currentUser={currentUser} />}
+        {activeModule === "admin" && <AdminSettings currentUser={currentUser} />}
       </main>
     </div>
   );

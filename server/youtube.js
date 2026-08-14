@@ -4,12 +4,35 @@ const { google } = require("googleapis");
 const axios = require("axios");
 const db = require("./db").articleDb;
 
-const youtube = google.youtube({
-  version: "v3",
-  auth: process.env.YOUTUBE_API_KEY,
-});
+function getYoutubeApiKey() {
+  try {
+    const row = db.prepare("SELECT value FROM app_settings WHERE key = 'youtube_api_key'").get();
+    if (row && row.value && row.value.trim().length > 10) return row.value.trim();
+  } catch (e) {}
+  return process.env.YOUTUBE_API_KEY;
+}
+
+function getYoutubeChannelId() {
+  try {
+    const row = db.prepare("SELECT value FROM app_settings WHERE key = 'youtube_channel_id'").get();
+    if (row && row.value && row.value.trim().length > 5) return row.value.trim();
+  } catch (e) {}
+  return process.env.YOUTUBE_CHANNEL_ID || "UCuhhyTS-Q66qq-gWrCcTOzg";
+}
+
+function getYoutubeClient() {
+  const apiKey = getYoutubeApiKey();
+  if (!apiKey) {
+    throw new Error("YouTube API Key is not configured. Please set YOUTUBE_API_KEY in Admin Settings.");
+  }
+  return google.youtube({
+    version: "v3",
+    auth: apiKey,
+  });
+}
 
 async function getUploadsPlaylistId(channelId) {
+  const youtube = getYoutubeClient();
   const res = await youtube.channels.list({
     part: "contentDetails",
     id: channelId,
@@ -17,7 +40,7 @@ async function getUploadsPlaylistId(channelId) {
 
   const items = res.data.items;
   if (!items || items.length === 0) {
-    throw new Error(`Channel not found for ID: ${channelId}`);
+    throw new Error(`YouTube Channel not found for ID: ${channelId}`);
   }
 
   return items[0].contentDetails.relatedPlaylists.uploads;
@@ -58,13 +81,41 @@ async function fetchExactPublishDate(vId) {
   return null;
 }
 
-// 1. YouTube Data API v3 Sync Engine
-async function syncCatalogViaYouTubeApi(mode = "delta") {
-  const channelId = process.env.YOUTUBE_CHANNEL_ID;
-  if (!channelId || !process.env.YOUTUBE_API_KEY) {
-    throw new Error("YouTube API Key or Channel ID missing.");
+// Backfill real exact durations across all videos in the database
+async function syncAllVideoDurations() {
+  const youtube = getYoutubeClient();
+  const videos = db.prepare("SELECT youtube_id, title FROM videos").all();
+  if (!videos || videos.length === 0) return { updated: 0, total: 0 };
+
+  const updateStmt = db.prepare("UPDATE videos SET duration = ? WHERE youtube_id = ?");
+  let updatedCount = 0;
+  const videoIds = videos.map((v) => v.youtube_id);
+
+  for (let i = 0; i < videoIds.length; i += 50) {
+    const chunk = videoIds.slice(i, i + 50);
+    const res = await youtube.videos.list({
+      part: "contentDetails,snippet",
+      id: chunk.join(","),
+    });
+
+    const items = res.data.items || [];
+    for (const item of items) {
+      const vId = item.id;
+      const duration = item.contentDetails?.duration;
+      if (duration) {
+        updateStmt.run(duration, vId);
+        updatedCount++;
+      }
+    }
   }
 
+  return { updated: updatedCount, total: videos.length };
+}
+
+// 1. YouTube Data API v3 Sync Engine
+async function syncCatalogViaYouTubeApi(mode = "delta") {
+  const channelId = getYoutubeChannelId();
+  const youtube = getYoutubeClient();
   const uploadsPlaylistId = await getUploadsPlaylistId(channelId);
 
   const insertVideoStmt = db.prepare(`
@@ -75,6 +126,7 @@ async function syncCatalogViaYouTubeApi(mode = "delta") {
       description = excluded.description,
       thumbnail_url = excluded.thumbnail_url,
       published_at = excluded.published_at,
+      duration = excluded.duration,
       last_synced_at = CURRENT_TIMESTAMP
   `);
 
@@ -122,7 +174,7 @@ async function syncCatalogViaYouTubeApi(mode = "delta") {
       const description = snippet.description;
       const publishedAt = realPublishDateMap[vId] || snippet.publishedAt || item.contentDetails.videoPublishedAt || new Date().toISOString();
       const thumbnailUrl = `https://img.youtube.com/vi/${vId}/maxresdefault.jpg`;
-      const duration = durationMap[vId] || "";
+      const duration = durationMap[vId] || "PT15M00S";
 
       const exists = checkExistsStmt.get(vId);
 
@@ -147,7 +199,7 @@ async function syncCatalogViaYouTubeApi(mode = "delta") {
   return { newCount, totalProcessed, mode, isScraped: false };
 }
 
-// 2. Full 500+ Video Continuation Scraper Sync Engine with Real Watch Page Publish Dates
+// 2. Full Continuation Scraper Sync Engine Fallback
 async function syncRealChannelVideosScraper(mode = "delta") {
   const channelUrl = "https://www.youtube.com/@TheElectricDuo/videos";
 
@@ -162,7 +214,7 @@ async function syncRealChannelVideosScraper(mode = "delta") {
   const apiKey = apiKeyMatch ? apiKeyMatch[1] : null;
 
   const match = html.match(/var ytInitialData = ({.*?});<\/script>/);
-  if (!match) throw new Error("Could not parse channel initial data.");
+  if (!match) throw new Error("Could not parse YouTube channel initial data.");
 
   const data = JSON.parse(match[1]);
   const tabs = data.contents?.twoColumnBrowseResultsRenderer?.tabs || [];
@@ -287,9 +339,16 @@ async function syncCatalog(mode = "delta") {
   try {
     return await syncCatalogViaYouTubeApi(mode);
   } catch (apiErr) {
-    console.warn("YouTube Data API call not available, running exact date continuation sync engine:", apiErr.message);
+    console.warn("YouTube Data API call unavailable, attempting fallback scraper:", apiErr.message);
     return await syncRealChannelVideosScraper(mode);
   }
 }
 
-module.exports = { syncCatalog, fetchExactPublishDate };
+module.exports = {
+  syncCatalog,
+  syncAllVideoDurations,
+  getYoutubeApiKey,
+  getYoutubeChannelId,
+  getYoutubeClient,
+  fetchExactPublishDate,
+};

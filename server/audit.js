@@ -1,8 +1,8 @@
 "use strict";
 
 const { GoogleGenAI } = require("@google/genai");
-const axios = require("axios");
 const db = require("./db").articleDb;
+const { getTranscript, getGeminiApiKey } = require("./gemini");
 
 // Category benchmark definitions for The Electric Duo
 const CATEGORY_BENCHMARKS = {
@@ -56,8 +56,8 @@ async function getCalibratedMetrics(youtubeId, video) {
   const category = video.content_type || "Review";
   const benchmark = CATEGORY_BENCHMARKS[category] || CATEGORY_BENCHMARKS["Review"];
 
-  // Duration in seconds
-  let durationSec = 900; // default 15m
+  // Parse exact duration in seconds
+  let durationSec = 900;
   if (video.duration) {
     const match = video.duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
     if (match) {
@@ -74,7 +74,7 @@ async function getCalibratedMetrics(youtubeId, video) {
   const views = baseViews;
 
   // Calibrate CTR around channel 5.0% baseline with category variation
-  const ctrVariation = ((seed % 35) - 15) / 10; // -1.5% to +2.0%
+  const ctrVariation = ((seed % 35) - 15) / 10;
   const ctr = Math.max(2.8, Math.min(9.4, Number((benchmark.avgCtr + ctrVariation).toFixed(1))));
   const impressions = Math.round(views / (ctr / 100));
 
@@ -91,8 +91,8 @@ async function getCalibratedMetrics(youtubeId, video) {
   const subsGained = Math.round(views * (0.0035 + ((seed % 15) / 2500)));
   const subsLost = Math.round(subsGained * 0.12);
 
-  // Retention Curve points (10 intervals from 0% to 100% of duration)
-  const hookDrop = 22 + (seed % 14); // 22% - 36% drop in first 30s
+  // Retention Curve points
+  const hookDrop = 22 + (seed % 14);
   const retention30s = 100 - hookDrop;
   const retentionMid = Math.round(retentionRate * 0.95);
   const retentionEnd = Math.max(12, Math.round(retentionRate * 0.45));
@@ -120,11 +120,11 @@ async function getCalibratedMetrics(youtubeId, video) {
 
   // Top Search Terms relevant to video title
   const searchTerms = [
-    `${video.title.split(" ")[0].toLowerCase()} ev charging`,
+    `${video.title.split(" ").slice(0, 3).join(" ").toLowerCase()}`,
     "the electric duo",
-    "mustang mach-e real range",
-    "electric car road trip",
-    "solid state battery news",
+    "mustang mach-e charging",
+    "ev road trip",
+    "electric vehicle real range",
   ];
 
   const durationFormatted = `${Math.floor(durationSec / 60)}:${String(durationSec % 60).padStart(2, "0")}`;
@@ -173,16 +173,31 @@ async function getCalibratedMetrics(youtubeId, video) {
 
 // Generate Multimodal AI Evaluation via Gemini
 async function generateAIEvaluation(video, metrics) {
+  // Fetch transcript to ground AI evaluation with exact video context
+  let transcriptSnippet = "Not available.";
+  try {
+    const fullTranscript = await getTranscript(video.youtube_id, video.title);
+    if (fullTranscript) {
+      transcriptSnippet = fullTranscript.substring(0, 3500);
+    }
+  } catch (e) {
+    console.warn(`Could not load transcript for audit of ${video.youtube_id}:`, e.message);
+  }
+
   const prompt = `You are the principal YouTube Strategy & Editorial Director for "The Electric Duo" (25K+ subscribers, premier EV channel).
 Perform a comprehensive Video Audit & Diagnostic Evaluation for this specific video.
 
-TARGET VIDEO:
+TARGET VIDEO DETAILS:
 - Title: "${video.title}"
 - YouTube ID: ${video.youtube_id}
 - Thumbnail URL: ${video.thumbnail_url || `https://img.youtube.com/vi/${video.youtube_id}/maxresdefault.jpg`}
 - Content Category: ${metrics.category}
 - Duration: ${metrics.durationFormatted}
 - Published Date: ${video.published_at}
+- Description: ${video.description ? video.description.substring(0, 600) : "None provided"}
+
+ACTUAL VIDEO DISCUSSION & TRANSCRIPT CONTEXT:
+${transcriptSnippet}
 
 PERFORMANCE METRICS:
 - Total Views: ${metrics.views.toLocaleString()}
@@ -204,20 +219,20 @@ CRITICAL EVALUATION MANDATES:
    - "Low Impressions / High CTR" (Distribution Bottleneck - packaging works, algorithm not surfacing / needs SEO & series playlist)
    - "Low Impressions / Low CTR" (Topic / Packaging Overhaul)
 3. Title & Thumbnail Critique: Evaluate mobile legibility, color contrast against YouTube UI, emotional clarity, curiosity gap without clickbait, and mobile title truncation.
-4. Provide 3-5 Specific Alternative Title & Thumbnail Concepts explicitly reasoned from the data.
+4. Alternative Concepts: Generate 3-5 SPECIFIC, HIGHLY RELEVANT alternative title and thumbnail concepts grounded directly in the vehicle, hardware, and transcript discussion above. DO NOT produce generic template placeholders (e.g. "The Truth About Ford!").
 5. Provide 3-5 Concrete, Prioritized Action Items (numbered and specific).
 6. Calculate an Overall Video Health Score from 0 to 100.
 
 You MUST reply ONLY with a valid JSON object with this EXACT structure (no markdown fences, no \`\`\`json):
 {
-  "health_score": 82,
+  "health_score": 84,
   "health_tier": "Strong Performer",
   "scorecard": {
     "hook_status": "pass",
     "ctr_status": "warn",
     "retention_status": "pass",
     "seo_status": "pass",
-    "one_line_verdict": "Solid evergreen interest with high retention, but thumbnail contrast is throttling browse CTR."
+    "one_line_verdict": "Detailed one-line strategic verdict."
   },
   "hook_diagnosis": {
     "hook_drop_30s": "-${metrics.hookDropPercent}%",
@@ -226,7 +241,7 @@ You MUST reply ONLY with a valid JSON object with this EXACT structure (no markd
     "analysis": "Detailed explanation of intro hook pacing vs topic delivery."
   },
   "discovery_matrix": {
-    "quadrant": "Low Impressions / High CTR",
+    "quadrant": "High Impressions / Low CTR",
     "quadrant_number": 2,
     "bottleneck": "Packaging (Title/Thumb)",
     "diagnosis": "Algorithm surfaced to wide browse audience, but CTR lagged channel benchmark.",
@@ -234,31 +249,31 @@ You MUST reply ONLY with a valid JSON object with this EXACT structure (no markd
   },
   "title_thumb_critique": {
     "thumbnail_critique": {
-      "mobile_legibility": "Good text size, but background brightness competes with foreground.",
+      "mobile_legibility": "Analysis of text size and clarity on mobile.",
       "contrast_score": "7/10",
-      "visual_promise": "Accurately represents the vehicle, but lacks an emotional or curiosity trigger.",
-      "focal_weakness": "Text exceeds 4 words and gets obscured by duration badge on mobile."
+      "visual_promise": "Analysis of visual subject and framing.",
+      "focal_weakness": "Specific area of improvement."
     },
     "title_critique": {
-      "value_prop": "Clear topic declaration but missing the emotional stakes or direct payoff.",
-      "mobile_truncation": "Key subject appears before character 45, avoiding truncation.",
-      "curiosity_gap": "Moderate. Leaves little reason for non-subscribers to click in Browse."
+      "value_prop": "Analysis of value proposition.",
+      "mobile_truncation": "Analysis of title length.",
+      "curiosity_gap": "Curiosity and engagement analysis."
     },
     "alternative_concepts": [
       {
-        "title": "Alternative Title 1",
+        "title": "Specific Alternative Title 1 grounded in video context",
         "thumbnail_visual": "Visual concept description",
         "thumbnail_text": "BOLD 3-WORD TEXT",
         "rationale": "Why this fixes the CTR deficit"
       },
       {
-        "title": "Alternative Title 2",
+        "title": "Specific Alternative Title 2 grounded in video context",
         "thumbnail_visual": "Visual concept description",
         "thumbnail_text": "BOLD TEXT 2",
         "rationale": "Why this fixes the CTR deficit"
       },
       {
-        "title": "Alternative Title 3",
+        "title": "Specific Alternative Title 3 grounded in video context",
         "thumbnail_visual": "Visual concept description",
         "thumbnail_text": "BOLD TEXT 3",
         "rationale": "Why this fixes the CTR deficit"
@@ -266,164 +281,86 @@ You MUST reply ONLY with a valid JSON object with this EXACT structure (no markd
     ]
   },
   "monetization_insights": {
-    "ad_read_retention": "Minor 4% dip around mid-video read, well within healthy benchmark.",
-    "sponsor_appeal": "High relevance for charger and EV accessory brands.",
+    "ad_read_retention": "Retention assessment through mid-video segments.",
+    "sponsor_appeal": "Relevance for EV sponsors.",
     "estimated_rpm": "$8.50 - $12.00"
   },
   "search_seo_analysis": {
-    "top_captured_terms": ["charging 101", "ev road trip tips", "mustang mach-e charger"],
-    "missed_opportunities": ["nacs adapter guide", "winter ev range loss"],
-    "actionable_seo_tip": "Include exact vehicle model and charging standard in the first 2 lines of description."
+    "top_captured_terms": ["exact search term 1", "exact search term 2"],
+    "missed_opportunities": ["missed term 1", "missed term 2"],
+    "actionable_seo_tip": "Specific keyword optimization recommendation."
   },
   "action_items": [
     {
       "priority": 1,
       "category": "Thumbnail",
-      "action": "Increase background contrast by 20% and reduce text overlay to maximum 3 words.",
-      "impact": "High (Expected +0.8% CTR)"
+      "action": "Specific action item.",
+      "impact": "High"
     },
     {
       "priority": 2,
       "category": "Title",
-      "action": "A/B test Title Concept 1 against current title in YouTube Studio.",
+      "action": "Specific action item.",
       "impact": "High"
     },
     {
       "priority": 3,
-      "category": "End-Screen",
-      "action": "Pin follow-up video card at the 12:30 verdict mark before outro music begins.",
-      "impact": "Quick Win (+15% card clicks)"
-    },
-    {
-      "priority": 4,
       "category": "Description & SEO",
-      "action": "Add affiliate product timestamps and link to charging scorecard.",
+      "action": "Specific action item.",
       "impact": "Medium"
     }
   ]
 }`;
 
-  let evaluation = null;
-
-  try {
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-    const candidateModels = ["gemini-flash-latest", "gemini-2.0-flash", "gemini-pro-latest"];
-
-    for (const modelName of candidateModels) {
-      try {
-        const response = await ai.models.generateContent({
-          model: modelName,
-          contents: prompt,
-        });
-
-        let rawText = response.text || "";
-        rawText = rawText.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/, "").trim();
-        evaluation = JSON.parse(rawText);
-        if (evaluation && evaluation.health_score) break;
-      } catch (err) {
-        console.warn(`Gemini model ${modelName} audit evaluation failed:`, err.message);
-      }
-    }
-  } catch (e) {
-    console.warn("AI Generation outer error:", e.message);
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    throw new Error("Gemini API Key is not configured. Please set GEMINI_API_KEY in Admin Settings.");
   }
 
-  // Fallback heuristic evaluation if AI call fails
-  if (!evaluation) {
-    const isCtrPass = metrics.ctr >= 5.0;
-    const isRetentionPass = metrics.retentionRate >= metrics.categoryBenchmark.avgRetention;
-    const isHookPass = metrics.hookDropPercent <= 28;
-    const healthScore = Math.round(
-      (isCtrPass ? 35 : 20) + (isRetentionPass ? 35 : 20) + (isHookPass ? 30 : 15)
-    );
+  const ai = new GoogleGenAI({ apiKey });
 
-    evaluation = {
-      health_score: healthScore,
-      health_tier: healthScore >= 80 ? "Strong Performer" : healthScore >= 65 ? "Average" : "Needs Optimization",
-      scorecard: {
-        hook_status: isHookPass ? "pass" : "warn",
-        ctr_status: isCtrPass ? "pass" : "warn",
-        retention_status: isRetentionPass ? "pass" : "warn",
-        seo_status: "pass",
-        one_line_verdict: `Video delivers solid ${metrics.retentionRate}% retention, with CTR ${metrics.ctr >= 5.0 ? 'above' : 'below'} channel 5.0% baseline.`
-      },
-      hook_diagnosis: {
-        hook_drop_30s: `-${metrics.hookDropPercent}%`,
-        diagnosis_type: isHookPass ? "Strong Hook" : "Pacing / Hook Leak",
-        verdict: isHookPass ? "Hook quickly captures core audience." : "Early drop-off indicates intro delay.",
-        analysis: "Focus on presenting the core question or visual demonstration in the first 8 seconds."
-      },
-      discovery_matrix: {
-        quadrant: metrics.ctr >= 5.0 ? "High Impressions / High CTR" : "High Impressions / Low CTR",
-        quadrant_number: metrics.ctr >= 5.0 ? 1 : 2,
-        bottleneck: metrics.ctr >= 5.0 ? "None (Healthy Growth)" : "Packaging (Thumbnail/Title)",
-        diagnosis: metrics.ctr >= 5.0 ? "Strong algorithm distribution and click-through." : "CTR is lagging behind channel average.",
-        strategy: "Retest thumbnail with higher contrast and a 3-word bold premise."
-      },
-      title_thumb_critique: {
-        thumbnail_critique: {
-          mobile_legibility: "Readable at desktop size, test on mobile 1080p.",
-          contrast_score: "7.5/10",
-          visual_promise: "Good vehicle clarity.",
-          focal_weakness: "Ensure main vehicle or face occupies 40%+ of canvas."
-        },
-        title_critique: {
-          value_prop: "Clear subject line.",
-          mobile_truncation: "Within 60 character mobile limit.",
-          curiosity_gap: "Moderate curiosity."
-        },
-        alternative_concepts: [
-          {
-            title: `The Truth About ${video.title.split(" ")[0]}! (Real Owner Test)`,
-            thumbnail_visual: "Close-up on instrument cluster with dramatic expression.",
-            thumbnail_text: "DON'T BUY YET?",
-            rationale: "Creates an urgent buying curiosity loop."
-          },
-          {
-            title: `Why Everyone Is Wrong About ${video.title.split(" ")[0]}`,
-            thumbnail_visual: "Split screen comparing spec chart vs real road test.",
-            thumbnail_text: "WE TESTED IT!",
-            rationale: "Taps into contrarian analysis that drives high Suggested traffic."
-          },
-          {
-            title: `${video.title}: 1 Year Later Review!`,
-            thumbnail_visual: "Vehicle charging in heavy snow or extreme rain.",
-            thumbnail_text: "WORTH IT?",
-            rationale: "Long-term ownership guides consistently convert high CTR."
-          }
-        ]
-      },
-      monetization_insights: {
-        ad_read_retention: "Standard retention curve throughout middle section.",
-        sponsor_appeal: "High alignment with EV charging network and accessory sponsors.",
-        estimated_rpm: "$7.50 - $11.00"
-      },
-      search_seo_analysis: {
-        top_captured_terms: metrics.searchTerms,
-        missed_opportunities: ["charging curve test", "real world efficiency"],
-        actionable_seo_tip: "Ensure top 3 keywords appear in title, first 50 words of description, and video tags."
-      },
-      action_items: [
-        {
-          priority: 1,
-          category: "Thumbnail",
-          action: "Increase subject contrast and test a punchier 3-word text overlay.",
-          impact: "High (+0.6% CTR)"
-        },
-        {
-          priority: 2,
-          category: "Title",
-          action: "A/B test Alternative Title Concept 1 in YouTube Studio.",
-          impact: "High"
-        },
-        {
-          priority: 3,
-          category: "End-Screen",
-          action: "Place next relevant playlist video end-screen 20 seconds before end.",
-          impact: "Quick Win"
-        }
-      ]
-    };
+  // Get configured default model from app_settings
+  let configuredModel = "gemini-3.7-flash";
+  try {
+    const row = db.prepare("SELECT value FROM app_settings WHERE key = 'default_model'").get();
+    if (row && row.value) configuredModel = row.value;
+  } catch (e) {}
+
+  const candidateModels = [
+    configuredModel,
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemini-2.0-flash",
+    "gemini-flash-latest",
+    "gemini-pro-latest",
+  ];
+
+  let evaluation = null;
+  let lastError = null;
+
+  for (const modelName of candidateModels) {
+    if (!modelName) continue;
+    try {
+      const response = await ai.models.generateContent({
+        model: modelName,
+        contents: prompt,
+      });
+
+      let rawText = response.text || "";
+      rawText = rawText.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/, "").trim();
+      evaluation = JSON.parse(rawText);
+      if (evaluation && evaluation.health_score) break;
+    } catch (err) {
+      lastError = err;
+      console.warn(`Model ${modelName} audit evaluation error:`, err.message);
+    }
+  }
+
+  if (!evaluation || !evaluation.health_score) {
+    throw new Error(`Gemini AI audit generation failed. Detail: ${lastError ? lastError.message : "Invalid JSON output"}`);
   }
 
   return evaluation;
@@ -431,7 +368,6 @@ You MUST reply ONLY with a valid JSON object with this EXACT structure (no markd
 
 // Main function: Get existing audit or generate fresh audit report
 async function getOrRunAudit(youtubeId, forceRefresh = false) {
-  // Check local database
   if (!forceRefresh) {
     const existing = db.prepare("SELECT * FROM video_audits WHERE youtube_id = ?").get(youtubeId);
     if (existing) {
@@ -447,10 +383,9 @@ async function getOrRunAudit(youtubeId, forceRefresh = false) {
     }
   }
 
-  // Fetch video from catalog
   const video = db.prepare("SELECT * FROM videos WHERE youtube_id = ?").get(youtubeId);
   if (!video) {
-    throw new Error(`Video not found with ID: ${youtubeId}`);
+    throw new Error(`Video not found in local catalog with ID: ${youtubeId}`);
   }
 
   // 1. Calculate metrics
@@ -460,7 +395,7 @@ async function getOrRunAudit(youtubeId, forceRefresh = false) {
   const evaluation = await generateAIEvaluation(video, metrics);
   const healthScore = evaluation.health_score || 75;
 
-  // 3. Save / Update in SQLite
+  // 3. Save to SQLite
   const stmt = db.prepare(`
     INSERT INTO video_audits (youtube_id, metrics_json, evaluation_json, health_score, updated_at)
     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
@@ -484,7 +419,6 @@ async function getOrRunAudit(youtubeId, forceRefresh = false) {
   };
 }
 
-// Get all audit summaries for catalog badges
 function getAuditsSummary() {
   const rows = db.prepare("SELECT youtube_id, health_score, updated_at FROM video_audits").all();
   const map = {};

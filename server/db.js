@@ -125,6 +125,13 @@ articleDb.exec(`
   CREATE INDEX IF NOT EXISTS idx_video_audits_updated ON video_audits(updated_at DESC);
 `);
 
+// Add transcript column to videos table if not present
+try {
+  articleDb.exec("ALTER TABLE videos ADD COLUMN transcript TEXT;");
+} catch (e) {
+  // Column already exists
+}
+
 // Compatibility layer
 controlDb.controlDb = controlDb;
 controlDb.articleDb = articleDb;

@@ -4,65 +4,112 @@ const { GoogleGenAI } = require("@google/genai");
 const { YoutubeTranscript } = require("youtube-transcript");
 const db = require("./db").articleDb;
 
-// Helper to fetch real video transcript
-async function getTranscript(youtubeId, title) {
+// Helper to fetch & cache video transcript in SQLite
+async function getTranscript(youtubeId, title = "") {
+  // 1. Check SQLite cache first
+  try {
+    const cached = db.prepare("SELECT transcript FROM videos WHERE youtube_id = ?").get(youtubeId);
+    if (cached && cached.transcript && cached.transcript.trim().length > 20) {
+      return cached.transcript;
+    }
+  } catch (e) {}
+
+  // 2. Fetch from YouTube
   try {
     const transcriptItems = await YoutubeTranscript.fetchTranscript(youtubeId);
     if (!transcriptItems || transcriptItems.length === 0) {
-      throw new Error("No transcript items returned.");
+      throw new Error("No transcript lines returned from YouTube.");
     }
-    const fullText = transcriptItems.map((item) => item.text).join(" ");
+    const fullText = transcriptItems.map((item) => item.text).join(" ").trim();
+
+    // 3. Cache into SQLite videos table
+    if (fullText.length > 20) {
+      try {
+        db.prepare("UPDATE videos SET transcript = ? WHERE youtube_id = ?").run(fullText, youtubeId);
+      } catch (e) {}
+    }
+
     return fullText;
   } catch (error) {
-    console.warn(`Could not fetch captions for ${youtubeId}:`, error.message);
-    throw new Error(`Transcript unavailable for video ${youtubeId}. Ensure captions are enabled for this video.`);
+    const msg = error.message || "Unknown error";
+    console.warn(`Could not fetch captions for ${youtubeId}:`, msg);
+    throw new Error(`YouTube captions are unavailable or disabled for "${title || youtubeId}". Detail: ${msg}`);
   }
 }
 
-// Helper to call Gemini API with model fallback and retry
-async function callGeminiWithRetry(ai, requestOptions, maxRetries = 3) {
+// Helper to get active Gemini API key from SQLite settings or .env
+function getGeminiApiKey() {
+  try {
+    const row = db.prepare("SELECT value FROM app_settings WHERE key = 'gemini_api_key'").get();
+    if (row && row.value && row.value.trim().length > 10) {
+      return row.value.trim();
+    }
+  } catch (e) {}
+  return process.env.GEMINI_API_KEY;
+}
+
+// Helper to call Gemini API with candidate models and clean error reporting
+async function callGeminiWithRetry(ai, requestOptions, maxRetries = 2) {
   let attempt = 0;
-  const candidateModels = [requestOptions.model, "gemini-flash-latest", "gemini-pro-latest", "gemini-2.0-flash"];
+  const primaryModel = requestOptions.model || "gemini-3.7-flash";
+  const candidateModels = [
+    primaryModel,
+    "gemini-3.6-flash",
+    "gemini-3.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemini-2.0-flash",
+    "gemini-flash-latest",
+    "gemini-pro-latest",
+  ];
+
+  const attemptedModels = [];
+  let lastError = null;
 
   for (const targetModel of candidateModels) {
-    if (!targetModel) continue;
+    if (!targetModel || attemptedModels.includes(targetModel)) continue;
+    attemptedModels.push(targetModel);
     attempt = 0;
+
     while (attempt < maxRetries) {
       try {
         const opts = { ...requestOptions, model: targetModel };
         return await ai.models.generateContent(opts);
       } catch (err) {
+        lastError = err;
         const isRateLimit = err.status === 429 || (err.message && err.message.includes("RESOURCE_EXHAUSTED"));
         const isModelNotFound = err.status === 404 || (err.message && err.message.includes("NOT_FOUND"));
 
         if (isModelNotFound) {
-          console.warn(`Model ${targetModel} not found/supported, trying next candidate...`);
+          console.warn(`Model ${targetModel} not available on this API key, trying next model candidate...`);
           break;
         }
 
         if (isRateLimit && attempt < maxRetries - 1) {
-          console.warn(`Gemini API rate limited (429) on ${targetModel}. Retrying in 4 seconds (Attempt ${attempt + 1}/${maxRetries})...`);
-          await new Promise((resolve) => setTimeout(resolve, 4000));
+          console.warn(`Gemini API rate limited (429) on ${targetModel}. Retrying in 3 seconds...`);
+          await new Promise((resolve) => setTimeout(resolve, 3000));
           attempt++;
         } else {
-          console.warn(`Failed on ${targetModel}:`, err.message);
+          console.warn(`Gemini API error on ${targetModel}:`, err.message);
           break;
         }
       }
     }
   }
 
-  throw new Error("Gemini API call failed across all candidate models.");
+  const errorDetail = lastError ? ` (Last error: ${lastError.message})` : "";
+  throw new Error(`Gemini API call failed across attempted models [${attemptedModels.join(", ")}]${errorDetail}`);
 }
 
 async function generateArticle({ youtubeId, title, contentType, customNotes, modelOverride, thinkingModeOverride }) {
-  // Step 1: Fetch real video transcript
+  // Step 1: Fetch and cache real video transcript
   const transcript = await getTranscript(youtubeId, title);
 
   // Step 2: Determine model selection
   let selectedModel = modelOverride;
-  if (!selectedModel || selectedModel === "gemini-3.6-flash" || selectedModel === "gemini-3.1-pro") {
-    selectedModel = "gemini-flash-latest";
+  if (!selectedModel) {
+    const modelRow = db.prepare("SELECT value FROM app_settings WHERE key = 'default_model'").get();
+    selectedModel = modelRow ? modelRow.value : "gemini-3.7-flash";
   }
 
   let thinkingMode = thinkingModeOverride;
@@ -99,7 +146,12 @@ CRITICAL MANDATES:
 4. ABSOLUTELY BANNED AI CLICHÉS: "delve", "game-changer", "testament", "unlock", "dive into", "revolutionize", "in conclusion".
 `;
 
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    throw new Error("Gemini API Key is not configured. Please set GEMINI_API_KEY in Admin Settings.");
+  }
+
+  const ai = new GoogleGenAI({ apiKey });
 
   const requestOptions = {
     model: selectedModel,
@@ -113,10 +165,10 @@ CRITICAL MANDATES:
   htmlContent = htmlContent.replace(/^```html\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/, "").trim();
 
   if (!htmlContent) {
-    throw new Error("Gemini API returned empty output.");
+    throw new Error("Gemini API returned an empty output response.");
   }
 
   return htmlContent;
 }
 
-module.exports = { getTranscript, generateArticle };
+module.exports = { getTranscript, generateArticle, getGeminiApiKey };

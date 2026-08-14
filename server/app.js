@@ -481,6 +481,175 @@ app.post("/api/audit/:youtubeId", auth.requireAuth(), async (req, res) => {
   }
 });
 
+/* ---------------- Admin & Settings endpoints ---------------- */
+
+const bcrypt = require("bcryptjs");
+
+// 1. Account Management
+app.get("/api/admin/users", auth.requireAuth(), (req, res) => {
+  try {
+    const users = db.prepare("SELECT id, name, username, created_at FROM users ORDER BY name ASC").all();
+    res.json(users);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/admin/users", auth.requireAuth(), (req, res) => {
+  try {
+    const { name, username, password } = req.body || {};
+    if (!name || !username || !password) {
+      return res.status(400).json({ error: "Name, username, and password are required." });
+    }
+    const hash = bcrypt.hashSync(password, 10);
+    const info = db.prepare("INSERT INTO users (name, username, password_hash) VALUES (?, ?, ?)").run(name, username.trim().toLowerCase(), hash);
+    res.json({ success: true, userId: info.lastInsertRowid });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/admin/users/password", auth.requireAuth(), (req, res) => {
+  try {
+    const { userId, newPassword } = req.body || {};
+    if (!userId || !newPassword) {
+      return res.status(400).json({ error: "User ID and new password are required." });
+    }
+    const hash = bcrypt.hashSync(newPassword, 10);
+    db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(hash, userId);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 2. Integrations & API Keys
+app.get("/api/admin/integrations", auth.requireAuth(), (req, res) => {
+  try {
+    const rows = articleDb.prepare("SELECT * FROM app_settings").all();
+    const settings = {};
+    rows.forEach((r) => { settings[r.key] = r.value; });
+
+    res.json({
+      youtube_channel_id: settings.youtube_channel_id || process.env.YOUTUBE_CHANNEL_ID || "UCuhhyTS-Q66qq-gWrCcTOzg",
+      youtube_api_key_configured: !!(settings.youtube_api_key || process.env.YOUTUBE_API_KEY),
+      gemini_api_key_configured: !!(settings.gemini_api_key || process.env.GEMINI_API_KEY),
+      wp_site_url: settings.wp_site_url || process.env.WP_SITE_URL || "https://theelectricduo.com",
+      wp_username: settings.wp_username || process.env.WP_USERNAME || "patricka",
+      wp_password_configured: !!(settings.wp_application_password || process.env.WP_APPLICATION_PASSWORD),
+      default_model: settings.default_model || "gemini-3.7-flash",
+      thinking_mode: settings.thinking_mode || "standard",
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/admin/integrations", auth.requireAuth(), (req, res) => {
+  try {
+    const {
+      youtube_api_key,
+      youtube_channel_id,
+      gemini_api_key,
+      wp_site_url,
+      wp_username,
+      wp_application_password,
+      default_model,
+      thinking_mode,
+    } = req.body || {};
+
+    const stmt = articleDb.prepare("INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
+
+    if (youtube_api_key && youtube_api_key.trim()) stmt.run("youtube_api_key", youtube_api_key.trim());
+    if (youtube_channel_id && youtube_channel_id.trim()) stmt.run("youtube_channel_id", youtube_channel_id.trim());
+    if (gemini_api_key && gemini_api_key.trim()) stmt.run("gemini_api_key", gemini_api_key.trim());
+    if (wp_site_url && wp_site_url.trim()) stmt.run("wp_site_url", wp_site_url.trim());
+    if (wp_username && wp_username.trim()) stmt.run("wp_username", wp_username.trim());
+    if (wp_application_password && wp_application_password.trim()) stmt.run("wp_application_password", wp_application_password.trim());
+    if (default_model && default_model.trim()) stmt.run("default_model", default_model.trim());
+    if (thinking_mode && thinking_mode.trim()) stmt.run("thinking_mode", thinking_mode.trim());
+
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 3. Test Connections
+app.post("/api/admin/test-connection", auth.requireAuth(), async (req, res) => {
+  const { service } = req.body || {};
+  try {
+    if (service === "youtube") {
+      const { getYoutubeClient, getYoutubeChannelId } = require("./youtube");
+      const youtube = getYoutubeClient();
+      const channelId = getYoutubeChannelId();
+      const start = Date.now();
+      const response = await youtube.channels.list({ part: "snippet", id: channelId });
+      const latency = Date.now() - start;
+      const title = response.data.items?.[0]?.snippet?.title || "Channel found";
+      return res.json({ ok: true, message: `Connected to YouTube channel: "${title}" (${latency}ms)` });
+    }
+
+    if (service === "gemini") {
+      const { GoogleGenAI } = require("@google/genai");
+      const { getGeminiApiKey } = require("./gemini");
+      const apiKey = getGeminiApiKey();
+      if (!apiKey) throw new Error("Gemini API key is not configured.");
+      const ai = new GoogleGenAI({ apiKey });
+      const start = Date.now();
+      const response = await ai.models.generateContent({
+        model: "gemini-3.7-flash",
+        contents: "Respond with the single word: OK",
+      });
+      const latency = Date.now() - start;
+      return res.json({ ok: true, message: `Connected to Gemini 3.7 Flash API (${latency}ms) — Response: ${response.text?.trim()}` });
+    }
+
+    if (service === "wordpress") {
+      const wpSiteUrl = (process.env.WP_SITE_URL || "https://theelectricduo.com").replace(/\/$/, "");
+      const username = process.env.WP_USERNAME || "patricka";
+      const password = process.env.WP_APPLICATION_PASSWORD;
+      const authStr = Buffer.from(`${username}:${password}`).toString("base64");
+      const start = Date.now();
+      const response = await axios.get(`${wpSiteUrl}/wp-json/wp/v2/users/me`, {
+        headers: { Authorization: `Basic ${authStr}` },
+        timeout: 6000,
+      });
+      const latency = Date.now() - start;
+      return res.json({ ok: true, message: `Authenticated as WordPress user "${response.data.name || username}" (${latency}ms)` });
+    }
+
+    res.status(400).json({ error: "Unknown service: " + service });
+  } catch (err) {
+    const msg = err.response?.data?.message || err.message || "Connection failed";
+    res.status(500).json({ ok: false, error: msg });
+  }
+});
+
+// 4. Backfill exact durations for all videos
+app.post("/api/catalog/sync-durations", auth.requireAuth(), async (req, res) => {
+  try {
+    const { syncAllVideoDurations } = require("./youtube");
+    const result = await syncAllVideoDurations();
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 5. Available AI Models
+app.get("/api/models", auth.requireAuth(), (req, res) => {
+  res.json([
+    { id: "gemini-3.7-flash", name: "Gemini 3.7 Flash (Recommended · Ultra Fast & Multimodal)", recommended: true },
+    { id: "gemini-3.6-flash", name: "Gemini 3.6 Flash" },
+    { id: "gemini-3.5-pro", name: "Gemini 3.5 Pro (Deep Reasoning)" },
+    { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" },
+    { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" },
+    { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash" },
+    { id: "gemini-1.5-pro", name: "Gemini 1.5 Pro" },
+  ]);
+});
+
 /* ---------------- static files & SPA fallback ---------------- */
 
 app.get("/login.html", (req, res) => res.sendFile(path.join(PUBLIC_DIR, "login.html")));
