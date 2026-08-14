@@ -1,0 +1,17 @@
+{
+  "name": "electric-duo-control-center",
+  "version": "1.0.0",
+  "description": "The Electric Duo master control center — operating checklist, with room to grow",
+  "private": true,
+  "main": "server/app.js",
+  "scripts": {
+    "start": "node server/app.js",
+    "create-user": "node scripts/create-user.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "bcryptjs": "^3.0.2",
+    "cookie-parser": "^1.4.7",
+    "express": "^5.2.1"
+  }
+}

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · Electric Duo Control Center</title>
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-card">
+      <div class="eyebrow">The Electric Duo</div>
+      <h1>Control center</h1>
+      <form id="loginForm">
+        <label for="username">Username</label>
+        <input id="username" name="username" type="text" autocomplete="username" required>
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+        <button type="submit" id="loginBtn">Sign in</button>
+        <div class="login-error" id="loginError"></div>
+      </form>
+    </div>
+  </div>
+  <script>
+    var form = document.getElementById("loginForm");
+    var btn = document.getElementById("loginBtn");
+    var err = document.getElementById("loginError");
+    form.addEventListener("submit", function (e) {
+      e.preventDefault();
+      err.textContent = "";
+      btn.disabled = true;
+      btn.textContent = "Signing in…";
+      fetch("/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: document.getElementById("username").value,
+          password: document.getElementById("password").value
+        })
+      }).then(function (res) {
+        if (!res.ok) throw new Error("bad_credentials");
+        window.location.href = "/";
+      }).catch(function () {
+        err.textContent = "Incorrect username or password.";
+        btn.disabled = false;
+        btn.textContent = "Sign in";
+      });
+    });
+  </script>
+</body>
+</html>
