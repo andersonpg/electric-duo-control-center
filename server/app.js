@@ -5,6 +5,7 @@ const path = require("path");
 const express = require("express");
 const cookieParser = require("cookie-parser");
 const cors = require("cors");
+const axios = require("axios");
 const db = require("./db");
 const articleDb = db.articleDb;
 const content = require("./content");
@@ -596,13 +597,22 @@ app.post("/api/admin/test-connection", auth.requireAuth(), async (req, res) => {
       const apiKey = getGeminiApiKey();
       if (!apiKey) throw new Error("Gemini API key is not configured.");
       const ai = new GoogleGenAI({ apiKey });
-      const start = Date.now();
-      const response = await ai.models.generateContent({
-        model: "gemini-3.7-flash",
-        contents: "Respond with the single word: OK",
-      });
-      const latency = Date.now() - start;
-      return res.json({ ok: true, message: `Connected to Gemini 3.7 Flash API (${latency}ms) — Response: ${response.text?.trim()}` });
+      const candidateModels = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash", "gemini-3.7-flash"];
+      let lastErr = null;
+      for (const m of candidateModels) {
+        try {
+          const start = Date.now();
+          const response = await ai.models.generateContent({
+            model: m,
+            contents: "Respond with the single word: OK",
+          });
+          const latency = Date.now() - start;
+          return res.json({ ok: true, message: `Connected to Gemini API using ${m} (${latency}ms) — Response: ${response.text?.trim()}` });
+        } catch (err) {
+          lastErr = err;
+        }
+      }
+      throw lastErr || new Error("Gemini API connection failed.");
     }
 
     if (service === "wordpress") {
