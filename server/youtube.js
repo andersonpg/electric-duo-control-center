@@ -25,16 +25,37 @@ async function getUploadsPlaylistId(channelId) {
 
 async function fetchExactPublishDate(vId) {
   try {
-    const res = await axios.post("https://www.youtube.com/youtubei/v1/player", {
-      context: { client: { clientName: "WEB", clientVersion: "2.20240101.00.00" } },
-      videoId: vId,
+    const res = await axios.get(`https://www.youtube.com/watch?v=${vId}`, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+      timeout: 6000,
     });
-    const pubDate = res.data.microformat?.playerMicroformatRenderer?.publishDate || res.data.microformat?.playerMicroformatRenderer?.uploadDate;
-    if (pubDate) {
-      return pubDate;
+    const html = res.data;
+
+    // 1. Try dateText in initial JSON
+    const dateTextMatch = html.match(/"dateText":\{"simpleText":"([^"]+)"\}/);
+    if (dateTextMatch && dateTextMatch[1]) {
+      const d = new Date(dateTextMatch[1]);
+      if (!isNaN(d.getTime())) return d.toISOString();
     }
-  } catch (e) {}
-  return new Date().toISOString();
+
+    // 2. Try publishDate / uploadDate microformat in JSON
+    const publishDateMatch = html.match(/"publishDate":"([^"]+)"/);
+    if (publishDateMatch && publishDateMatch[1]) {
+      const d = new Date(publishDateMatch[1]);
+      if (!isNaN(d.getTime())) return d.toISOString();
+    }
+    const uploadDateMatch = html.match(/"uploadDate":"([^"]+)"/);
+    if (uploadDateMatch && uploadDateMatch[1]) {
+      const d = new Date(uploadDateMatch[1]);
+      if (!isNaN(d.getTime())) return d.toISOString();
+    }
+  } catch (e) {
+    console.warn(`Could not fetch exact date for ${vId}:`, e.message);
+  }
+  return null;
 }
 
 // 1. YouTube Data API v3 Sync Engine
@@ -77,14 +98,18 @@ async function syncCatalogViaYouTubeApi(mode = "delta") {
     const videoIds = items.map((item) => item.contentDetails.videoId);
 
     let durationMap = {};
+    let realPublishDateMap = {};
     try {
       const videosRes = await youtube.videos.list({
-        part: "contentDetails",
+        part: "snippet,contentDetails",
         id: videoIds.join(","),
       });
 
       (videosRes.data.items || []).forEach((v) => {
-        durationMap[v.id] = v.contentDetails.duration;
+        durationMap[v.id] = v.contentDetails?.duration || "";
+        if (v.snippet?.publishedAt) {
+          realPublishDateMap[v.id] = v.snippet.publishedAt;
+        }
       });
     } catch (e) {}
 
@@ -95,7 +120,7 @@ async function syncCatalogViaYouTubeApi(mode = "delta") {
       const snippet = item.snippet;
       const title = snippet.title;
       const description = snippet.description;
-      const publishedAt = snippet.publishedAt || item.contentDetails.videoPublishedAt || new Date().toISOString();
+      const publishedAt = realPublishDateMap[vId] || snippet.publishedAt || item.contentDetails.videoPublishedAt || new Date().toISOString();
       const thumbnailUrl = `https://img.youtube.com/vi/${vId}/maxresdefault.jpg`;
       const duration = durationMap[vId] || "";
 
@@ -122,13 +147,13 @@ async function syncCatalogViaYouTubeApi(mode = "delta") {
   return { newCount, totalProcessed, mode, isScraped: false };
 }
 
-// 2. Full 500+ Video Continuation Scraper Sync Engine with Innertube Publish Dates
+// 2. Full 500+ Video Continuation Scraper Sync Engine with Real Watch Page Publish Dates
 async function syncRealChannelVideosScraper(mode = "delta") {
   const channelUrl = "https://www.youtube.com/@TheElectricDuo/videos";
 
   const htmlRes = await axios.get(channelUrl, {
     headers: {
-      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     },
   });
 
@@ -202,17 +227,17 @@ async function syncRealChannelVideosScraper(mode = "delta") {
       title = excluded.title,
       description = excluded.description,
       thumbnail_url = excluded.thumbnail_url,
-      published_at = excluded.published_at,
+      published_at = COALESCE(excluded.published_at, videos.published_at),
       last_synced_at = CURRENT_TIMESTAMP
   `);
 
-  const checkExistsStmt = db.prepare("SELECT youtube_id FROM videos WHERE youtube_id = ?");
+  const checkExistsStmt = db.prepare("SELECT youtube_id, published_at FROM videos WHERE youtube_id = ?");
 
   let newCount = 0;
   let totalProcessed = 0;
 
-  for (let i = 0; i < allVideoIds.length; i += 10) {
-    const chunk = allVideoIds.slice(i, i + 10);
+  for (let i = 0; i < allVideoIds.length; i += 8) {
+    const chunk = allVideoIds.slice(i, i + 8);
     await Promise.all(
       chunk.map(async (vId) => {
         try {
@@ -224,9 +249,12 @@ async function syncRealChannelVideosScraper(mode = "delta") {
           const thumbnailUrl = `https://img.youtube.com/vi/${vId}/maxresdefault.jpg`;
           const description = `Watch the official video "${title}" on The Electric Duo YouTube channel.`;
 
-          const publishedAt = await fetchExactPublishDate(vId);
-
           const exists = checkExistsStmt.get(vId);
+
+          let publishedAt = exists && exists.published_at ? exists.published_at : null;
+          if (!publishedAt) {
+            publishedAt = (await fetchExactPublishDate(vId)) || new Date().toISOString();
+          }
 
           let contentType = "Review";
           const lowerTitle = title.toLowerCase();
@@ -259,9 +287,9 @@ async function syncCatalog(mode = "delta") {
   try {
     return await syncCatalogViaYouTubeApi(mode);
   } catch (apiErr) {
-    console.warn("YouTube Data API key call limited, running exact date continuation sync engine:", apiErr.message);
+    console.warn("YouTube Data API call not available, running exact date continuation sync engine:", apiErr.message);
     return await syncRealChannelVideosScraper(mode);
   }
 }
 
-module.exports = { syncCatalog };
+module.exports = { syncCatalog, fetchExactPublishDate };
