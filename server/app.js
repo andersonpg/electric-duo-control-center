@@ -583,6 +583,8 @@ app.get("/api/admin/integrations", auth.requireAuth(), (req, res) => {
     res.json({
       youtube_channel_id: settings.youtube_channel_id || process.env.YOUTUBE_CHANNEL_ID || "UCuhhyTS-Q66qq-gWrCcTOzg",
       youtube_api_key_configured: !!(settings.youtube_api_key || process.env.YOUTUBE_API_KEY),
+      google_client_id: settings.google_client_id || process.env.GOOGLE_CLIENT_ID || "",
+      google_client_secret: settings.google_client_secret || process.env.GOOGLE_CLIENT_SECRET || "",
       gemini_api_key_configured: !!(settings.gemini_api_key || process.env.GEMINI_API_KEY),
       wp_site_url: settings.wp_site_url || process.env.WP_SITE_URL || "https://theelectricduo.com",
       wp_username: settings.wp_username || process.env.WP_USERNAME || "patricka",
@@ -600,6 +602,8 @@ app.post("/api/admin/integrations", auth.requireAuth(), (req, res) => {
     const {
       youtube_api_key,
       youtube_channel_id,
+      google_client_id,
+      google_client_secret,
       gemini_api_key,
       wp_site_url,
       wp_username,
@@ -612,6 +616,8 @@ app.post("/api/admin/integrations", auth.requireAuth(), (req, res) => {
 
     if (youtube_api_key && youtube_api_key.trim()) stmt.run("youtube_api_key", youtube_api_key.trim());
     if (youtube_channel_id && youtube_channel_id.trim()) stmt.run("youtube_channel_id", youtube_channel_id.trim());
+    if (google_client_id !== undefined && google_client_id !== null && google_client_id.trim()) stmt.run("google_client_id", google_client_id.trim());
+    if (google_client_secret !== undefined && google_client_secret !== null && google_client_secret.trim()) stmt.run("google_client_secret", google_client_secret.trim());
     if (gemini_api_key && gemini_api_key.trim()) stmt.run("gemini_api_key", gemini_api_key.trim());
     if (wp_site_url && wp_site_url.trim()) stmt.run("wp_site_url", wp_site_url.trim());
     if (wp_username && wp_username.trim()) stmt.run("wp_username", wp_username.trim());
