@@ -1,17 +1,26 @@
 {
   "name": "electric-duo-control-center",
-  "version": "1.0.0",
-  "description": "The Electric Duo master control center — operating checklist, with room to grow",
+  "version": "2.0.0",
+  "description": "The Electric Duo Master Command Center — Plan Checklist & Article Generator",
   "private": true,
   "main": "server/app.js",
   "scripts": {
     "start": "node server/app.js",
-    "create-user": "node scripts/create-user.js"
+    "dev": "node server/app.js",
+    "create-user": "node scripts/create-user.js",
+    "build:frontend": "cd frontend && npm install && npm run build && cp -r dist/* ../public/",
+    "build": "npm run build:frontend"
   },
   "dependencies": {
-    "better-sqlite3": "^13.0.3",
+    "@google/genai": "^0.1.1",
+    "axios": "^1.7.9",
     "bcryptjs": "^3.0.2",
+    "better-sqlite3": "^11.8.0",
     "cookie-parser": "^1.4.7",
-    "express": "^5.2.1"
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "googleapis": "^144.0.0",
+    "youtube-transcript": "^1.2.1"
   }
 }

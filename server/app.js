@@ -1,15 +1,23 @@
 "use strict";
 
+require("dotenv").config();
 const path = require("path");
 const express = require("express");
 const cookieParser = require("cookie-parser");
+const cors = require("cors");
 const db = require("./db");
+const articleDb = db.articleDb;
 const content = require("./content");
 const periods = require("./periods");
 const auth = require("./auth");
 
+const { syncCatalog } = require("./youtube");
+const { generateArticle } = require("./gemini");
+const { createWordPressDraft } = require("./wordpress");
+
 const app = express();
-app.use(express.json());
+app.use(cors());
+app.use(express.json({ limit: "5mb" }));
 app.use(cookieParser());
 
 const PUBLIC_DIR = path.join(__dirname, "..", "public");
@@ -27,7 +35,7 @@ app.post("/login", (req, res) => {
     httpOnly: true,
     sameSite: "lax",
     secure: req.secure || req.headers["x-forwarded-proto"] === "https",
-    expires: new Date(expires)
+    expires: new Date(expires),
   });
   res.json({ ok: true, user: { id: user.id, name: user.name, username: user.username } });
 });
@@ -43,23 +51,13 @@ app.get("/api/me", auth.requireAuth(), (req, res) => {
   res.json({ user: req.user });
 });
 
-/* ---------------- static files ---------------- */
-// login.html is reachable without auth; everything else in /public requires it (checked below)
-app.get("/login.html", (req, res) => res.sendFile(path.join(PUBLIC_DIR, "login.html")));
-app.use("/assets", express.static(path.join(PUBLIC_DIR, "assets")));
-
-app.get("/", auth.requireAuth({ redirectToLogin: true }), (req, res) => {
-  res.sendFile(path.join(PUBLIC_DIR, "dashboard.html"));
-});
-
-/* ---------------- state ---------------- */
+/* ---------------- Plan Checklist state & mutations ---------------- */
 
 function getAllUsers() {
   return db.prepare("SELECT id, name, username FROM users ORDER BY name").all();
 }
 
 function currentTaskStatus(periodKeys) {
-  // For every task id, find the most recent event within its *current* period key.
   const status = {};
   const rows = db.prepare(`
     SELECT te.task_id, te.period_key, te.action, te.at, u.name AS by_name
@@ -73,7 +71,7 @@ function currentTaskStatus(periodKeys) {
   rows.forEach((row) => {
     const period = content.TASK_INDEX[row.task_id];
     const expectedKey = period ? periodKeys[period] : null;
-    if (!period || row.period_key !== expectedKey) return; // stale period, ignore
+    if (!period || row.period_key !== expectedKey) return;
     status[row.task_id] = { done: row.action === "checked", by: row.by_name, at: row.at };
   });
   return status;
@@ -99,7 +97,6 @@ function getSetting(key, fallback) {
 }
 
 function computeStreak(periodKeys) {
-  // A "clean" day = every DAILY task was checked (as of its most-recent event) for that day.
   const dailyIds = content.DAILY.map((t) => t.id);
   const placeholders = dailyIds.map(() => "?").join(",");
   const rows = db.prepare(`
@@ -148,8 +145,6 @@ app.get("/api/state", auth.requireAuth(), (req, res) => {
     streak: computeStreak(periodKeys)
   });
 });
-
-/* ---------------- mutations ---------------- */
 
 app.post("/api/toggle", auth.requireAuth(), (req, res) => {
   const { taskId } = req.body || {};
@@ -209,7 +204,264 @@ app.post("/api/runrate", auth.requireAuth(), (req, res) => {
   res.json({ ok: true, value });
 });
 
+/* ---------------- Article Generator endpoints ---------------- */
+
+// Videos Catalog
+app.get("/api/videos", auth.requireAuth(), (req, res) => {
+  try {
+    const { search, status, contentType } = req.query;
+
+    let query = "SELECT * FROM videos WHERE 1=1";
+    const params = [];
+
+    if (status && status !== "all") {
+      query += " AND status = ?";
+      params.push(status);
+    }
+
+    if (contentType && contentType !== "all") {
+      query += " AND content_type = ?";
+      params.push(contentType);
+    }
+
+    if (search) {
+      query += " AND (title LIKE ? OR description LIKE ?)";
+      params.push(`%${search}%`, `%${search}%`);
+    }
+
+    query += " ORDER BY published_at DESC";
+
+    const videos = articleDb.prepare(query).all(...params);
+    res.json(videos);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.patch("/api/videos/:id", auth.requireAuth(), (req, res) => {
+  try {
+    const { id } = req.params;
+    const { content_type, custom_notes } = req.body;
+
+    const stmt = articleDb.prepare(`
+      UPDATE videos
+      SET content_type = COALESCE(?, content_type),
+          custom_notes = COALESCE(?, custom_notes)
+      WHERE youtube_id = ?
+    `);
+
+    stmt.run(content_type, custom_notes, id);
+    const updated = articleDb.prepare("SELECT * FROM videos WHERE youtube_id = ?").get(id);
+    res.json(updated);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/videos/reset", auth.requireAuth(), (req, res) => {
+  try {
+    const { youtubeIds } = req.body;
+    if (!youtubeIds || !Array.isArray(youtubeIds) || youtubeIds.length === 0) {
+      return res.status(400).json({ error: "youtubeIds array is required." });
+    }
+
+    const stmt = articleDb.prepare(`
+      UPDATE videos
+      SET status = 'unprocessed',
+          wp_post_id = NULL,
+          wp_draft_url = NULL
+      WHERE youtube_id = ?
+    `);
+
+    for (const id of youtubeIds) {
+      stmt.run(id);
+    }
+
+    res.json({ success: true, count: youtubeIds.length });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// YouTube Catalog Sync
+app.post("/api/sync", auth.requireAuth(), async (req, res) => {
+  try {
+    const { mode } = req.body;
+    const result = await syncCatalog(mode || "delta");
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Content Templates
+app.get("/api/templates", auth.requireAuth(), (req, res) => {
+  try {
+    const templates = articleDb.prepare("SELECT * FROM content_templates ORDER BY created_at ASC").all();
+    res.json(templates);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/templates", auth.requireAuth(), (req, res) => {
+  try {
+    const { name, description, prompt_template } = req.body;
+    if (!name || !prompt_template) {
+      return res.status(400).json({ error: "Name and Prompt Template are required." });
+    }
+
+    const stmt = articleDb.prepare(`
+      INSERT INTO content_templates (name, description, prompt_template)
+      VALUES (?, ?, ?)
+    `);
+
+    const info = stmt.run(name, description || "", prompt_template);
+    const newTemplate = articleDb.prepare("SELECT * FROM content_templates WHERE id = ?").get(info.lastInsertRowid);
+    res.json(newTemplate);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put("/api/templates/:id", auth.requireAuth(), (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, description, prompt_template } = req.body;
+
+    const stmt = articleDb.prepare(`
+      UPDATE content_templates
+      SET name = ?, description = ?, prompt_template = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `);
+
+    stmt.run(name, description, prompt_template, id);
+    const updated = articleDb.prepare("SELECT * FROM content_templates WHERE id = ?").get(id);
+    res.json(updated);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete("/api/templates/:id", auth.requireAuth(), (req, res) => {
+  try {
+    const { id } = req.params;
+    articleDb.prepare("DELETE FROM content_templates WHERE id = ?").run(id);
+    res.json({ success: true, id });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// App Settings
+app.get("/api/settings", auth.requireAuth(), (req, res) => {
+  try {
+    const rows = articleDb.prepare("SELECT * FROM app_settings").all();
+    const settings = {};
+    rows.forEach((r) => {
+      settings[r.key] = r.value;
+    });
+    res.json(settings);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/settings", auth.requireAuth(), (req, res) => {
+  try {
+    const settings = req.body;
+    const stmt = articleDb.prepare("INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
+
+    Object.entries(settings).forEach(([key, value]) => {
+      stmt.run(key, String(value));
+    });
+
+    res.json({ success: true, settings });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Article Generation & WordPress Publishing
+app.post("/api/process", auth.requireAuth(), async (req, res) => {
+  try {
+    const { youtubeIds, modelOverride, thinkingModeOverride } = req.body;
+
+    if (!youtubeIds || !Array.isArray(youtubeIds) || youtubeIds.length === 0) {
+      return res.status(400).json({ error: "youtubeIds array is required." });
+    }
+
+    const results = [];
+
+    for (const yId of youtubeIds) {
+      const video = articleDb.prepare("SELECT * FROM videos WHERE youtube_id = ?").get(yId);
+      if (!video) {
+        results.push({ youtubeId: yId, success: false, error: "Video not found in local catalog." });
+        continue;
+      }
+
+      try {
+        const htmlContent = await generateArticle({
+          youtubeId: video.youtube_id,
+          title: video.title,
+          contentType: video.content_type,
+          customNotes: video.custom_notes,
+          modelOverride,
+          thinkingModeOverride,
+        });
+
+        const { wpPostId, wpDraftUrl } = await createWordPressDraft({
+          youtubeId: video.youtube_id,
+          title: video.title,
+          htmlContent,
+          publishedAt: video.published_at,
+          thumbnailUrl: video.thumbnail_url,
+        });
+
+        articleDb.prepare(`
+          UPDATE videos
+          SET status = 'draft_created',
+              wp_post_id = ?,
+              wp_draft_url = ?
+          WHERE youtube_id = ?
+        `).run(wpPostId, wpDraftUrl, yId);
+
+        results.push({
+          youtubeId: yId,
+          success: true,
+          wpPostId,
+          wpDraftUrl,
+        });
+      } catch (err) {
+        console.error(`Error processing video ${yId}:`, err);
+        results.push({
+          youtubeId: yId,
+          success: false,
+          error: err.message,
+        });
+      }
+    }
+
+    res.json({ results });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/* ---------------- static files & SPA fallback ---------------- */
+
+app.get("/login.html", (req, res) => res.sendFile(path.join(PUBLIC_DIR, "login.html")));
+app.use(express.static(PUBLIC_DIR));
+
+app.get("*", auth.requireAuth({ redirectToLogin: true }), (req, res, next) => {
+  if (req.path.startsWith("/api/")) return next();
+  const indexPath = path.join(PUBLIC_DIR, "index.html");
+  res.sendFile(indexPath, (err) => {
+    if (err) next();
+  });
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Electric Duo control center running on port ${PORT}`);
+  console.log(`Electric Duo Command Center running on port ${PORT}`);
 });

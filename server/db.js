@@ -7,10 +7,12 @@ const Database = require("better-sqlite3");
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "..", "data");
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
-const db = new Database(path.join(DATA_DIR, "control-center.sqlite"));
-db.pragma("journal_mode = WAL");
+// 1. Control Center DB (Users, Sessions, Plan Checklist Events, KPIs)
+const controlDbPath = path.join(DATA_DIR, "control-center.sqlite");
+const controlDb = new Database(controlDbPath);
+controlDb.pragma("journal_mode = WAL");
 
-db.exec(`
+controlDb.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -26,10 +28,6 @@ db.exec(`
     expires_at TEXT NOT NULL
   );
 
-  -- Append-only log. Current state of a task in a given period is the
-  -- most recent event for that (task_id, period_key) pair. This is what
-  -- gives an actual audit trail of who checked/unchecked what, and when —
-  -- nothing is ever overwritten.
   CREATE TABLE IF NOT EXISTS task_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id TEXT NOT NULL,
@@ -64,4 +62,61 @@ db.exec(`
   );
 `);
 
-module.exports = db;
+// 2. Article Generator DB (YouTube Videos Catalog, Content Templates, App Settings)
+const articleDbPath = path.join(DATA_DIR, "database.sqlite");
+
+// Auto-seed pre-synced database if it doesn't exist in DATA_DIR
+if (!fs.existsSync(articleDbPath)) {
+  const seedPath = path.join(__dirname, "..", "seed", "database.sqlite");
+  if (fs.existsSync(seedPath)) {
+    try {
+      fs.copyFileSync(seedPath, articleDbPath);
+      console.log("Seeded database.sqlite copied to DATA_DIR.");
+    } catch (e) {
+      console.warn("Could not copy seed database.sqlite:", e.message);
+    }
+  }
+}
+
+const articleDb = new Database(articleDbPath);
+articleDb.pragma("journal_mode = WAL");
+
+articleDb.exec(`
+  CREATE TABLE IF NOT EXISTS videos (
+    youtube_id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    description TEXT,
+    published_at DATETIME NOT NULL,
+    thumbnail_url TEXT,
+    duration TEXT,
+    content_type TEXT DEFAULT 'Review',
+    custom_notes TEXT,
+    status TEXT DEFAULT 'unprocessed',
+    wp_post_id INTEGER,
+    wp_draft_url TEXT,
+    last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS content_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT,
+    prompt_template TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_videos_published_at ON videos(published_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
+`);
+
+// Compatibility layer
+controlDb.controlDb = controlDb;
+controlDb.articleDb = articleDb;
+
+module.exports = controlDb;
