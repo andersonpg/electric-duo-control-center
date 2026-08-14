@@ -3,6 +3,7 @@ import {
   X,
   RefreshCw,
   ExternalLink,
+  CheckCircle,
   CheckCircle2,
   AlertTriangle,
   XCircle,
@@ -166,10 +167,15 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                   </div>
 
                   <div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-sm font-extrabold text-white">
                         {evaluation.health_tier || (isHealthy ? "Strong Performer" : "Optimization Opportunity")}
                       </span>
+                      {metrics.isLiveStudioData && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-[10px] font-bold text-emerald-400 uppercase tracking-wider">
+                          <CheckCircle className="w-3 h-3" /> Live Studio Data
+                        </span>
+                      )}
                       <span className="text-[10px] text-slate-500">
                         · Audited {new Date(updatedAt).toLocaleDateString()}
                       </span>

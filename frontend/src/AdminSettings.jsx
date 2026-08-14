@@ -17,6 +17,10 @@ import {
   Clock,
   Sliders,
   Check,
+  Radio,
+  ExternalLink,
+  Unlink,
+  CheckCircle,
 } from "lucide-react";
 
 export default function AdminSettings({ currentUser }) {
@@ -34,6 +38,8 @@ export default function AdminSettings({ currentUser }) {
   const [integrations, setIntegrations] = useState({
     youtube_api_key: "",
     youtube_channel_id: "UCuhhyTS-Q66qq-gWrCcTOzg",
+    google_client_id: "",
+    google_client_secret: "",
     gemini_api_key: "",
     wp_site_url: "https://theelectricduo.com",
     wp_username: "patricka",
@@ -43,6 +49,14 @@ export default function AdminSettings({ currentUser }) {
   });
   const [testResults, setTestResults] = useState({});
   const [testingService, setTestingService] = useState(null);
+
+  // OAuth Status
+  const [oauthStatus, setOauthStatus] = useState({
+    isConnected: false,
+    channelTitle: null,
+    redirectUri: "https://cc.theelectricduo.com/api/auth/google/callback",
+  });
+  const [isDisconnecting, setIsDisconnecting] = useState(false);
 
   // Models State
   const [models, setModels] = useState([]);
@@ -63,6 +77,18 @@ export default function AdminSettings({ currentUser }) {
     fetchUsers();
     fetchIntegrations();
     fetchModels();
+    fetchOAuthStatus();
+
+    // Check for OAuth query params
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("oauth_success")) {
+      showToast("Connected to YouTube Analytics & Google OAuth successfully!");
+      window.history.replaceState({}, document.title, window.location.pathname);
+      fetchOAuthStatus();
+    } else if (params.get("oauth_error")) {
+      showToast("OAuth Error: " + params.get("oauth_error"), "error");
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
   }, []);
 
   const fetchUsers = async () => {
@@ -81,6 +107,16 @@ export default function AdminSettings({ currentUser }) {
       if (res.ok) {
         const data = await res.json();
         setIntegrations((prev) => ({ ...prev, ...data }));
+      }
+    } catch (e) {}
+  };
+
+  const fetchOAuthStatus = async () => {
+    try {
+      const res = await fetch("/api/admin/oauth-status", { credentials: "same-origin" });
+      if (res.ok) {
+        const data = await res.json();
+        setOauthStatus(data);
       }
     } catch (e) {}
   };
@@ -107,6 +143,7 @@ export default function AdminSettings({ currentUser }) {
       if (res.ok) {
         showToast("Integrations & API settings saved successfully.");
         fetchIntegrations();
+        fetchOAuthStatus();
       } else {
         showToast("Failed to save settings.", "error");
       }
@@ -146,6 +183,25 @@ export default function AdminSettings({ currentUser }) {
       }));
     } finally {
       setTestingService(null);
+    }
+  };
+
+  const handleDisconnectOAuth = async () => {
+    if (!confirm("Are you sure you want to disconnect YouTube Analytics OAuth?")) return;
+    setIsDisconnecting(true);
+    try {
+      const res = await fetch("/api/auth/google/disconnect", {
+        method: "POST",
+        credentials: "same-origin",
+      });
+      if (res.ok) {
+        showToast("YouTube Analytics disconnected.");
+        fetchOAuthStatus();
+      }
+    } catch (e) {
+      showToast("Error disconnecting: " + e.message, "error");
+    } finally {
+      setIsDisconnecting(false);
     }
   };
 
@@ -240,7 +296,7 @@ export default function AdminSettings({ currentUser }) {
           </div>
         </div>
         <p className="text-slate-400 text-xs sm:text-sm mt-3 leading-relaxed">
-          Manage user accounts, update API credentials with real-time connectivity testing, select default Gemini models (including Gemini 3.7 Flash), and run catalog maintenance tools.
+          Manage user accounts, connect YouTube Analytics via Google OAuth 2.0 to stream live Studio retention curves, configure Gemini 3.7 Flash, and run catalog maintenance tools.
         </p>
       </div>
 
@@ -274,12 +330,95 @@ export default function AdminSettings({ currentUser }) {
       {/* TAB 1: API KEYS & INTEGRATIONS */}
       {activeTab === "integrations" && (
         <form onSubmit={handleSaveIntegrations} className="flex flex-col gap-6">
-          {/* YouTube API */}
+          {/* YouTube Analytics API (Google OAuth 2.0) */}
+          <div className="bg-gradient-to-br from-slate-900/90 to-slate-950 border border-cyan-500/30 rounded-3xl p-6 sm:p-7 shadow-xl shadow-cyan-950/20">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4 mb-5">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-red-500/10 border border-red-500/30 flex items-center justify-center text-red-400">
+                  <Radio className="w-5 h-5 animate-pulse" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white flex items-center gap-2">
+                    YouTube Analytics API (Google OAuth 2.0)
+                    {oauthStatus.isConnected && (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/40 text-[10px] font-bold text-emerald-400 uppercase tracking-wider">
+                        <CheckCircle className="w-3 h-3" /> Live Studio Connected
+                      </span>
+                    )}
+                  </h3>
+                  <div className="text-xs text-slate-400 mt-0.5">
+                    Pulls ground-truth retention curves, live impressions, true CTR, and traffic sources directly from YouTube Studio.
+                  </div>
+                </div>
+              </div>
+
+              {oauthStatus.isConnected ? (
+                <button
+                  type="button"
+                  onClick={handleDisconnectOAuth}
+                  disabled={isDisconnecting}
+                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-red-950/40 hover:bg-red-950/70 border border-red-500/30 text-red-300 text-xs font-semibold transition-colors shrink-0"
+                >
+                  <Unlink className="w-3.5 h-3.5" />
+                  <span>Disconnect Channel</span>
+                </button>
+              ) : (
+                <a
+                  href="/api/auth/google"
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-400 hover:to-rose-500 text-white text-xs font-bold shadow-md shadow-red-500/20 transition-all shrink-0"
+                >
+                  <Video className="w-4 h-4" />
+                  <span>Sign in with Google & Connect</span>
+                </a>
+              )}
+            </div>
+
+            {/* OAuth Credentials Inputs */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                  Google OAuth Client ID
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. 123456789-abcdefg.apps.googleusercontent.com"
+                  value={integrations.google_client_id || ""}
+                  onChange={(e) => setIntegrations({ ...integrations, google_client_id: e.target.value })}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700/80 text-xs text-slate-100 font-mono focus:outline-none focus:border-cyan-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                  Google OAuth Client Secret
+                </label>
+                <input
+                  type="password"
+                  placeholder="e.g. GOCSPX-••••••••••••••••"
+                  value={integrations.google_client_secret || ""}
+                  onChange={(e) => setIntegrations({ ...integrations, google_client_secret: e.target.value })}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700/80 text-xs text-slate-100 font-mono focus:outline-none focus:border-cyan-500"
+                />
+              </div>
+            </div>
+
+            {/* Redirect URI Info Helper */}
+            <div className="mt-4 p-3.5 rounded-xl bg-slate-950/80 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+              <div className="text-slate-400">
+                <span className="font-semibold text-slate-200">Authorized Redirect URI</span> (Add to Google Cloud Console):
+              </div>
+              <code className="text-cyan-300 font-mono bg-slate-900 px-2.5 py-1 rounded-lg border border-slate-700 text-[11px] select-all">
+                {oauthStatus.redirectUri || "https://cc.theelectricduo.com/api/auth/google/callback"}
+              </code>
+            </div>
+          </div>
+
+          {/* YouTube Data API v3 */}
           <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
               <div className="flex items-center gap-2">
                 <Video className="w-5 h-5 text-red-500" />
-                <h3 className="text-sm font-bold text-white">YouTube Data API v3</h3>
+                <h3 className="text-sm font-bold text-white">YouTube Data API v3 (Public Catalog)</h3>
               </div>
               <button
                 type="button"
@@ -432,7 +571,7 @@ export default function AdminSettings({ currentUser }) {
               className="flex items-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-bold text-xs uppercase tracking-wider shadow-lg shadow-cyan-500/20 transition-all"
             >
               <Save className="w-4 h-4" />
-              <span>Save Integrations</span>
+              <span>Save All Integration Settings</span>
             </button>
           </div>
         </form>

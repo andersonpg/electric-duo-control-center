@@ -482,6 +482,55 @@ app.post("/api/audit/:youtubeId", auth.requireAuth(), async (req, res) => {
   }
 });
 
+/* ---------------- Google OAuth & YouTube Analytics endpoints ---------------- */
+
+const youtubeAnalytics = require("./youtube-analytics");
+
+app.get("/api/auth/google", auth.requireAuth(), (req, res) => {
+  try {
+    const url = youtubeAnalytics.generateAuthUrl();
+    res.redirect(url);
+  } catch (error) {
+    res.status(400).send(`<html><body style="background:#020617;color:#f87171;font-family:sans-serif;padding:40px;"><h2>Google OAuth Configuration Error</h2><p>${error.message}</p><a href="/?module=admin" style="color:#38bdf8;">Return to Admin Settings</a></body></html>`);
+  }
+});
+
+app.get("/api/auth/google/callback", async (req, res) => {
+  const { code, error } = req.query;
+  if (error) {
+    return res.redirect(`/?module=admin&oauth_error=${encodeURIComponent(error)}`);
+  }
+  if (!code) {
+    return res.redirect(`/?module=admin&oauth_error=no_code`);
+  }
+
+  try {
+    await youtubeAnalytics.handleAuthCallback(code);
+    res.redirect(`/?module=admin&oauth_success=true`);
+  } catch (err) {
+    console.error("OAuth callback error:", err);
+    res.redirect(`/?module=admin&oauth_error=${encodeURIComponent(err.message)}`);
+  }
+});
+
+app.post("/api/auth/google/disconnect", auth.requireAuth(), (req, res) => {
+  try {
+    youtubeAnalytics.disconnectOAuth();
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/admin/oauth-status", auth.requireAuth(), async (req, res) => {
+  try {
+    const status = await youtubeAnalytics.getOAuthStatus();
+    res.json(status);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 /* ---------------- Admin & Settings endpoints ---------------- */
 
 const bcrypt = require("bcryptjs");

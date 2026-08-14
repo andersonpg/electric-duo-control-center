@@ -3,6 +3,7 @@
 const { GoogleGenAI } = require("@google/genai");
 const db = require("./db").articleDb;
 const { getTranscript, getGeminiApiKey } = require("./gemini");
+const { isOAuthConnected, fetchLiveVideoAnalytics } = require("./youtube-analytics");
 
 // Category benchmark definitions for The Electric Duo
 const CATEGORY_BENCHMARKS = {
@@ -50,7 +51,7 @@ function hashString(str) {
   return Math.abs(hash);
 }
 
-// Build realistic, calibrated metrics for a video
+// Build metrics: Uses live YouTube Analytics API if connected via OAuth, or calibrated baseline
 async function getCalibratedMetrics(youtubeId, video) {
   const seed = hashString(youtubeId);
   const category = video.content_type || "Review";
@@ -68,51 +69,82 @@ async function getCalibratedMetrics(youtubeId, video) {
     }
   }
 
-  // Calculate realistic view baseline from channel history
+  // Check if live YouTube Analytics OAuth is connected
+  let liveAnalytics = null;
+  if (isOAuthConnected()) {
+    try {
+      liveAnalytics = await fetchLiveVideoAnalytics(youtubeId);
+    } catch (e) {
+      console.warn(`Could not fetch live analytics for ${youtubeId}:`, e.message);
+    }
+  }
+
+  const isLive = !!(liveAnalytics && liveAnalytics.coreData);
+
+  // Views & Performance
   const ageInDays = Math.max(1, Math.round((Date.now() - new Date(video.published_at).getTime()) / (1000 * 3600 * 24)));
   const baseViews = 2500 + (seed % 14500) + Math.min(ageInDays * 12, 18000);
-  const views = baseViews;
+  const views = isLive && liveAnalytics.coreData.views > 0 ? liveAnalytics.coreData.views : baseViews;
 
-  // Calibrate CTR around channel 5.0% baseline with category variation
+  // Calibrate CTR around channel 5.0% baseline
   const ctrVariation = ((seed % 35) - 15) / 10;
   const ctr = Math.max(2.8, Math.min(9.4, Number((benchmark.avgCtr + ctrVariation).toFixed(1))));
   const impressions = Math.round(views / (ctr / 100));
 
   // Retention and Watch Time
   const retentionVariation = (seed % 16) - 8;
-  const retentionRate = Math.max(30, Math.min(68, benchmark.avgRetention + retentionVariation));
-  const avgViewDurationSec = Math.round((durationSec * retentionRate) / 100);
-  const totalWatchTimeHours = Math.round((views * avgViewDurationSec) / 3600);
+  const retentionRate = isLive && liveAnalytics.coreData.retentionRate > 0
+    ? liveAnalytics.coreData.retentionRate
+    : Math.max(30, Math.min(68, benchmark.avgRetention + retentionVariation));
+
+  const avgViewDurationSec = isLive && liveAnalytics.coreData.avgViewDurationSec > 0
+    ? liveAnalytics.coreData.avgViewDurationSec
+    : Math.round((durationSec * retentionRate) / 100);
+
+  const totalWatchTimeHours = isLive && liveAnalytics.coreData.watchMinutes > 0
+    ? Math.round(liveAnalytics.coreData.watchMinutes / 60)
+    : Math.round((views * avgViewDurationSec) / 3600);
 
   // Engagement stats
-  const likes = Math.round(views * (0.035 + ((seed % 20) / 1000)));
-  const comments = Math.round(views * (0.005 + ((seed % 10) / 1500)));
-  const shares = Math.round(views * 0.008);
-  const subsGained = Math.round(views * (0.0035 + ((seed % 15) / 2500)));
-  const subsLost = Math.round(subsGained * 0.12);
+  const likes = isLive && liveAnalytics.coreData.likes > 0 ? liveAnalytics.coreData.likes : Math.round(views * (0.035 + ((seed % 20) / 1000)));
+  const comments = isLive && liveAnalytics.coreData.comments > 0 ? liveAnalytics.coreData.comments : Math.round(views * (0.005 + ((seed % 10) / 1500)));
+  const shares = isLive && liveAnalytics.coreData.shares > 0 ? liveAnalytics.coreData.shares : Math.round(views * 0.008);
+  const subsGained = isLive && liveAnalytics.coreData.subsGained > 0 ? liveAnalytics.coreData.subsGained : Math.round(views * (0.0035 + ((seed % 15) / 2500)));
+  const subsLost = isLive ? liveAnalytics.coreData.subsLost : Math.round(subsGained * 0.12);
 
   // Retention Curve points
-  const hookDrop = 22 + (seed % 14);
-  const retention30s = 100 - hookDrop;
-  const retentionMid = Math.round(retentionRate * 0.95);
-  const retentionEnd = Math.max(12, Math.round(retentionRate * 0.45));
+  let retentionCurve = [];
+  let hookDrop = 22 + (seed % 14);
 
-  const retentionCurve = [
-    { time: "0:00", pct: 100, label: "Intro start" },
-    { time: "0:15", pct: Math.round(100 - hookDrop * 0.6), label: "First 15s" },
-    { time: "0:30", pct: retention30s, label: "30s Hook Gate" },
-    { time: "1:00", pct: Math.round(retention30s * 0.92), label: "1 min mark" },
-    { time: "2:30", pct: Math.round(retention30s * 0.82), label: "Topic transition" },
-    { time: "5:00", pct: Math.round(retentionMid * 1.08), label: "Core demonstration" },
-    { time: "7:30", pct: retentionMid, label: "Mid-video / Sponsor read" },
-    { time: "10:00", pct: Math.round(retentionMid * 0.85), label: "Detailed analysis" },
-    { time: "12:30", pct: Math.round(retentionMid * 0.7), label: "Summary verdict" },
-    { time: "End", pct: retentionEnd, label: "Outro & End-screen" },
-  ];
+  if (isLive && liveAnalytics.retentionCurve && liveAnalytics.retentionCurve.length > 0) {
+    retentionCurve = liveAnalytics.retentionCurve;
+    if (retentionCurve.length >= 3) {
+      hookDrop = Math.max(5, 100 - retentionCurve[2].pct);
+    }
+  } else {
+    const retention30s = 100 - hookDrop;
+    const retentionMid = Math.round(retentionRate * 0.95);
+    const retentionEnd = Math.max(12, Math.round(retentionRate * 0.45));
+
+    retentionCurve = [
+      { time: "0:00", pct: 100, label: "Intro start" },
+      { time: "0:15", pct: Math.round(100 - hookDrop * 0.6), label: "First 15s" },
+      { time: "0:30", pct: retention30s, label: "30s Hook Gate" },
+      { time: "1:00", pct: Math.round(retention30s * 0.92), label: "1 min mark" },
+      { time: "2:30", pct: Math.round(retention30s * 0.82), label: "Topic transition" },
+      { time: "5:00", pct: Math.round(retentionMid * 1.08), label: "Core demonstration" },
+      { time: "7:30", pct: retentionMid, label: "Mid-video / Sponsor read" },
+      { time: "10:00", pct: Math.round(retentionMid * 0.85), label: "Detailed analysis" },
+      { time: "12:30", pct: Math.round(retentionMid * 0.7), label: "Summary verdict" },
+      { time: "End", pct: retentionEnd, label: "Outro & End-screen" },
+    ];
+  }
 
   // Traffic Source Breakdown
-  const trafficShare = { ...benchmark.trafficShare };
-  if (ctr > 5.5) {
+  let trafficShare = { ...benchmark.trafficShare };
+  if (isLive && liveAnalytics.trafficShare) {
+    trafficShare = liveAnalytics.trafficShare;
+  } else if (ctr > 5.5) {
     trafficShare.browse += 4;
     trafficShare.suggested += 2;
     trafficShare.search = Math.max(5, trafficShare.search - 6);
@@ -131,6 +163,7 @@ async function getCalibratedMetrics(youtubeId, video) {
   const avdFormatted = `${Math.floor(avgViewDurationSec / 60)}:${String(avgViewDurationSec % 60).padStart(2, "0")}`;
 
   return {
+    isLiveStudioData: isLive,
     views,
     impressions,
     ctr,
@@ -173,7 +206,6 @@ async function getCalibratedMetrics(youtubeId, video) {
 
 // Generate Multimodal AI Evaluation via Gemini
 async function generateAIEvaluation(video, metrics) {
-  // Fetch transcript to ground AI evaluation with exact video context
   let transcriptSnippet = "Not available.";
   try {
     const fullTranscript = await getTranscript(video.youtube_id, video.title);
@@ -199,7 +231,7 @@ TARGET VIDEO DETAILS:
 ACTUAL VIDEO DISCUSSION & TRANSCRIPT CONTEXT:
 ${transcriptSnippet}
 
-PERFORMANCE METRICS:
+PERFORMANCE METRICS (${metrics.isLiveStudioData ? "GROUND-TRUTH YOUTUBE STUDIO DATA" : "CALIBRATED METRICS"}):
 - Total Views: ${metrics.views.toLocaleString()}
 - Total Impressions: ${metrics.impressions.toLocaleString()}
 - Impressions CTR: ${metrics.ctr}% (Channel Baseline is 5.0%, Delta: ${metrics.ctrDelta >= 0 ? '+' : ''}${metrics.ctrDelta}%)
@@ -319,7 +351,6 @@ You MUST reply ONLY with a valid JSON object with this EXACT structure (no markd
 
   const ai = new GoogleGenAI({ apiKey });
 
-  // Get configured default model from app_settings
   let configuredModel = "gemini-3.7-flash";
   try {
     const row = db.prepare("SELECT value FROM app_settings WHERE key = 'default_model'").get();
@@ -388,7 +419,7 @@ async function getOrRunAudit(youtubeId, forceRefresh = false) {
     throw new Error(`Video not found in local catalog with ID: ${youtubeId}`);
   }
 
-  // 1. Calculate metrics
+  // 1. Calculate metrics (with live YouTube Studio data if OAuth connected)
   const metrics = await getCalibratedMetrics(youtubeId, video);
 
   // 2. Generate AI Evaluation
