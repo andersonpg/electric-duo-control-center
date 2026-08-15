@@ -145,6 +145,12 @@ async function createWordPressDraft({ youtubeId, title, htmlContent, publishedAt
     },
   });
 
+  const wpPostId = postRes.data.id;
+  const wpDraftUrl = `${wpSiteUrl}/wp-admin/post.php?post=${wpPostId}&action=edit`;
+
+  return { wpPostId, wpDraftUrl };
+}
+
 async function uploadMediaFile(buffer, filename, mimeType = "image/jpeg") {
   const wpSiteUrl = (process.env.WP_SITE_URL || "https://theelectricduo.com").replace(/\/$/, "");
   const mediaEndpoint = `${wpSiteUrl}/wp-json/wp/v2/media`;
