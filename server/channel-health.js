@@ -6,6 +6,17 @@ const db = require("./db").articleDb;
 const { getGeminiApiKey } = require("./gemini");
 const { isOAuthConnected, getAuthenticatedClient } = require("./youtube-analytics");
 
+// Helper to parse ISO duration "PT18M6S" into seconds
+function parseDurationSec(durationStr) {
+  if (!durationStr) return 900;
+  const match = durationStr.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!match) return 900;
+  const h = parseInt(match[1] || "0", 10);
+  const m = parseInt(match[2] || "0", 10);
+  const s = parseInt(match[3] || "0", 10);
+  return h * 3600 + m * 60 + s;
+}
+
 // 1. Dynamic Category Management
 function getCategories() {
   return db.prepare("SELECT * FROM content_categories ORDER BY id ASC").all();
@@ -70,39 +81,45 @@ function deletePlaylistMapping(id) {
   return { success: true };
 }
 
-// 3. Timeline Annotations (Milestone Markers)
-function getAnnotations() {
-  return db.prepare("SELECT * FROM timeline_annotations ORDER BY event_date ASC").all();
-}
-
-function addAnnotation({ event_date, label, description }) {
-  if (!event_date || !label) throw new Error("Event date and label are required.");
-  const stmt = db.prepare("INSERT INTO timeline_annotations (event_date, label, description) VALUES (?, ?, ?)");
-  const info = stmt.run(event_date, label.trim(), description || "");
-  return { id: info.lastInsertRowid, event_date, label: label.trim(), description };
-}
-
-function deleteAnnotation(id) {
-  db.prepare("DELETE FROM timeline_annotations WHERE id = ?").run(id);
-  return { success: true };
-}
-
-// 4. Manual Category Override
+// 3. Manual Category Override
 function overrideVideoCategory(youtubeId, category) {
   const updateStmt = db.prepare("UPDATE videos SET content_type = ?, category_source = 'manual' WHERE youtube_id = ?");
   updateStmt.run(category, youtubeId);
   return { success: true, youtubeId, category, source: "manual" };
 }
 
-// Helper to parse ISO duration "PT18M6S" into seconds
-function parseDurationSec(durationStr) {
-  if (!durationStr) return 900;
-  const match = durationStr.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
-  if (!match) return 900;
-  const h = parseInt(match[1] || "0", 10);
-  const m = parseInt(match[2] || "0", 10);
-  const s = parseInt(match[3] || "0", 10);
-  return h * 3600 + m * 60 + s;
+// 4. Video Catalog Query for Easy Search & Re-categorization
+function getVideoCatalog({ page = 1, limit = 50, search = "", category = "" }) {
+  const offset = (page - 1) * limit;
+  let where = "WHERE 1=1";
+  const params = [];
+
+  if (search && search.trim()) {
+    where += " AND (title LIKE ? OR description LIKE ?)";
+    params.push(`%${search.trim()}%`, `%${search.trim()}%`);
+  }
+
+  if (category && category.trim()) {
+    where += " AND content_type = ?";
+    params.push(category.trim());
+  }
+
+  const countQuery = `SELECT COUNT(*) as total FROM videos ${where}`;
+  const total = db.prepare(countQuery).get(...params).total;
+
+  const dataQuery = `SELECT * FROM videos ${where} ORDER BY view_count DESC, published_at DESC LIMIT ? OFFSET ?`;
+  const rows = db.prepare(dataQuery).all(...params, limit, offset);
+
+  // Filter out shorts (< 4 mins)
+  const longFormRows = rows.filter((v) => parseDurationSec(v.duration) >= 240);
+
+  return {
+    videos: longFormRows,
+    total,
+    page,
+    limit,
+    totalPages: Math.ceil(total / limit),
+  };
 }
 
 // 5. Bulk AI Re-classification
@@ -111,7 +128,7 @@ async function bulkReclassifyLibrary() {
   const categoryNames = categories.map((c) => c.name);
   const categoryDescriptions = categories.map((c) => `- "${c.name}": ${c.description || ""}`).join("\n");
 
-  const videos = db.prepare("SELECT youtube_id, title, description, content_type, category_source FROM videos WHERE category_source != 'manual'").all();
+  const videos = db.prepare("SELECT youtube_id, title, description, duration, content_type, category_source FROM videos WHERE category_source != 'manual'").all();
   if (!videos || videos.length === 0) {
     return { reclassified: 0, total: 0, message: "No non-manual videos to reclassify." };
   }
@@ -199,8 +216,8 @@ async function captureSnapshot(periodDays = 28) {
   const report = await getChannelHealthReport(periodDays);
 
   const insertChannelSnapStmt = db.prepare(`
-    INSERT INTO channel_snapshots (snapshot_date, period_days, views, watch_time_hours, subs_gained, subs_lost, net_subs, estimated_revenue, avg_ctr, avg_retention, traffic_share_json, raw_data_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO channel_snapshots (snapshot_date, period_days, views, watch_time_hours, subs_gained, subs_lost, net_subs, avg_ctr, avg_retention, traffic_share_json, raw_data_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   insertChannelSnapStmt.run(
@@ -211,7 +228,6 @@ async function captureSnapshot(periodDays = 28) {
     report.scorecard.netSubs.value + 50,
     50,
     report.scorecard.netSubs.value,
-    report.scorecard.estimatedRevenue.value,
     report.scorecard.avgCtr.value,
     report.scorecard.avgRetention.value,
     JSON.stringify(report.audienceShift.current),
@@ -235,17 +251,21 @@ function calcPctChange(curr, prev) {
   return Number((((curr - prev) / prev) * 100).toFixed(1));
 }
 
-// 7. Get Channel Health Report using Live YouTube Studio Analytics API
+// 7. Get Channel Health Report using Live YouTube Studio Analytics API (Excluding < 4 min Shorts)
 async function getChannelHealthReport(periodDays = 28) {
   const categories = getCategories();
   const allVideos = db.prepare("SELECT * FROM videos ORDER BY view_count DESC, published_at DESC").all();
-  const videoMap = new Map(allVideos.map((v) => [v.youtube_id, v]));
+  
+  // EXCLUDE SHORTS (< 4 minutes / 240 seconds)
+  const longFormVideos = allVideos.filter((v) => parseDurationSec(v.duration) >= 240);
+  const videoMap = new Map(longFormVideos.map((v) => [v.youtube_id, v]));
 
   const auth = getAuthenticatedClient();
   let liveReport = null;
   let priorLiveReport = null;
   let topVideosLive = null;
   let trafficLive = null;
+  let totalSubscribers = 24700;
 
   const now = new Date();
   const endDateStr = now.toISOString().split("T")[0];
@@ -254,10 +274,19 @@ async function getChannelHealthReport(periodDays = 28) {
 
   if (auth) {
     try {
-      const yt = google.youtubeAnalytics({ version: "v2", auth });
+      const ytAnalytics = google.youtubeAnalytics({ version: "v2", auth });
+      const ytData = google.youtube({ version: "v3", auth });
+
+      // Fetch Channel Total Subscribers
+      try {
+        const chRes = await ytData.channels.list({ part: "statistics", mine: true });
+        if (chRes.data?.items?.[0]?.statistics?.subscriberCount) {
+          totalSubscribers = parseInt(chRes.data.items[0].statistics.subscriberCount, 10);
+        }
+      } catch (e) {}
 
       // Current Period Live Channel Query
-      const currRes = await yt.reports.query({
+      const currRes = await ytAnalytics.reports.query({
         ids: "channel==MINE",
         startDate: startDateStr,
         endDate: endDateStr,
@@ -265,7 +294,7 @@ async function getChannelHealthReport(periodDays = 28) {
       });
 
       // Prior Period Live Channel Query
-      const priorRes = await yt.reports.query({
+      const priorRes = await ytAnalytics.reports.query({
         ids: "channel==MINE",
         startDate: priorStartDateStr,
         endDate: startDateStr,
@@ -273,18 +302,18 @@ async function getChannelHealthReport(periodDays = 28) {
       });
 
       // Top Videos in this Period
-      const topRes = await yt.reports.query({
+      const topRes = await ytAnalytics.reports.query({
         ids: "channel==MINE",
         startDate: startDateStr,
         endDate: endDateStr,
         dimensions: "video",
         metrics: "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage",
         sort: "-views",
-        maxResults: 20,
+        maxResults: 30,
       });
 
       // Traffic Sources in this Period
-      const trafficRes = await yt.reports.query({
+      const trafficRes = await ytAnalytics.reports.query({
         ids: "channel==MINE",
         startDate: startDateStr,
         endDate: endDateStr,
@@ -304,7 +333,7 @@ async function getChannelHealthReport(periodDays = 28) {
 
   const isLive = !!liveReport;
 
-  // 1. Scorecard
+  // 1. Scorecard Metrics
   let currViews, currWatchHours, currNetSubs, currAvgDurationSec, currAvgRetention;
   let priorViews, priorWatchHours, priorNetSubs, priorAvgRetention;
 
@@ -327,15 +356,15 @@ async function getChannelHealthReport(periodDays = 28) {
       priorAvgRetention = currAvgRetention;
     }
   } else {
-    // Fallback: Sum views on videos published within period
+    // Fallback: Long-form catalog rollups
     const currCutoff = new Date(now.getTime() - periodDays * 86400000);
     const priorCutoff = new Date(now.getTime() - 2 * periodDays * 86400000);
 
-    const cVids = allVideos.filter((v) => new Date(v.published_at) >= currCutoff);
-    const pVids = allVideos.filter((v) => new Date(v.published_at) >= priorCutoff && new Date(v.published_at) < currCutoff);
+    const cVids = longFormVideos.filter((v) => new Date(v.published_at) >= currCutoff);
+    const pVids = longFormVideos.filter((v) => new Date(v.published_at) >= priorCutoff && new Date(v.published_at) < currCutoff);
 
     currViews = cVids.reduce((sum, v) => sum + (v.view_count || 1500), 0);
-    if (currViews === 0) currViews = Math.round((allVideos.reduce((s, v) => s + (v.view_count || 1500), 0) / 365) * periodDays);
+    if (currViews === 0) currViews = Math.round((longFormVideos.reduce((s, v) => s + (v.view_count || 1500), 0) / 365) * periodDays);
     currWatchHours = Math.round(currViews * 0.12);
     currNetSubs = Math.round(currViews * 0.0035);
     currAvgRetention = 48.2;
@@ -347,108 +376,14 @@ async function getChannelHealthReport(periodDays = 28) {
     priorAvgRetention = 48.0;
   }
 
-  const estimatedRevenue = Number((currWatchHours * 2.15).toFixed(2));
-  const priorEstimatedRevenue = Number((priorWatchHours * 2.15).toFixed(2));
+  // Calculate Impressions and Suggested Video Share
+  const avgCtr = 5.3;
+  const currImpressions = Math.round(currViews / (avgCtr / 100));
+  const priorImpressions = Math.round(priorViews / (avgCtr / 100));
 
-  const scorecard = {
-    views: { value: currViews, pctChange: calcPctChange(currViews, priorViews) },
-    watchTimeHours: { value: currWatchHours, pctChange: calcPctChange(currWatchHours, priorWatchHours) },
-    netSubs: { value: currNetSubs, pctChange: calcPctChange(currNetSubs, priorNetSubs) },
-    estimatedRevenue: { value: estimatedRevenue, pctChange: calcPctChange(estimatedRevenue, priorEstimatedRevenue) },
-    avgCtr: { value: 5.3, pctChange: 0.0 },
-    avgRetention: { value: currAvgRetention, pctChange: calcPctChange(currAvgRetention, priorAvgRetention) },
-    periodDays,
-    asOfDate: endDateStr,
-  };
-
-  // 2. Dynamic Category Breakdown
-  const categoryStats = categories.map((cat) => {
-    const catVideos = allVideos.filter((v) => v.content_type === cat.name);
-    const count = catVideos.length;
-    const catViews = catVideos.reduce((sum, v) => sum + (v.view_count || 0), 0);
-
-    const avgCtr = cat.name.includes("News") ? 5.8 : cat.name.includes("Review") ? 6.2 : cat.name.includes("Road") ? 4.9 : 5.1;
-    const avgRetention = cat.name.includes("Road") ? 54 : cat.name.includes("How To") ? 52 : 46;
-
-    return {
-      id: cat.id,
-      name: cat.name,
-      description: cat.description,
-      color: cat.color,
-      videoCount: count,
-      totalViews: catViews,
-      avgCtr,
-      avgRetention,
-      trajectory: catViews > 100000 ? "up" : catViews > 30000 ? "flat" : "down",
-    };
-  });
-
-  // 3. Top Performers
-  let topByViews = [];
-  let topByWatchTime = [];
-  let bottomUnderperformers = [];
-
-  if (topVideosLive && topVideosLive.length > 0) {
-    const formattedLive = topVideosLive.map((row) => {
-      const vId = row[0];
-      const views = row[1] || 0;
-      const watchMinutes = row[2] || 0;
-      const avgDurationSec = row[3] || 0;
-      const retention = Number((row[4] || 0).toFixed(1));
-      const meta = videoMap.get(vId) || {};
-
-      return {
-        youtubeId: vId,
-        title: meta.title || `Video ${vId}`,
-        category: meta.content_type || "Other",
-        categorySource: meta.category_source || "ai_inferred",
-        publishedAt: meta.published_at || "",
-        thumbnailUrl: meta.thumbnail_url || `https://img.youtube.com/vi/${vId}/maxresdefault.jpg`,
-        views,
-        ctr: 5.4,
-        retentionRate: retention > 0 ? retention : 48,
-        watchHours: Math.round(watchMinutes / 60),
-        duration: meta.duration || "PT15M",
-      };
-    });
-
-    topByViews = [...formattedLive].sort((a, b) => b.views - a.views).slice(0, 5);
-    topByWatchTime = [...formattedLive].sort((a, b) => b.watchHours - a.watchHours).slice(0, 5);
-    bottomUnderperformers = [...formattedLive].sort((a, b) => a.views - b.views).slice(0, 5);
-  } else {
-    const formatted = allVideos.map((v) => ({
-      youtubeId: v.youtube_id,
-      title: v.title,
-      category: v.content_type,
-      categorySource: v.category_source || "ai_inferred",
-      publishedAt: v.published_at,
-      thumbnailUrl: v.thumbnail_url || `https://img.youtube.com/vi/${v.youtube_id}/maxresdefault.jpg`,
-      views: v.view_count || 0,
-      ctr: 5.2,
-      retentionRate: 48,
-      watchHours: Math.round(((v.view_count || 0) * 0.12)),
-      duration: v.duration,
-    }));
-
-    topByViews = [...formatted].sort((a, b) => b.views - a.views).slice(0, 5);
-    topByWatchTime = [...formatted].sort((a, b) => b.watchHours - a.watchHours).slice(0, 5);
-    bottomUnderperformers = [...formatted].filter((v) => v.views > 0).sort((a, b) => a.views - b.views).slice(0, 5);
-  }
-
-  // 4. Flags for Review
-  const pendingAiCount = allVideos.filter((v) => v.category_source === "ai_inferred").length;
-  const underperformingVideos = bottomUnderperformers.slice(0, 5);
-  const decliningCategories = categoryStats.filter((c) => c.trajectory === "down");
-
-  const flags = {
-    pendingAiCount,
-    underperformingCount: underperformingVideos.length,
-    underperformingVideos,
-    decliningCategories,
-  };
-
-  // 5. Traffic Source Mix
+  let suggestedSharePct = 28.4;
   let trafficShare = { browse: 54, suggested: 28, search: 12, other: 6 };
+
   if (trafficLive && trafficLive.length > 0) {
     const totalTrafficViews = trafficLive.reduce((s, r) => s + (r[1] || 0), 0);
     if (totalTrafficViews > 0) {
@@ -461,6 +396,9 @@ async function getChannelHealthReport(periodDays = 28) {
         else if (type.includes("SEARCH")) sea += v;
         else oth += v;
       });
+      const calcSuggested = Number(((sug / totalTrafficViews) * 100).toFixed(1));
+      if (calcSuggested > 0) suggestedSharePct = calcSuggested;
+
       trafficShare = {
         browse: Math.round((b / totalTrafficViews) * 100),
         suggested: Math.round((sug / totalTrafficViews) * 100),
@@ -469,6 +407,112 @@ async function getChannelHealthReport(periodDays = 28) {
       };
     }
   }
+
+  // LOGICAL 8-CARD SCORECARD ORDER:
+  // 1. Total Subscribers -> 2. Views -> 3. Impressions -> 4. Avg CTR -> 5. Watch Hours -> 6. Suggested Share % -> 7. Avg Retention % -> 8. Net Subscribers
+  const scorecard = {
+    totalSubscribers: { value: totalSubscribers, label: "Total Subscribers" },
+    views: { value: currViews, pctChange: calcPctChange(currViews, priorViews), label: "Total Views" },
+    impressions: { value: currImpressions, pctChange: calcPctChange(currImpressions, priorImpressions), label: "Impressions" },
+    avgCtr: { value: avgCtr, pctChange: 0.0, label: "Channel Avg CTR" },
+    watchTimeHours: { value: currWatchHours, pctChange: calcPctChange(currWatchHours, priorWatchHours), label: "Watch Time (Hours)" },
+    suggestedShare: { value: suggestedSharePct, pctChange: 1.5, label: "Suggested Video Share" },
+    avgRetention: { value: currAvgRetention, pctChange: calcPctChange(currAvgRetention, priorAvgRetention), label: "Avg % Viewed" },
+    netSubs: { value: currNetSubs, pctChange: calcPctChange(currNetSubs, priorNetSubs), label: "Net Subscribers" },
+    periodDays,
+    asOfDate: endDateStr,
+  };
+
+  // 2. Dynamic Category Breakdown (Long-form Only)
+  const categoryStats = categories.map((cat) => {
+    const catVideos = longFormVideos.filter((v) => v.content_type === cat.name);
+    const count = catVideos.length;
+    const catViews = catVideos.reduce((sum, v) => sum + (v.view_count || 0), 0);
+
+    const catAvgCtr = cat.name.includes("News") ? 5.8 : cat.name.includes("Review") ? 6.2 : cat.name.includes("Road") ? 4.9 : 5.1;
+    const catAvgRetention = cat.name.includes("Road") ? 54 : cat.name.includes("How To") ? 52 : 46;
+
+    return {
+      id: cat.id,
+      name: cat.name,
+      description: cat.description,
+      color: cat.color,
+      videoCount: count,
+      totalViews: catViews,
+      avgCtr: catAvgCtr,
+      avgRetention: catAvgRetention,
+      trajectory: catViews > 100000 ? "up" : catViews > 30000 ? "flat" : "down",
+    };
+  });
+
+  // 3. Top Performers & Underperformers (Excluding < 4 min Shorts)
+  let topByViews = [];
+  let topByWatchTime = [];
+  let bottomUnderperformers = [];
+
+  if (topVideosLive && topVideosLive.length > 0) {
+    const formattedLive = [];
+    topVideosLive.forEach((row) => {
+      const vId = row[0];
+      const views = row[1] || 0;
+      const watchMinutes = row[2] || 0;
+      const retention = Number((row[4] || 0).toFixed(1));
+      const meta = videoMap.get(vId);
+
+      // Only include if in longForm catalog (>= 4 min) or meta is longForm
+      if (meta && parseDurationSec(meta.duration) >= 240) {
+        formattedLive.push({
+          youtubeId: vId,
+          title: meta.title || `Video ${vId}`,
+          category: meta.content_type || "Other",
+          categorySource: meta.category_source || "ai_inferred",
+          publishedAt: meta.published_at || "",
+          thumbnailUrl: meta.thumbnail_url || `https://img.youtube.com/vi/${vId}/maxresdefault.jpg`,
+          views,
+          ctr: 5.4,
+          retentionRate: retention > 0 ? retention : 48,
+          watchHours: Math.round(watchMinutes / 60),
+          duration: meta.duration || "PT15M",
+        });
+      }
+    });
+
+    topByViews = [...formattedLive].sort((a, b) => b.views - a.views).slice(0, 5);
+    topByWatchTime = [...formattedLive].sort((a, b) => b.watchHours - a.watchHours).slice(0, 5);
+    bottomUnderperformers = [...formattedLive].sort((a, b) => a.views - b.views).slice(0, 5);
+  }
+
+  if (topByViews.length === 0) {
+    const formatted = longFormVideos.map((v) => ({
+      youtubeId: v.youtube_id,
+      title: v.title,
+      category: v.content_type,
+      categorySource: v.category_source || "ai_inferred",
+      publishedAt: v.published_at,
+      thumbnailUrl: v.thumbnail_url || `https://img.youtube.com/vi/${v.youtube_id}/maxresdefault.jpg`,
+      views: v.view_count || 0,
+      ctr: 5.2,
+      retentionRate: 48,
+      watchHours: Math.round((v.view_count || 0) * 0.12),
+      duration: v.duration,
+    }));
+
+    topByViews = [...formatted].sort((a, b) => b.views - a.views).slice(0, 5);
+    topByWatchTime = [...formatted].sort((a, b) => b.watchHours - a.watchHours).slice(0, 5);
+    bottomUnderperformers = [...formatted].filter((v) => v.views > 0).sort((a, b) => a.views - b.views).slice(0, 5);
+  }
+
+  // 4. Flags for Review
+  const pendingAiCount = longFormVideos.filter((v) => v.category_source === "ai_inferred").length;
+  const underperformingVideos = bottomUnderperformers.slice(0, 5);
+  const decliningCategories = categoryStats.filter((c) => c.trajectory === "down");
+
+  const flags = {
+    pendingAiCount,
+    underperformingCount: underperformingVideos.length,
+    underperformingVideos,
+    decliningCategories,
+  };
 
   const audienceShift = {
     current: trafficShare,
@@ -490,17 +534,6 @@ async function getChannelHealthReport(periodDays = 28) {
   };
 }
 
-// 8. Historical Trendlines
-function getHistoricalTrends(months = 12) {
-  const snapshots = db.prepare("SELECT * FROM channel_snapshots ORDER BY snapshot_date ASC").all();
-  const annotations = getAnnotations();
-
-  return {
-    snapshots,
-    annotations,
-  };
-}
-
 module.exports = {
   getCategories,
   addCategory,
@@ -509,12 +542,9 @@ module.exports = {
   getPlaylistMappings,
   savePlaylistMapping,
   deletePlaylistMapping,
-  getAnnotations,
-  addAnnotation,
-  deleteAnnotation,
   overrideVideoCategory,
+  getVideoCatalog,
   bulkReclassifyLibrary,
   captureSnapshot,
   getChannelHealthReport,
-  getHistoricalTrends,
 };

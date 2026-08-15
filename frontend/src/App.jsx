@@ -57,6 +57,13 @@ export default function App() {
     );
   }
 
+  const [selectedAuditId, setSelectedAuditId] = useState(null);
+
+  const handleSelectVideoForAudit = (youtubeId) => {
+    setSelectedAuditId(youtubeId);
+    handleModuleSwitch("audit");
+  };
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-cyan-500 selection:text-slate-950">
       {/* Master Top Navigation Bar */}
@@ -164,8 +171,19 @@ export default function App() {
       <main className="flex-1 w-full">
         {activeModule === "checklist" && <PlanChecklist currentUser={currentUser} />}
         {activeModule === "article" && <ArticleGenerator currentUser={currentUser} />}
-        {activeModule === "audit" && <VideoAudit currentUser={currentUser} />}
-        {activeModule === "channel" && <ChannelHealth currentUser={currentUser} />}
+        {activeModule === "audit" && (
+          <VideoAudit
+            currentUser={currentUser}
+            initialVideoId={selectedAuditId}
+            onClearInitialVideoId={() => setSelectedAuditId(null)}
+          />
+        )}
+        {activeModule === "channel" && (
+          <ChannelHealth
+            currentUser={currentUser}
+            onSelectVideoForAudit={handleSelectVideoForAudit}
+          />
+        )}
         {activeModule === "admin" && <AdminSettings currentUser={currentUser} />}
       </main>
     </div>

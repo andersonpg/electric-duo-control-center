@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import AuditReportModal from "./AuditReportModal";
 
-export default function VideoAudit({ currentUser }) {
+export default function VideoAudit({ currentUser, initialVideoId, onClearInitialVideoId }) {
   const [videos, setVideos] = useState([]);
   const [auditsSummary, setAuditsSummary] = useState({});
   const [searchQuery, setSearchQuery] = useState("");
@@ -27,6 +27,17 @@ export default function VideoAudit({ currentUser }) {
   useEffect(() => {
     fetchCatalogAndAudits();
   }, []);
+
+  useEffect(() => {
+    if (initialVideoId && videos.length > 0) {
+      const match = videos.find((v) => v.youtube_id === initialVideoId);
+      if (match) {
+        setSelectedVideo(match);
+        setIsModalOpen(true);
+      }
+      if (onClearInitialVideoId) onClearInitialVideoId();
+    }
+  }, [initialVideoId, videos]);
 
   const fetchCatalogAndAudits = async () => {
     setLoading(true);

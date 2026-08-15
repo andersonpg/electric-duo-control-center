@@ -126,12 +126,21 @@ async function generateArticle({ youtubeId, title, contentType, customNotes, mod
 
   const promptTemplate = templateRow ? templateRow.prompt_template : "Write an EV article based on transcript.";
 
+  let photosInstruction = "";
+  if (photos && Array.isArray(photos) && photos.length > 0) {
+    photosInstruction = `\nUPLOADED PHOTOS TO INCLUDE IN THE ARTICLE:
+${photos.map((p, idx) => `Photo ${idx + 1}: ${p.url ? `URL: ${p.url}` : ""}${p.name ? ` Filename: ${p.name}` : ""}`).join("\n")}
+Please embed these photos contextually within the article body using native WordPress figure blocks:
+<figure class="wp-block-image"><img src="[URL]" alt="[Descriptive Alt Text]" /><figcaption>[Helpful Caption]</figcaption></figure>
+`;
+  }
+
   // Step 4: Construct full prompt with real video transcript
   const fullPrompt = `${promptTemplate}
 
-USER CUSTOM NOTES / CONTEXT FOR THIS VIDEO:
+USER CUSTOM NOTES / ADDITIONAL INSTRUCTIONS FOR THIS ARTICLE:
 ${customNotes || "None provided."}
-
+${photosInstruction}
 TARGET VIDEO DETAILS:
 Title: ${title}
 YouTube Video ID: ${youtubeId}
@@ -140,9 +149,9 @@ REAL VIDEO TRANSCRIPT:
 ${transcript}
 
 CRITICAL MANDATES:
-1. You MUST craft the article based specifically on the transcript provided above.
+1. You MUST craft the article based specifically on the transcript and any custom user instructions provided above.
 2. Honor the persona: Lead writer for TheElectricDuo.com, first-person ("we" / "I"), enthusiastic EV peer.
-3. Output pure HTML suitable for WordPress Gutenberg editor (<h2>, <h3>, <p>, <ul>, <ol>, <strong>, <table>). Do NOT wrap in markdown backticks or \`\`\`html.
+3. Output pure HTML suitable for WordPress Gutenberg editor (<h2>, <h3>, <p>, <ul>, <ol>, <strong>, <table>, <figure>). Do NOT wrap in markdown backticks or \`\`\`html.
 4. ABSOLUTELY BANNED AI CLICHÉS: "delve", "game-changer", "testament", "unlock", "dive into", "revolutionize", "in conclusion".
 `;
 

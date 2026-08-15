@@ -145,10 +145,29 @@ async function createWordPressDraft({ youtubeId, title, htmlContent, publishedAt
     },
   });
 
-  const wpPostId = postRes.data.id;
-  const wpDraftUrl = `${wpSiteUrl}/wp-admin/post.php?post=${wpPostId}&action=edit`;
+async function uploadMediaFile(buffer, filename, mimeType = "image/jpeg") {
+  const wpSiteUrl = (process.env.WP_SITE_URL || "https://theelectricduo.com").replace(/\/$/, "");
+  const mediaEndpoint = `${wpSiteUrl}/wp-json/wp/v2/media`;
 
-  return { wpPostId, wpDraftUrl };
+  try {
+    const uploadRes = await axios.post(mediaEndpoint, buffer, {
+      headers: {
+        Authorization: getAuthHeader(),
+        "Content-Type": mimeType,
+        "Content-Disposition": `attachment; filename="${filename}"`,
+      },
+    });
+
+    if (uploadRes.data && uploadRes.data.source_url) {
+      return {
+        id: uploadRes.data.id,
+        url: uploadRes.data.source_url,
+      };
+    }
+  } catch (error) {
+    console.warn(`Media file upload attempt for ${filename} failed:`, error.response?.status || error.message);
+  }
+  return null;
 }
 
-module.exports = { createWordPressDraft };
+module.exports = { createWordPressDraft, uploadMediaFile };

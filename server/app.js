@@ -19,7 +19,7 @@ const { getOrRunAudit, getAuditsSummary } = require("./audit");
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: "5mb" }));
+app.use(express.json({ limit: "25mb" }));
 app.use(cookieParser());
 
 const PUBLIC_DIR = path.join(__dirname, "..", "public");
@@ -450,6 +450,91 @@ app.post("/api/process", auth.requireAuth(), async (req, res) => {
   }
 });
 
+// Single Video Article Generation with Custom Prompt Notes & Photos
+app.post("/api/articles/generate-single", auth.requireAuth(), async (req, res) => {
+  try {
+    const { youtubeId, templateName, customNotes, photos, modelOverride, thinkingModeOverride } = req.body || {};
+
+    if (!youtubeId) {
+      return res.status(400).json({ error: "youtubeId is required." });
+    }
+
+    const video = articleDb.prepare("SELECT * FROM videos WHERE youtube_id = ?").get(youtubeId);
+    if (!video) {
+      return res.status(404).json({ error: "Video not found in catalog." });
+    }
+
+    const selectedTemplate = templateName || video.content_type || "Review";
+
+    // Update video record notes and content_type
+    articleDb.prepare("UPDATE videos SET content_type = ?, custom_notes = ? WHERE youtube_id = ?").run(
+      selectedTemplate,
+      customNotes || video.custom_notes || "",
+      youtubeId
+    );
+
+    // Process uploaded photos (up to 3) to WordPress Media Library
+    const uploadedPhotoUrls = [];
+    if (photos && Array.isArray(photos) && photos.length > 0) {
+      const { uploadMediaFile } = require("./wordpress");
+      for (const [idx, p] of photos.slice(0, 3).entries()) {
+        try {
+          if (p.data) {
+            const base64Clean = p.data.replace(/^data:image\/[a-z]+;base64,/, "");
+            const buffer = Buffer.from(base64Clean, "base64");
+            const filename = p.name || `photo-${youtubeId}-${idx + 1}.jpg`;
+            const uploaded = await uploadMediaFile(buffer, filename, p.mimeType || "image/jpeg");
+            if (uploaded && uploaded.url) {
+              uploadedPhotoUrls.push({ url: uploaded.url, name: filename, id: uploaded.id });
+            }
+          }
+        } catch (photoErr) {
+          console.warn("Photo upload warning:", photoErr.message);
+        }
+      }
+    }
+
+    // Generate Article with Gemini 3.7 Flash
+    const htmlContent = await generateArticle({
+      youtubeId: video.youtube_id,
+      title: video.title,
+      contentType: selectedTemplate,
+      customNotes: customNotes || video.custom_notes,
+      photos: uploadedPhotoUrls,
+      modelOverride,
+      thinkingModeOverride,
+    });
+
+    // Create WordPress Post Draft
+    const { wpPostId, wpDraftUrl } = await createWordPressDraft({
+      youtubeId: video.youtube_id,
+      title: video.title,
+      htmlContent,
+      publishedAt: video.published_at,
+      thumbnailUrl: video.thumbnail_url,
+    });
+
+    articleDb.prepare(`
+      UPDATE videos
+      SET status = 'draft_created',
+          wp_post_id = ?,
+          wp_draft_url = ?
+      WHERE youtube_id = ?
+    `).run(wpPostId, wpDraftUrl, youtubeId);
+
+    res.json({
+      success: true,
+      youtubeId,
+      wpPostId,
+      wpDraftUrl,
+      photosUploaded: uploadedPhotoUrls.length,
+    });
+  } catch (error) {
+    console.error("Single article generation error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 /* ---------------- Video Audit endpoints ---------------- */
 
 app.get("/api/audits/summary", auth.requireAuth(), (req, res) => {
@@ -739,11 +824,14 @@ app.post("/api/channel-health/snapshot", auth.requireAuth(), async (req, res) =>
   }
 });
 
-app.get("/api/channel-health/trends", auth.requireAuth(), (req, res) => {
+app.get("/api/channel-health/video-catalog", auth.requireAuth(), (req, res) => {
   try {
-    const months = parseInt(req.query.months || "12", 10);
-    const trends = channelHealth.getHistoricalTrends(months);
-    res.json(trends);
+    const page = parseInt(req.query.page || "1", 10);
+    const limit = parseInt(req.query.limit || "50", 10);
+    const search = req.query.search || "";
+    const category = req.query.category || "";
+    const catalog = channelHealth.getVideoCatalog({ page, limit, search, category });
+    res.json(catalog);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

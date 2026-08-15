@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
-import { Search, Filter, Play, ExternalLink, Check, Sparkles, Video, Calendar, RotateCcw, BarChart3 } from 'lucide-react';
-import AuditReportModal from './AuditReportModal';
+import React, { useState } from "react";
+import { Search, Filter, Play, ExternalLink, Sparkles, Calendar, RotateCcw, CheckCircle2 } from "lucide-react";
+import GenerateArticleModal from "./GenerateArticleModal";
 
 export default function CatalogTable({
   videos,
@@ -12,44 +12,24 @@ export default function CatalogTable({
   categoryFilter,
   setCategoryFilter,
   onUpdateVideo,
-  onProcessSelected,
-  onResetSelected,
-  isProcessing,
+  onResetVideo,
 }) {
-  const [selectedIds, setSelectedIds] = useState([]);
-  const [auditVideo, setAuditVideo] = useState(null);
-
-  const toggleSelect = (id) => {
-    setSelectedIds((prev) =>
-      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
-    );
-  };
-
-  const allChecked = videos.length > 0 && videos.every((v) => selectedIds.includes(v.youtube_id));
-
-  const toggleSelectAll = () => {
-    if (allChecked) {
-      setSelectedIds([]);
-    } else {
-      setSelectedIds(videos.map((v) => v.youtube_id));
-    }
-  };
-
-  const handleProcess = () => {
-    if (selectedIds.length === 0) return;
-    onProcessSelected(selectedIds);
-  };
-
-  const handleResetBatch = () => {
-    if (selectedIds.length === 0) return;
-    onResetSelected(selectedIds);
-    setSelectedIds([]);
-  };
+  const [activeModalVideo, setActiveModalVideo] = useState(null);
 
   const formatDate = (dateStr) => {
-    if (!dateStr) return '';
+    if (!dateStr) return "";
     const date = new Date(dateStr);
-    return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+    return date.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
+  };
+
+  const handleArticleGenerated = (youtubeId, result) => {
+    if (onUpdateVideo) {
+      onUpdateVideo(youtubeId, {
+        status: "draft_created",
+        wp_post_id: result.wpPostId,
+        wp_draft_url: result.wpDraftUrl,
+      });
+    }
   };
 
   return (
@@ -63,13 +43,13 @@ export default function CatalogTable({
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search catalog by title or description keywords..."
+            placeholder="Search catalog by title or keywords..."
             className="w-full pl-10 pr-4 py-2 rounded-xl bg-slate-950 border border-slate-700/70 text-slate-100 text-xs focus:outline-none focus:border-cyan-500 transition-colors font-medium"
           />
         </div>
 
-        {/* Filters & Actions */}
-        <div className="flex items-center gap-4 flex-wrap">
+        {/* Filters */}
+        <div className="flex items-center gap-3 flex-wrap">
           {/* Status Filter */}
           <div className="flex items-center gap-2">
             <Filter className="w-3.5 h-3.5 text-slate-400" />
@@ -99,35 +79,6 @@ export default function CatalogTable({
               ))}
             </select>
           </div>
-
-          {/* Reset Selected Button */}
-          {selectedIds.length > 0 && (
-            <button
-              onClick={handleResetBatch}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 text-xs font-bold transition-all"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-              <span>Reset Selected ({selectedIds.length})</span>
-            </button>
-          )}
-
-          {/* Process Selected Action Button */}
-          <button
-            onClick={handleProcess}
-            disabled={selectedIds.length === 0 || isProcessing}
-            className={`flex items-center gap-2 px-5 py-2 rounded-xl font-extrabold text-xs uppercase tracking-wider transition-all shadow-lg ${
-              selectedIds.length === 0 || isProcessing
-                ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
-                : 'bg-gradient-to-r from-emerald-400 to-cyan-500 hover:from-emerald-300 hover:to-cyan-400 text-slate-950 shadow-emerald-500/20'
-            }`}
-          >
-            <Sparkles className="w-4 h-4 fill-current" />
-            <span>
-              {isProcessing
-                ? 'Publishing Drafts...'
-                : `Generate WordPress Draft (${selectedIds.length})`}
-            </span>
-          </button>
         </div>
       </div>
 
@@ -137,59 +88,32 @@ export default function CatalogTable({
           <table className="w-full text-left border-collapse text-xs">
             <thead>
               <tr className="border-b border-slate-800 bg-slate-950/70 text-slate-400 font-semibold tracking-wider uppercase text-[10px]">
-                <th className="py-3.5 px-4 w-12 text-center">
-                  <input
-                    type="checkbox"
-                    checked={allChecked}
-                    onChange={toggleSelectAll}
-                    className="rounded border-slate-700 bg-slate-900 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-slate-950 w-4 h-4 cursor-pointer"
-                  />
-                </th>
                 <th className="py-3.5 px-4 w-32">Thumbnail</th>
                 <th className="py-3.5 px-4 min-w-[280px]">Video Details</th>
-                <th className="py-3.5 px-4 w-48">Content Mode</th>
+                <th className="py-3.5 px-4 w-44">Content Mode</th>
                 <th className="py-3.5 px-4 min-w-[200px]">Custom Context / Notes</th>
-                <th className="py-3.5 px-4 w-36 text-center">Actions & Status</th>
+                <th className="py-3.5 px-4 w-52 text-right">Actions & WordPress Status</th>
               </tr>
             </thead>
 
             <tbody className="divide-y divide-slate-800/60 font-sans">
               {videos.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-12 text-center text-slate-500">
+                  <td colSpan={5} className="py-12 text-center text-slate-500">
                     No videos found matching your filters.
                   </td>
                 </tr>
               ) : (
                 videos.map((video) => {
-                  const isSelected = selectedIds.includes(video.youtube_id);
-                  const isDraftCreated = video.status === 'draft_created';
+                  const isDraftCreated = video.status === "draft_created";
 
                   return (
-                    <tr
-                      key={video.youtube_id}
-                      className={`hover:bg-slate-800/40 transition-colors ${
-                        isSelected ? 'bg-cyan-950/20' : ''
-                      }`}
-                    >
-                      {/* Checkbox */}
-                      <td className="py-4 px-4 text-center">
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          onChange={() => toggleSelect(video.youtube_id)}
-                          className="rounded border-slate-700 bg-slate-900 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-slate-950 w-4 h-4 cursor-pointer"
-                        />
-                      </td>
-
+                    <tr key={video.youtube_id} className="hover:bg-slate-800/40 transition-colors">
                       {/* Thumbnail Preview */}
                       <td className="py-4 px-4">
                         <div className="relative group rounded-xl overflow-hidden aspect-video bg-slate-950 border border-slate-700/80 shadow-md">
                           <img
-                            src={
-                              video.thumbnail_url ||
-                              `https://img.youtube.com/vi/${video.youtube_id}/maxresdefault.jpg`
-                            }
+                            src={video.thumbnail_url || `https://img.youtube.com/vi/${video.youtube_id}/maxresdefault.jpg`}
                             alt={video.title}
                             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                             onError={(e) => {
@@ -224,6 +148,8 @@ export default function CatalogTable({
                               {formatDate(video.published_at)}
                             </span>
                             <span>•</span>
+                            <span>{video.duration || "15m"}</span>
+                            <span>•</span>
                             <span className="text-slate-500">ID: {video.youtube_id}</span>
                           </div>
                         </div>
@@ -232,12 +158,9 @@ export default function CatalogTable({
                       {/* Content Mode / Template Selector */}
                       <td className="py-4 px-4">
                         <select
-                          value={video.content_type || 'Review'}
-                          onChange={(e) =>
-                            onUpdateVideo(video.youtube_id, { content_type: e.target.value })
-                          }
-                          disabled={isProcessing}
-                          className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700/80 text-slate-200 text-xs focus:outline-none focus:border-cyan-500 disabled:opacity-50"
+                          value={video.content_type || "Review"}
+                          onChange={(e) => onUpdateVideo && onUpdateVideo(video.youtube_id, { content_type: e.target.value })}
+                          className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700/80 text-slate-200 text-xs focus:outline-none focus:border-cyan-500"
                         >
                           {templates.map((tmpl) => (
                             <option key={tmpl.id} value={tmpl.name}>
@@ -250,60 +173,52 @@ export default function CatalogTable({
                       {/* Custom Context Notes */}
                       <td className="py-4 px-4">
                         <textarea
-                          value={video.custom_notes || ''}
-                          onChange={(e) =>
-                            onUpdateVideo(video.youtube_id, { custom_notes: e.target.value })
-                          }
-                          placeholder="Add custom notes/instructions for AI..."
-                          disabled={isProcessing}
+                          value={video.custom_notes || ""}
+                          onChange={(e) => onUpdateVideo && onUpdateVideo(video.youtube_id, { custom_notes: e.target.value })}
+                          placeholder="Add custom notes or instructions for AI..."
                           rows={2}
-                          className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700/70 text-slate-200 text-xs focus:outline-none focus:border-cyan-500 leading-normal resize-none disabled:opacity-50"
+                          className="w-full p-2.5 rounded-xl bg-slate-950 border border-slate-700/70 text-slate-200 text-xs focus:outline-none focus:border-cyan-500 leading-normal resize-none"
                         />
                       </td>
 
-                      {/* Actions & Status */}
-                      <td className="py-4 px-4 text-center">
-                        <div className="flex flex-col items-center gap-2">
-                          {/* Video Audit Button */}
-                          <button
-                            onClick={() => setAuditVideo(video)}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-bold bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 transition-all shadow-sm"
-                          >
-                            <BarChart3 className="w-3.5 h-3.5 text-cyan-400" />
-                            <span>Video Audit</span>
-                          </button>
-
+                      {/* Individual Action & Status */}
+                      <td className="py-4 px-4 text-right">
+                        <div className="flex flex-col items-end gap-2">
                           {isDraftCreated ? (
-                            <div className="flex flex-col items-center gap-1">
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 uppercase tracking-wider">
-                                <Check className="w-3 h-3" /> Draft Created
+                            <div className="flex flex-col items-end gap-1.5">
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-950/80 border border-emerald-500/30 text-emerald-300">
+                                <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                                Draft Created
                               </span>
-                              <div className="flex items-center gap-2">
+
+                              <div className="flex items-center gap-1.5">
                                 {video.wp_draft_url && (
                                   <a
                                     href={video.wp_draft_url}
                                     target="_blank"
                                     rel="noreferrer"
-                                    className="inline-flex items-center gap-1 text-[11px] font-bold text-cyan-400 hover:text-cyan-300 transition-colors"
+                                    className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 text-emerald-200 text-[11px] font-bold transition-colors"
                                   >
-                                    <span>Edit WP</span>
                                     <ExternalLink className="w-3 h-3" />
+                                    <span>Edit Draft</span>
                                   </a>
                                 )}
                                 <button
-                                  onClick={() => onResetSelected([video.youtube_id])}
-                                  title="Reset back to Unprocessed"
-                                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-400 hover:text-amber-300 transition-colors"
+                                  onClick={() => setActiveModalVideo(video)}
+                                  className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-semibold border border-slate-700 transition-colors"
                                 >
-                                  <RotateCcw className="w-3 h-3" />
-                                  <span>Reset</span>
+                                  Regenerate
                                 </button>
                               </div>
                             </div>
                           ) : (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-800 text-slate-400 border border-slate-700 uppercase tracking-wider">
-                              Unprocessed
-                            </span>
+                            <button
+                              onClick={() => setActiveModalVideo(video)}
+                              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-gradient-to-r from-emerald-400 to-cyan-500 hover:from-emerald-300 hover:to-cyan-400 text-slate-950 text-xs font-bold shadow-md shadow-emerald-500/20 transition-all"
+                            >
+                              <Sparkles className="w-3.5 h-3.5 fill-current" />
+                              <span>Generate Article</span>
+                            </button>
                           )}
                         </div>
                       </td>
@@ -316,13 +231,13 @@ export default function CatalogTable({
         </div>
       </div>
 
-      {/* Audit Modal */}
-      {auditVideo && (
-        <AuditReportModal
-          isOpen={!!auditVideo}
-          onClose={() => setAuditVideo(null)}
-          youtubeId={auditVideo.youtube_id}
-          videoTitle={auditVideo.title}
+      {/* Single Video Generation Modal with Notes & Photo Uploads */}
+      {activeModalVideo && (
+        <GenerateArticleModal
+          video={activeModalVideo}
+          templates={templates}
+          onClose={() => setActiveModalVideo(null)}
+          onGenerated={handleArticleGenerated}
         />
       )}
     </div>
