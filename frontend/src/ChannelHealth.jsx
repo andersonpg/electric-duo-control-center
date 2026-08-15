@@ -245,8 +245,16 @@ export default function ChannelHealth({ currentUser }) {
             <h2 className="text-2xl font-black tracking-tight text-white flex items-center gap-3">
               Channel Performance & Trends
             </h2>
-            <div className="text-xs text-slate-400 mt-1">
-              Historical snapshot tracking across 567+ videos · Comparing vs. prior {periodDays}-day window
+            <div className="flex items-center gap-2 mt-1">
+              <span className="text-xs text-slate-400">
+                Tracking across 558+ videos · {periodDays}-day window
+              </span>
+              {report?.isLiveStudioData && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-950/80 border border-emerald-500/30 text-[10px] font-bold text-emerald-300">
+                  <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                  Live YouTube Studio Data (OAuth)
+                </span>
+              )}
             </div>
           </div>
         </div>

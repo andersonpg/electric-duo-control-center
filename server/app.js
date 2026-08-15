@@ -719,10 +719,10 @@ app.get("/api/models", auth.requireAuth(), (req, res) => {
 
 const channelHealth = require("./channel-health");
 
-app.get("/api/channel-health/report", auth.requireAuth(), (req, res) => {
+app.get("/api/channel-health/report", auth.requireAuth(), async (req, res) => {
   try {
     const periodDays = parseInt(req.query.period || "28", 10);
-    const report = channelHealth.getChannelHealthReport(periodDays);
+    const report = await channelHealth.getChannelHealthReport(periodDays);
     res.json(report);
   } catch (error) {
     res.status(500).json({ error: error.message });
