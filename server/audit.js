@@ -82,8 +82,7 @@ async function getCalibratedMetrics(youtubeId, video) {
   const isLive = !!(liveAnalytics && liveAnalytics.coreData);
 
   // Views & Performance
-  const ageInDays = Math.max(1, Math.round((Date.now() - new Date(video.published_at).getTime()) / (1000 * 3600 * 24)));
-  const baseViews = 2500 + (seed % 14500) + Math.min(ageInDays * 12, 18000);
+  const baseViews = (video.view_count && video.view_count > 0) ? video.view_count : 2300;
   const views = isLive && liveAnalytics.coreData.views > 0 ? liveAnalytics.coreData.views : baseViews;
 
   // Calibrate CTR around channel 5.0% baseline

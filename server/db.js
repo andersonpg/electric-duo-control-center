@@ -186,13 +186,17 @@ articleDb.exec(`
   CREATE INDEX IF NOT EXISTS idx_video_snapshots_lookup ON video_snapshots(youtube_id, snapshot_date DESC);
 `);
 
-// Add transcript & category_source columns to videos table if not present
+// Add transcript, category_source & view_count columns to videos table if not present
 try {
   articleDb.exec("ALTER TABLE videos ADD COLUMN transcript TEXT;");
 } catch (e) {}
 
 try {
   articleDb.exec("ALTER TABLE videos ADD COLUMN category_source TEXT DEFAULT 'ai_inferred';");
+} catch (e) {}
+
+try {
+  articleDb.exec("ALTER TABLE videos ADD COLUMN view_count INTEGER DEFAULT 0;");
 } catch (e) {}
 
 // Seed default categories
