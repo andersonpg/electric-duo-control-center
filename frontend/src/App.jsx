@@ -12,6 +12,7 @@ export default function App() {
     return localStorage.getItem("ed_active_module") || "checklist";
   });
   const [isLoadingUser, setIsLoadingUser] = useState(true);
+  const [selectedAuditId, setSelectedAuditId] = useState(null);
 
   useEffect(() => {
     fetch("/api/me", { credentials: "same-origin" })
@@ -39,6 +40,11 @@ export default function App() {
     localStorage.setItem("ed_active_module", mod);
   };
 
+  const handleSelectVideoForAudit = (youtubeId) => {
+    setSelectedAuditId(youtubeId);
+    handleModuleSwitch("audit");
+  };
+
   const handleLogout = async () => {
     try {
       await fetch("/logout", { method: "POST", credentials: "same-origin" });
@@ -56,13 +62,6 @@ export default function App() {
       </div>
     );
   }
-
-  const [selectedAuditId, setSelectedAuditId] = useState(null);
-
-  const handleSelectVideoForAudit = (youtubeId) => {
-    setSelectedAuditId(youtubeId);
-    handleModuleSwitch("audit");
-  };
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-cyan-500 selection:text-slate-950">
