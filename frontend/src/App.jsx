@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from "react";
-import { CheckSquare, Zap, LogOut, User, Sparkles, BarChart3, Settings } from "lucide-react";
+import { CheckSquare, Zap, LogOut, User, Sparkles, BarChart3, Activity, Settings } from "lucide-react";
 import PlanChecklist from "./PlanChecklist";
 import ArticleGenerator from "./ArticleGenerator";
 import VideoAudit from "./VideoAudit";
+import ChannelHealth from "./ChannelHealth";
 import AdminSettings from "./AdminSettings";
 
 export default function App() {
@@ -79,7 +80,7 @@ export default function App() {
         <div className="flex items-center bg-slate-900/90 p-1 rounded-2xl border border-slate-800 shadow-inner gap-1">
           <button
             onClick={() => handleModuleSwitch("checklist")}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all ${
+            className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold transition-all ${
               activeModule === "checklist"
                 ? "bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 shadow-md shadow-cyan-500/20"
                 : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
@@ -91,7 +92,7 @@ export default function App() {
 
           <button
             onClick={() => handleModuleSwitch("article")}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all ${
+            className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold transition-all ${
               activeModule === "article"
                 ? "bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 shadow-md shadow-cyan-500/20"
                 : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
@@ -103,7 +104,7 @@ export default function App() {
 
           <button
             onClick={() => handleModuleSwitch("audit")}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all ${
+            className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold transition-all ${
               activeModule === "audit"
                 ? "bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 shadow-md shadow-cyan-500/20"
                 : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
@@ -114,8 +115,20 @@ export default function App() {
           </button>
 
           <button
+            onClick={() => handleModuleSwitch("channel")}
+            className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold transition-all ${
+              activeModule === "channel"
+                ? "bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 shadow-md shadow-cyan-500/20"
+                : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+            }`}
+          >
+            <Activity className="w-3.5 h-3.5" />
+            <span>Channel Health</span>
+          </button>
+
+          <button
             onClick={() => handleModuleSwitch("admin")}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all ${
+            className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold transition-all ${
               activeModule === "admin"
                 ? "bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 shadow-md shadow-cyan-500/20"
                 : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
@@ -152,6 +165,7 @@ export default function App() {
         {activeModule === "checklist" && <PlanChecklist currentUser={currentUser} />}
         {activeModule === "article" && <ArticleGenerator currentUser={currentUser} />}
         {activeModule === "audit" && <VideoAudit currentUser={currentUser} />}
+        {activeModule === "channel" && <ChannelHealth currentUser={currentUser} />}
         {activeModule === "admin" && <AdminSettings currentUser={currentUser} />}
       </main>
     </div>

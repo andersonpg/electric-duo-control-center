@@ -120,17 +120,95 @@ articleDb.exec(`
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
+  CREATE TABLE IF NOT EXISTS content_categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT,
+    color TEXT DEFAULT '#06b6d4',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS channel_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_date DATE NOT NULL,
+    period_days INTEGER DEFAULT 28,
+    views INTEGER DEFAULT 0,
+    watch_time_hours REAL DEFAULT 0,
+    subs_gained INTEGER DEFAULT 0,
+    subs_lost INTEGER DEFAULT 0,
+    net_subs INTEGER DEFAULT 0,
+    estimated_revenue REAL DEFAULT 0,
+    avg_ctr REAL DEFAULT 5.0,
+    avg_retention REAL DEFAULT 48.0,
+    traffic_share_json TEXT,
+    raw_data_json TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS video_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    youtube_id TEXT NOT NULL,
+    snapshot_date DATE NOT NULL,
+    views INTEGER DEFAULT 0,
+    impressions INTEGER DEFAULT 0,
+    ctr REAL DEFAULT 5.0,
+    retention_rate REAL DEFAULT 48.0,
+    watch_time_hours REAL DEFAULT 0,
+    likes INTEGER DEFAULT 0,
+    comments INTEGER DEFAULT 0,
+    shares INTEGER DEFAULT 0,
+    traffic_share_json TEXT,
+    top_search_terms_json TEXT,
+    raw_data_json TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS playlist_category_mappings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    playlist_id TEXT NOT NULL UNIQUE,
+    playlist_title TEXT,
+    category TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS timeline_annotations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_date DATE NOT NULL,
+    label TEXT NOT NULL,
+    description TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
   CREATE INDEX IF NOT EXISTS idx_videos_published_at ON videos(published_at DESC);
   CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
   CREATE INDEX IF NOT EXISTS idx_video_audits_updated ON video_audits(updated_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_channel_snapshots_date ON channel_snapshots(snapshot_date DESC);
+  CREATE INDEX IF NOT EXISTS idx_video_snapshots_lookup ON video_snapshots(youtube_id, snapshot_date DESC);
 `);
 
-// Add transcript column to videos table if not present
+// Add transcript & category_source columns to videos table if not present
 try {
   articleDb.exec("ALTER TABLE videos ADD COLUMN transcript TEXT;");
-} catch (e) {
-  // Column already exists
-}
+} catch (e) {}
+
+try {
+  articleDb.exec("ALTER TABLE videos ADD COLUMN category_source TEXT DEFAULT 'ai_inferred';");
+} catch (e) {}
+
+// Seed default categories
+const defaultCategories = [
+  { name: "News/Quick Charge", description: "EV industry news, breaking updates, and Quick Charge news episodes", color: "#06b6d4" },
+  { name: "Road Trip/Travel Series", description: "Long-distance EV journeys, route tests, and charging vlogs", color: "#3b82f6" },
+  { name: "Walkarounds/Reviews", description: "Vehicle deep dives, first looks, and hardware reviews", color: "#8b5cf6" },
+  { name: "How Tos/Guides", description: "Tutorials, charging adapter setups, and EV ownership guides", color: "#10b981" },
+  { name: "Sponsor Content", description: "Dedicated sponsor segments and product spotlights", color: "#f59e0b" },
+  { name: "Other", description: "Livestreams, announcements, and channel updates", color: "#64748b" },
+];
+
+const insertCatStmt = articleDb.prepare("INSERT OR IGNORE INTO content_categories (name, description, color) VALUES (?, ?, ?)");
+defaultCategories.forEach((cat) => {
+  insertCatStmt.run(cat.name, cat.description, cat.color);
+});
 
 // Compatibility layer
 controlDb.controlDb = controlDb;

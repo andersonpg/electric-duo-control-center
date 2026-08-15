@@ -715,6 +715,148 @@ app.get("/api/models", auth.requireAuth(), (req, res) => {
   ]);
 });
 
+/* ---------------- Channel Health & Snapshots endpoints ---------------- */
+
+const channelHealth = require("./channel-health");
+
+app.get("/api/channel-health/report", auth.requireAuth(), (req, res) => {
+  try {
+    const periodDays = parseInt(req.query.period || "28", 10);
+    const report = channelHealth.getChannelHealthReport(periodDays);
+    res.json(report);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/channel-health/snapshot", auth.requireAuth(), async (req, res) => {
+  try {
+    const periodDays = parseInt(req.body?.periodDays || "28", 10);
+    const result = await channelHealth.captureSnapshot(periodDays);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/channel-health/trends", auth.requireAuth(), (req, res) => {
+  try {
+    const months = parseInt(req.query.months || "12", 10);
+    const trends = channelHealth.getHistoricalTrends(months);
+    res.json(trends);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/channel-health/categories", auth.requireAuth(), (req, res) => {
+  try {
+    res.json(channelHealth.getCategories());
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/channel-health/categories", auth.requireAuth(), (req, res) => {
+  try {
+    const cat = channelHealth.addCategory(req.body || {});
+    res.json({ success: true, category: cat });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put("/api/channel-health/categories/:id", auth.requireAuth(), (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const cat = channelHealth.updateCategory(id, req.body || {});
+    res.json({ success: true, category: cat });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete("/api/channel-health/categories/:id", auth.requireAuth(), (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const result = channelHealth.deleteCategory(id);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/channel-health/reclassify", auth.requireAuth(), async (req, res) => {
+  try {
+    const result = await channelHealth.bulkReclassifyLibrary();
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/channel-health/override-category", auth.requireAuth(), (req, res) => {
+  try {
+    const { youtubeId, category } = req.body || {};
+    if (!youtubeId || !category) return res.status(400).json({ error: "youtubeId and category are required." });
+    const result = channelHealth.overrideVideoCategory(youtubeId, category);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/channel-health/annotations", auth.requireAuth(), (req, res) => {
+  try {
+    res.json(channelHealth.getAnnotations());
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/channel-health/annotations", auth.requireAuth(), (req, res) => {
+  try {
+    const anno = channelHealth.addAnnotation(req.body || {});
+    res.json({ success: true, annotation: anno });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete("/api/channel-health/annotations/:id", auth.requireAuth(), (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    res.json(channelHealth.deleteAnnotation(id));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/channel-health/playlists", auth.requireAuth(), (req, res) => {
+  try {
+    res.json(channelHealth.getPlaylistMappings());
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/channel-health/playlists", auth.requireAuth(), (req, res) => {
+  try {
+    res.json(channelHealth.savePlaylistMapping(req.body || {}));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete("/api/channel-health/playlists/:id", auth.requireAuth(), (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    res.json(channelHealth.deletePlaylistMapping(id));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 /* ---------------- static files & SPA fallback ---------------- */
 
 app.get("/login.html", (req, res) => res.sendFile(path.join(PUBLIC_DIR, "login.html")));
