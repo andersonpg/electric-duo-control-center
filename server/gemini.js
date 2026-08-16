@@ -68,17 +68,18 @@ function getGeminiApiKey() {
 
 // Helper to call Gemini API with candidate models and clean error reporting
 async function callGeminiWithRetry(ai, requestOptions, maxRetries = 2) {
-  let attempt = 0;
-  const primaryModel = requestOptions.model || "gemini-3.7-flash";
+  let primaryModel = requestOptions.model || "gemini-3.7-flash";
+  if (primaryModel === "gemini-flash-latest" || primaryModel === "gemini-2.5-flash") {
+    primaryModel = "gemini-3.7-flash";
+  }
+
   const candidateModels = [
     primaryModel,
+    "gemini-3.7-flash",
     "gemini-3.6-flash",
-    "gemini-3.5-pro",
-    "gemini-2.5-flash",
-    "gemini-2.5-pro",
-    "gemini-2.0-flash",
+    "gemini-3.5-flash",
+    "gemini-3.1-flash-lite",
     "gemini-flash-latest",
-    "gemini-pro-latest",
   ];
 
   const attemptedModels = [];
@@ -87,29 +88,19 @@ async function callGeminiWithRetry(ai, requestOptions, maxRetries = 2) {
   for (const targetModel of candidateModels) {
     if (!targetModel || attemptedModels.includes(targetModel)) continue;
     attemptedModels.push(targetModel);
-    attempt = 0;
 
-    while (attempt < maxRetries) {
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
         const opts = { ...requestOptions, model: targetModel };
-        return await ai.models.generateContent(opts);
+        const response = await ai.models.generateContent(opts);
+        if (response && response.text) {
+          return response;
+        }
       } catch (err) {
         lastError = err;
-        const isRateLimit = err.status === 429 || (err.message && err.message.includes("RESOURCE_EXHAUSTED"));
-        const isModelNotFound = err.status === 404 || (err.message && err.message.includes("NOT_FOUND"));
-
-        if (isModelNotFound) {
-          console.warn(`Model ${targetModel} not available on this API key, trying next model candidate...`);
-          break;
-        }
-
-        if (isRateLimit && attempt < maxRetries - 1) {
-          console.warn(`Gemini API rate limited (429) on ${targetModel}. Retrying in 3 seconds...`);
-          await new Promise((resolve) => setTimeout(resolve, 3000));
-          attempt++;
-        } else {
-          console.warn(`Gemini API error on ${targetModel}:`, err.message);
-          break;
+        console.warn(`Gemini API attempt ${attempt + 1} failed on ${targetModel}:`, err.message);
+        if (attempt < maxRetries - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 1500));
         }
       }
     }
