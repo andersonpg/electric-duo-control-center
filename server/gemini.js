@@ -118,7 +118,7 @@ async function callGeminiWithRetry(ai, requestOptions, maxRetries = 2) {
   throw new Error(`Gemini API call failed across attempted models [${attemptedModels.join(", ")}]${errorDetail}`);
 }
 
-async function generateArticle({ youtubeId, title, contentType, customNotes, modelOverride, thinkingModeOverride }) {
+async function generateArticle({ youtubeId, title, contentType, customNotes, photos, modelOverride, thinkingModeOverride }) {
   // Step 1: Fetch and cache real video transcript
   const transcript = await getTranscript(youtubeId, title);
 
