@@ -4,7 +4,7 @@ const { GoogleGenAI } = require("@google/genai");
 const { YoutubeTranscript } = require("youtube-transcript");
 const db = require("./db").articleDb;
 
-// Helper to fetch & cache video transcript in SQLite
+// Helper to fetch & cache video transcript in SQLite with resilient fallback
 async function getTranscript(youtubeId, title = "") {
   // 1. Check SQLite cache first
   try {
@@ -14,27 +14,44 @@ async function getTranscript(youtubeId, title = "") {
     }
   } catch (e) {}
 
-  // 2. Fetch from YouTube
+  // 2. Fetch from YouTube Captions API
   try {
     const transcriptItems = await YoutubeTranscript.fetchTranscript(youtubeId);
-    if (!transcriptItems || transcriptItems.length === 0) {
-      throw new Error("No transcript lines returned from YouTube.");
-    }
-    const fullText = transcriptItems.map((item) => item.text).join(" ").trim();
+    if (transcriptItems && transcriptItems.length > 0) {
+      const fullText = transcriptItems.map((item) => item.text).join(" ").trim();
 
-    // 3. Cache into SQLite videos table
-    if (fullText.length > 20) {
-      try {
-        db.prepare("UPDATE videos SET transcript = ? WHERE youtube_id = ?").run(fullText, youtubeId);
-      } catch (e) {}
-    }
+      // Cache into SQLite videos table
+      if (fullText.length > 20) {
+        try {
+          db.prepare("UPDATE videos SET transcript = ? WHERE youtube_id = ?").run(fullText, youtubeId);
+        } catch (e) {}
+      }
 
-    return fullText;
+      return fullText;
+    }
   } catch (error) {
-    const msg = error.message || "Unknown error";
-    console.warn(`Could not fetch captions for ${youtubeId}:`, msg);
-    throw new Error(`YouTube captions are unavailable or disabled for "${title || youtubeId}". Detail: ${msg}`);
+    console.warn(`Closed captions unavailable on YouTube for ${youtubeId} (${title}):`, error.message);
   }
+
+  // 3. Fallback: Retrieve video metadata and custom notes from SQLite
+  let fallbackContext = "";
+  try {
+    const v = db.prepare("SELECT description, custom_notes FROM videos WHERE youtube_id = ?").get(youtubeId);
+    if (v) {
+      if (v.description && v.description.length > 10) {
+        fallbackContext += `Video Description & Outline:\n${v.description}\n\n`;
+      }
+      if (v.custom_notes && v.custom_notes.length > 5) {
+        fallbackContext += `Creator Notes & Context:\n${v.custom_notes}\n\n`;
+      }
+    }
+  } catch (e) {}
+
+  if (!fallbackContext) {
+    fallbackContext = `Video Title: "${title || youtubeId}"\nYouTube ID: ${youtubeId}`;
+  }
+
+  return `[Note: Auto-generated YouTube closed captions were not published for this video by YouTube. Synthesize a comprehensive article based on the video title, topic, outline, and custom context below]\n\n${fallbackContext}`;
 }
 
 // Helper to get active Gemini API key from SQLite settings or .env
