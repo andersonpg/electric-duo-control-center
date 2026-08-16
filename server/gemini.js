@@ -1,5 +1,6 @@
 "use strict";
 
+require("dotenv").config();
 const { GoogleGenAI } = require("@google/genai");
 const { YoutubeTranscript } = require("youtube-transcript");
 const db = require("./db").articleDb;
