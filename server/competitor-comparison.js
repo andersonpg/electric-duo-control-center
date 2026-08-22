@@ -132,8 +132,9 @@ async function resolveChannel(input) {
     });
     const html = webRes.data;
 
-    // Extract channelId from meta or initialData
+    // Extract channelId from meta, externalId, or canonical link
     const channelIdMatch = html.match(/<meta itemprop="channelId" content="([^"]+)">/) ||
+      html.match(/"externalId":"(UC[a-zA-Z0-9_\-]+)"/) ||
       html.match(/"channelId":"(UC[a-zA-Z0-9_\-]+)"/) ||
       html.match(/<link rel="canonical" href="https:\/\/www\.youtube\.com\/channel\/(UC[a-zA-Z0-9_\-]+)">/);
 
