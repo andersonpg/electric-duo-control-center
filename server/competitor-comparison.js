@@ -46,15 +46,28 @@ CONSULTING DIRECTIVES & MANDATES:
    - **5. 90-Day Actionable Playbook**: 3 to 4 concrete, prioritized operational changes for Patrick & Liv to implement on the next 10 videos.
 3. Tone: Incisive, enthusiastic, objective, peer-to-peer, data-grounded. Avoid generic fluff or cliches ("in conclusion", "game-changer", "delve"). Format in clean GitHub-flavored Markdown.`;
 
+  const candidateModels = [
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.1-flash-lite",
+  ];
+
   try {
     const ai = new GoogleGenAI({ apiKey });
-    const response = await ai.models.generateContent({
-      model: "gemini-3.7-flash",
-      contents: prompt,
-    });
+    for (const mod of candidateModels) {
+      try {
+        const response = await ai.models.generateContent({
+          model: mod,
+          contents: prompt,
+        });
 
-    if (response && response.text) {
-      return response.text.trim();
+        if (response && response.text) {
+          return response.text.trim();
+        }
+      } catch (modErr) {
+        console.warn(`Model ${mod} attempt failed:`, modErr.message);
+      }
     }
   } catch (err) {
     console.warn("Gemini narrative summary failed, falling back to heuristic summary:", err.message);
