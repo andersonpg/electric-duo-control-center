@@ -25,6 +25,8 @@ import {
   ArrowRight,
   Eye,
   SlidersHorizontal,
+  FileText,
+  Compass,
 } from "lucide-react";
 
 export default function CompetitorComparison({ currentUser }) {
@@ -33,7 +35,7 @@ export default function CompetitorComparison({ currentUser }) {
   const [activeReport, setActiveReport] = useState(null);
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
-  const [activeTab, setActiveTab] = useState("outliers"); // 'outliers' | 'donotcopy' | 'sidebyside'
+  const [activeTab, setActiveTab] = useState("summary"); // 'summary' | 'outliers' | 'donotcopy' | 'sidebyside'
 
   // New Report Inputs
   const [channelUrl, setChannelUrl] = useState("");
@@ -362,6 +364,18 @@ export default function CompetitorComparison({ currentUser }) {
           {/* Navigation Tabs */}
           <div className="flex items-center gap-2 border-b border-slate-800 pb-3">
             <button
+              onClick={() => setActiveTab("summary")}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+                activeTab === "summary"
+                  ? "bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 shadow-md shadow-cyan-500/20"
+                  : "bg-slate-900 text-slate-400 hover:text-white"
+              }`}
+            >
+              <FileText className="w-3.5 h-3.5" />
+              <span>Executive Summary</span>
+            </button>
+
+            <button
               onClick={() => setActiveTab("outliers")}
               className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
                 activeTab === "outliers"
@@ -397,6 +411,54 @@ export default function CompetitorComparison({ currentUser }) {
               <span>Side-by-Side Summary & Topics</span>
             </button>
           </div>
+
+          {/* TAB 0: Executive Consultant Narrative Summary */}
+          {activeTab === "summary" && (
+            <div className="flex flex-col gap-6">
+              {/* Consultant Header Banner */}
+              <div className="bg-gradient-to-br from-cyan-950/40 via-slate-900 to-blue-950/40 border border-cyan-500/30 rounded-3xl p-6 shadow-2xl relative overflow-hidden">
+                <div className="absolute right-0 top-0 translate-x-8 -translate-y-8 w-64 h-64 bg-cyan-500/10 rounded-full blur-3xl pointer-events-none" />
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="flex items-center gap-3.5">
+                    <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-cyan-400 to-blue-600 flex items-center justify-center text-slate-950 shadow-lg shadow-cyan-500/25">
+                      <Compass className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="text-base font-extrabold text-white tracking-tight flex items-center gap-2">
+                        <span>YouTube Strategist Evaluation & Strategic Briefing</span>
+                        <span className="text-[10px] font-bold uppercase tracking-wider bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 px-2 py-0.5 rounded-full">
+                          AI Executive Audit
+                        </span>
+                      </h3>
+                      <p className="text-xs text-slate-400">
+                        Competitive breakdown and prioritized growth roadmap tailored for <b className="text-slate-200">The Electric Duo</b> vs <b className="text-slate-200">{analysis.competitorChannel.title}</b>.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 self-start sm:self-center">
+                    <span className="text-[11px] text-slate-400 bg-slate-950/80 px-3 py-1.5 rounded-xl border border-slate-800 font-mono">
+                      Scale Ratio: <b className="text-purple-400">{analysis.sideBySide.subscribers.ratio}x</b>
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Narrative Content Body */}
+              <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-8 shadow-xl">
+                {analysis.executiveSummary ? (
+                  <div className="prose prose-invert prose-cyan max-w-none text-slate-300 text-sm leading-relaxed space-y-4 whitespace-pre-wrap font-sans">
+                    {analysis.executiveSummary}
+                  </div>
+                ) : (
+                  <div className="text-center py-12 text-slate-400 text-xs flex flex-col items-center gap-3">
+                    <div className="w-8 h-8 rounded-full border-2 border-cyan-400 border-t-transparent animate-spin" />
+                    <span>Analyzing channel metrics and generating YouTube strategist briefing…</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* TAB 1: Competitor Outliers (Packaging vs Substance + Replicability) */}
           {activeTab === "outliers" && (

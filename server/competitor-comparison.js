@@ -1,8 +1,93 @@
 "use strict";
 
 const axios = require("axios");
+const { GoogleGenAI } = require("@google/genai");
 const db = require("./db").articleDb;
 const { getYoutubeClient, getYoutubeChannelId } = require("./youtube");
+const { getGeminiApiKey } = require("./gemini");
+
+// Helper to generate an expert YouTube Consultant narrative analysis using Gemini 3.7 Flash
+async function generateExecutiveSummary({ duoChannel, competitorChannel, benchmarks, outlierProfiles, underperformers, sideBySide }) {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    return generateFallbackSummary({ duoChannel, competitorChannel, outlierProfiles, underperformers, sideBySide });
+  }
+
+  const prompt = `You are a veteran elite YouTube Strategist & Channel Consultant specializing in the EV (Electric Vehicle) and automotive media landscape.
+
+You have performed an exhaustive, data-driven competitive evaluation comparing:
+1. "The Electric Duo" (Our channel: ~${duoChannel.subscribers.toLocaleString()} subscribers, ~100k monthly views, upload cadence of ${sideBySide.cadence.duo.monthlyAvg} videos/mo, avg video duration ${sideBySide.avgDuration.duo.formatted}, target CTR ${benchmarks.ourCtr}%).
+2. "${competitorChannel.title}" (Competitor: ${competitorChannel.subscribers.toLocaleString()} subscribers, upload cadence of ${sideBySide.cadence.competitor.monthlyAvg} videos/mo, avg video duration ${sideBySide.avgDuration.competitor.formatted}).
+
+DATA INPUTS & BENCHMARKS:
+- Competitor Subscriber Scale Ratio: ${sideBySide.subscribers.ratio}x our size.
+- Competitor Statistical Outliers (videos with ≥ 3.0x their own rolling baseline):
+${outlierProfiles.slice(0, 5).map((o, idx) => `  ${idx + 1}. "${o.title}" (${o.views.toLocaleString()} views, ${o.multiplier}x their normal, Replicability Flags: ${o.replicabilityFlags.map(f => f.label).join(", ")}, Key Takeaway: ${o.packagingDiff?.keyDiffSummary})`).join("\n")}
+
+- Competitor Underperformers / Bottom Quartile (< 0.6x baseline):
+${underperformers.slice(0, 4).map((u, idx) => `  ${idx + 1}. "${u.title}" (${u.multiplier}x baseline, Diagnosis: ${u.antiPatternDiagnosis})`).join("\n")}
+
+- Topic Share Comparison (The Electric Duo vs Competitor):
+${sideBySide.topics.duo.map(t => {
+  const compMatch = sideBySide.topics.competitor.find(c => c.name === t.name) || { pct: 0 };
+  return `  • ${t.name}: Duo ${t.pct}% vs Competitor ${compMatch.pct}%`;
+}).join("\n")}
+
+CONSULTING DIRECTIVES & MANDATES:
+1. Write a direct, authoritative, and deeply practical YouTube Consultant Executive Briefing for The Electric Duo.
+2. Structure the briefing into clear, strategic sections:
+   - **1. Strategic Positioning & Scale Reality**: Acknowledge the subscriber scale difference, explain why raw cross-channel views must be ignored, and assess our relative algorithmic strengths.
+   - **2. What The Electric Duo MUST Capitalize On (Replicable Wins)**: Break down their real 3x+ outliers. Detail exact title packaging mechanics, speed-to-market triggers, and format opportunities we can test immediately.
+   - **3. The "DO NOT COPY" Guardrails**: Explicitly call out competitor formats, overly vague titles, niche factory tours, or bloated videos that tanked even with their audience, plus formats where our channel scale would fail.
+   - **4. Content Mix & Cadence Optimization**: Compare topic distributions (e.g. Reviews vs News vs Road Trips vs Charging tests) and prescribe our ideal monthly schedule.
+   - **5. 90-Day Actionable Playbook**: 3 to 4 concrete, prioritized operational changes for Patrick & Liv to implement on the next 10 videos.
+3. Tone: Incisive, enthusiastic, objective, peer-to-peer, data-grounded. Avoid generic fluff or cliches ("in conclusion", "game-changer", "delve"). Format in clean GitHub-flavored Markdown.`;
+
+  try {
+    const ai = new GoogleGenAI({ apiKey });
+    const response = await ai.models.generateContent({
+      model: "gemini-3.7-flash",
+      contents: prompt,
+    });
+
+    if (response && response.text) {
+      return response.text.trim();
+    }
+  } catch (err) {
+    console.warn("Gemini narrative summary failed, falling back to heuristic summary:", err.message);
+  }
+
+  return generateFallbackSummary({ duoChannel, competitorChannel, outlierProfiles, underperformers, sideBySide });
+}
+
+function generateFallbackSummary({ duoChannel, competitorChannel, outlierProfiles, underperformers, sideBySide }) {
+  const subRatio = sideBySide.subscribers.ratio;
+  const topOutlier = outlierProfiles[0];
+  const topUnderperformer = underperformers[0];
+
+  return `## Executive Channel Assessment & Strategic Roadmap
+
+### 1. Strategic Positioning & Scale Reality
+**${competitorChannel.title}** operates at **${subRatio}x our subscriber scale** (${competitorChannel.subscribers.toLocaleString()} vs ${duoChannel.subscribers.toLocaleString()}). At this tier, their browse features and initial notification velocity are dramatically higher. Therefore, comparing raw view counts is a strategic trap. The focus must be entirely on **relative performance multipliers**—identifying what caused a video to surge to 3x+ of their normal benchmark and dissecting whether that trigger is repeatable at our scale.
+
+### 2. What The Electric Duo Should Capitalize On
+${topOutlier ? `- **Top Replicable Trigger**: "${topOutlier.title}" surged to **${topOutlier.multiplier}x their rolling baseline** (${topOutlier.views.toLocaleString()} views). ${topOutlier.packagingDiff?.keyDiffSummary || "High-clarity title structure with specific pricing/specs."}
+- **Packaging Execution**: Outliers on this channel leverage two-part titles (Problem / Curiosity + Solution) and prominent numbers/model names.
+- **Speed to Market**: Spikes heavily correlate with manufacturer announcements and first-look access. When an embargo lifts or a major EV reveal drops, rapid turn-around within 24 hours yields the highest conversion.` : `- Outliers heavily leverage punchy, specification-dense titles and immediate reaction timing.`}
+
+### 3. The "DO NOT COPY" Guardrails
+${topUnderperformer ? `- **Avoid Low-Interest Factory Tours & Vague Titles**: Videos like "${topUnderperformer.title}" collapsed to **${topUnderperformer.multiplier}x baseline**. ${topUnderperformer.antiPatternDiagnosis}
+- **Scale Traps**: Do not attempt casual, unscripted 45+ minute discussion vlogs. Established channels with 150k+ subs can occasionally get away with unoptimized uploads, but growing channels need tight pacing and high hook density.` : `- Avoid overly long or ambiguous titles without clear search terms.`}
+
+### 4. Topic Mix & Upload Cadence Prescriptions
+- **Current Upload Cadence**: The Electric Duo averages **${sideBySide.cadence.duo.monthlyAvg} videos/month** (avg length: ${sideBySide.avgDuration.duo.formatted}) vs Competitor's **${sideBySide.cadence.competitor.monthlyAvg} videos/month** (avg length: ${sideBySide.avgDuration.competitor.formatted}).
+- **Content Mix Recommendation**: Maintain a healthy balance of fast-turnaround News/Quick Charge for subscriber acquisition, alongside high-retention Hands-on Reviews and Charging hardware guides for long-tail search authority.
+
+### 5. 90-Day Priority Action Items
+1. **Title Packaging Overhaul**: Ensure every review title includes exact pricing or key differentiator numbers in the first 50 characters.
+2. **First-Look Velocity**: Allocate dedicated fast-track production slots for major OEM vehicle announcements.
+3. **Deprioritize Unfocused Formats**: Eliminate video concepts that lack a clear search hook or tangible audience takeaway.`;
+}
 
 // Convert ISO-8601 duration (PT18M6S) or standard format to seconds
 function parseDurationToSeconds(durationStr) {
@@ -843,7 +928,25 @@ async function generateComparisonReport(competitorInput, ctrBenchmark = 5.0, avd
     competitorInfo.subscriberCount
   );
 
-  // 8. Assemble Master Analysis Payload
+  // 8. Generate Expert YouTube Consultant Executive Narrative (Gemini 3.7 Flash)
+  let executiveSummary = "";
+  try {
+    executiveSummary = await generateExecutiveSummary({
+      duoChannel: duoInfo,
+      competitorChannel: competitorInfo,
+      benchmarks: {
+        ourCtr: parseFloat(ctrBenchmark) || 5.0,
+        ourAvd: parseFloat(avdBenchmark) || 48.0,
+      },
+      outlierProfiles,
+      underperformers,
+      sideBySide,
+    });
+  } catch (summaryErr) {
+    console.warn("Executive summary generation warning:", summaryErr.message);
+  }
+
+  // 9. Assemble Master Analysis Payload
   const analysis = {
     generatedAt: new Date().toISOString(),
     duoChannel: {
@@ -867,6 +970,7 @@ async function generateComparisonReport(competitorInput, ctrBenchmark = 5.0, avd
       ourCtr: parseFloat(ctrBenchmark) || 5.0,
       ourAvd: parseFloat(avdBenchmark) || 48.0,
     },
+    executiveSummary,
     outlierProfiles,
     underperformers,
     sideBySide,
