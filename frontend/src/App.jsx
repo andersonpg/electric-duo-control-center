@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from "react";
-import { CheckSquare, Zap, LogOut, User, Sparkles, BarChart3, Activity, Settings } from "lucide-react";
+import { CheckSquare, Zap, LogOut, User, Sparkles, BarChart3, Activity, Settings, Users } from "lucide-react";
 import PlanChecklist from "./PlanChecklist";
 import ArticleGenerator from "./ArticleGenerator";
 import VideoAudit from "./VideoAudit";
 import ChannelHealth from "./ChannelHealth";
+import CompetitorComparison from "./CompetitorComparison";
 import AdminSettings from "./AdminSettings";
 
 export default function App() {
@@ -133,6 +134,18 @@ export default function App() {
           </button>
 
           <button
+            onClick={() => handleModuleSwitch("comparison")}
+            className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold transition-all ${
+              activeModule === "comparison"
+                ? "bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 shadow-md shadow-cyan-500/20"
+                : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+            }`}
+          >
+            <Users className="w-3.5 h-3.5" />
+            <span>Competitor Comparison</span>
+          </button>
+
+          <button
             onClick={() => handleModuleSwitch("admin")}
             className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold transition-all ${
               activeModule === "admin"
@@ -183,6 +196,7 @@ export default function App() {
             onSelectVideoForAudit={handleSelectVideoForAudit}
           />
         )}
+        {activeModule === "comparison" && <CompetitorComparison currentUser={currentUser} />}
         {activeModule === "admin" && <AdminSettings currentUser={currentUser} />}
       </main>
     </div>

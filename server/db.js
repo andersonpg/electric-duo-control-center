@@ -179,11 +179,53 @@ articleDb.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
+  CREATE TABLE IF NOT EXISTS competitor_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    competitor_channel_id TEXT NOT NULL,
+    competitor_title TEXT NOT NULL,
+    competitor_handle TEXT,
+    competitor_thumbnail TEXT,
+    competitor_subs INTEGER DEFAULT 0,
+    competitor_uploads_count INTEGER DEFAULT 0,
+    duo_subs INTEGER DEFAULT 0,
+    duo_uploads_count INTEGER DEFAULT 0,
+    period_months INTEGER DEFAULT 12,
+    our_ctr_benchmark REAL DEFAULT 5.0,
+    our_avd_benchmark REAL DEFAULT 48.0,
+    analysis_json TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS competitor_videos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id INTEGER NOT NULL REFERENCES competitor_reports(id) ON DELETE CASCADE,
+    channel_id TEXT NOT NULL,
+    is_competitor INTEGER DEFAULT 1,
+    youtube_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    published_at DATETIME NOT NULL,
+    duration_sec INTEGER DEFAULT 0,
+    duration_iso TEXT,
+    view_count INTEGER DEFAULT 0,
+    like_count INTEGER DEFAULT 0,
+    comment_count INTEGER DEFAULT 0,
+    thumbnail_url TEXT,
+    tags_json TEXT,
+    description TEXT,
+    is_outlier INTEGER DEFAULT 0,
+    multiplier REAL DEFAULT 1.0,
+    baseline_views REAL DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
   CREATE INDEX IF NOT EXISTS idx_videos_published_at ON videos(published_at DESC);
   CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
   CREATE INDEX IF NOT EXISTS idx_video_audits_updated ON video_audits(updated_at DESC);
   CREATE INDEX IF NOT EXISTS idx_channel_snapshots_date ON channel_snapshots(snapshot_date DESC);
   CREATE INDEX IF NOT EXISTS idx_video_snapshots_lookup ON video_snapshots(youtube_id, snapshot_date DESC);
+  CREATE INDEX IF NOT EXISTS idx_competitor_reports_channel ON competitor_reports(competitor_channel_id, updated_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_competitor_videos_report ON competitor_videos(report_id, is_competitor);
 `);
 
 // Add transcript, category_source & view_count columns to videos table if not present

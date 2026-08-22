@@ -16,6 +16,7 @@ const { syncCatalog } = require("./youtube");
 const { generateArticle } = require("./gemini");
 const { createWordPressDraft } = require("./wordpress");
 const { getOrRunAudit, getAuditsSummary } = require("./audit");
+const competitorComparison = require("./competitor-comparison");
 
 const app = express();
 app.use(cors());
@@ -940,6 +941,96 @@ app.delete("/api/channel-health/playlists/:id", auth.requireAuth(), (req, res) =
   try {
     const id = parseInt(req.params.id, 10);
     res.json(channelHealth.deletePlaylistMapping(id));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/* ---------------- Competitor Comparison Endpoints ---------------- */
+
+// 1. List all saved comparison reports
+app.get("/api/comparison/reports", auth.requireAuth(), (req, res) => {
+  try {
+    const reports = competitorComparison.listSavedReports();
+    res.json(reports);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 2. Get specific comparison report by ID
+app.get("/api/comparison/reports/:id", auth.requireAuth(), (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const report = competitorComparison.getReportById(id);
+    if (!report) {
+      return res.status(404).json({ error: "Report not found" });
+    }
+    res.json(report);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 3. Generate new comparison report or update existing
+app.post("/api/comparison/generate", auth.requireAuth(), async (req, res) => {
+  try {
+    const { channelUrl, ourCtr, ourAvd } = req.body || {};
+    if (!channelUrl || !channelUrl.trim()) {
+      return res.status(400).json({ error: "Please enter a valid YouTube channel URL, handle, or ID." });
+    }
+    const result = await competitorComparison.generateComparisonReport(
+      channelUrl.trim(),
+      ourCtr || 5.0,
+      ourAvd || 48.0
+    );
+    res.json({ success: true, ...result });
+  } catch (error) {
+    console.error("Comparison report generation failed:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 4. Refresh existing report
+app.post("/api/comparison/reports/:id/refresh", auth.requireAuth(), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const report = competitorComparison.getReportById(id);
+    if (!report) {
+      return res.status(404).json({ error: "Report not found" });
+    }
+    const { ourCtr, ourAvd } = req.body || {};
+    const result = await competitorComparison.generateComparisonReport(
+      report.competitorChannelId,
+      ourCtr || report.analysis?.benchmarks?.ourCtr || 5.0,
+      ourAvd || report.analysis?.benchmarks?.ourAvd || 48.0
+    );
+    res.json({ success: true, ...result });
+  } catch (error) {
+    console.error("Report refresh failed:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 5. Delete comparison report
+app.delete("/api/comparison/reports/:id", auth.requireAuth(), (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    competitorComparison.deleteReport(id);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 6. Export report to CSV
+app.get("/api/comparison/reports/:id/export-csv", auth.requireAuth(), (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const csvData = competitorComparison.generateReportCsv(id);
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", `attachment; filename="competitor-comparison-report-${id}.csv"`);
+    res.send(csvData);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
