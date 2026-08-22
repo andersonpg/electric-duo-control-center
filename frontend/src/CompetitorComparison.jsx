@@ -29,6 +29,110 @@ import {
   Compass,
 } from "lucide-react";
 
+// Helper component to render clean, beautifully styled markdown for the Executive Summary
+function MarkdownExecutiveSummary({ content }) {
+  if (!content) return null;
+
+  // Clean unwanted header blocks if present
+  let cleanContent = content
+    .replace(/^#\s*EXECUTIVE BRIEFING[^\n]*\n+/i, "")
+    .replace(/^\*\*TO:\*\*[^\n]*\n+/gim, "")
+    .replace(/^\*\*FROM:\*\*[^\n]*\n+/gim, "")
+    .replace(/^\*\*DATE:\*\*[^\n]*\n+/gim, "")
+    .replace(/^\*\*SUBJECT:\*\*[^\n]*\n+/gim, "")
+    .replace(/^---\s*\n+/gm, "")
+    .trim();
+
+  // Split into paragraphs / blocks
+  const blocks = cleanContent.split(/\n\s*\n/);
+
+  return (
+    <div className="space-y-6 text-slate-300 text-sm leading-relaxed font-sans">
+      {blocks.map((block, bIdx) => {
+        const trimmed = block.trim();
+        if (!trimmed) return null;
+
+        // Level 2 Heading
+        if (trimmed.startsWith("## ")) {
+          const title = trimmed.replace(/^##\s+/, "");
+          return (
+            <div key={bIdx} className="pt-6 pb-2 border-b border-slate-800 first:pt-0">
+              <h2 className="text-lg font-black text-white tracking-tight flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-gradient-to-r from-cyan-400 to-blue-500"></span>
+                <span>{title}</span>
+              </h2>
+            </div>
+          );
+        }
+
+        // Level 3 Heading
+        if (trimmed.startsWith("### ")) {
+          const title = trimmed.replace(/^###\s+/, "");
+          return (
+            <h3 key={bIdx} className="text-sm font-extrabold text-cyan-300 tracking-wide uppercase mt-4 mb-2">
+              {title}
+            </h3>
+          );
+        }
+
+        // Bullet list
+        if (trimmed.startsWith("- ") || trimmed.startsWith("* ") || trimmed.startsWith("• ")) {
+          const items = trimmed.split(/\n/).map((line) => line.replace(/^[-*•]\s+/, "").trim());
+          return (
+            <ul key={bIdx} className="space-y-2.5 my-3 pl-2">
+              {items.map((item, iIdx) => (
+                <li key={iIdx} className="flex items-start gap-2.5 text-xs sm:text-sm text-slate-300">
+                  <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 mt-2 shrink-0"></span>
+                  <div dangerouslySetInnerHTML={{ __html: formatInlineMarkdown(item) }} />
+                </li>
+              ))}
+            </ul>
+          );
+        }
+
+        // Numbered list
+        if (/^\d+\.\s+/.test(trimmed)) {
+          const items = trimmed.split(/\n/).map((line) => line.replace(/^\d+\.\s+/, "").trim());
+          return (
+            <ol key={bIdx} className="space-y-3 my-4 pl-2">
+              {items.map((item, iIdx) => (
+                <li key={iIdx} className="flex items-start gap-3 text-xs sm:text-sm text-slate-200">
+                  <span className="w-6 h-6 rounded-lg bg-cyan-950/80 border border-cyan-500/30 text-cyan-400 font-black text-xs flex items-center justify-center shrink-0">
+                    {iIdx + 1}
+                  </span>
+                  <div className="pt-0.5" dangerouslySetInnerHTML={{ __html: formatInlineMarkdown(item) }} />
+                </li>
+              ))}
+            </ol>
+          );
+        }
+
+        // Regular Paragraph
+        return (
+          <p
+            key={bIdx}
+            className="text-xs sm:text-sm text-slate-300 leading-relaxed"
+            dangerouslySetInnerHTML={{ __html: formatInlineMarkdown(trimmed) }}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+// Inline markdown helper for bold, italics, and code tags
+function formatInlineMarkdown(text) {
+  if (!text) return "";
+  let formatted = text
+    // Bold
+    .replace(/\*\*(.*?)\*\*/g, '<strong class="text-white font-bold">$1</strong>')
+    // Italics
+    .replace(/\*(.*?)\*/g, '<em class="text-slate-200 italic">$1</em>')
+    // Inline code
+    .replace(/`(.*?)`/g, '<code class="px-1.5 py-0.5 rounded bg-slate-950 border border-slate-800 text-cyan-300 text-xs font-mono">$1</code>');
+  return formatted;
+}
+
 export default function CompetitorComparison({ currentUser }) {
   const [reports, setReports] = useState([]);
   const [activeReportId, setActiveReportId] = useState(null);
@@ -447,9 +551,7 @@ export default function CompetitorComparison({ currentUser }) {
               {/* Narrative Content Body */}
               <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-8 shadow-xl">
                 {analysis.executiveSummary ? (
-                  <div className="prose prose-invert prose-cyan max-w-none text-slate-300 text-sm leading-relaxed space-y-4 whitespace-pre-wrap font-sans">
-                    {analysis.executiveSummary}
-                  </div>
+                  <MarkdownExecutiveSummary content={analysis.executiveSummary} />
                 ) : (
                   <div className="text-center py-12 text-slate-400 text-xs flex flex-col items-center gap-3">
                     <div className="w-8 h-8 rounded-full border-2 border-cyan-400 border-t-transparent animate-spin" />
