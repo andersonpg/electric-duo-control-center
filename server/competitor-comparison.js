@@ -8,16 +8,19 @@ const { getGeminiApiKey } = require("./gemini");
 
 // Helper to generate an expert YouTube Consultant narrative analysis using Gemini 3.7 Flash
 async function generateExecutiveSummary({ duoChannel, competitorChannel, benchmarks, outlierProfiles, underperformers, sideBySide }) {
+  const duoSubs = duoChannel.subscriberCount || duoChannel.subscribers || 24800;
+  const compSubs = competitorChannel.subscriberCount || competitorChannel.subscribers || 100000;
+
   const apiKey = getGeminiApiKey();
   if (!apiKey) {
-    return generateFallbackSummary({ duoChannel, competitorChannel, outlierProfiles, underperformers, sideBySide });
+    return generateFallbackSummary({ duoChannel, competitorChannel, duoSubs, compSubs, outlierProfiles, underperformers, sideBySide });
   }
 
   const prompt = `You are a veteran elite YouTube Strategist & Channel Consultant specializing in the EV (Electric Vehicle) and automotive media landscape.
 
 You have performed an exhaustive, data-driven competitive evaluation comparing:
-1. "The Electric Duo" (Our channel: ~${duoChannel.subscribers.toLocaleString()} subscribers, ~100k monthly views, upload cadence of ${sideBySide.cadence.duo.monthlyAvg} videos/mo, avg video duration ${sideBySide.avgDuration.duo.formatted}, target CTR ${benchmarks.ourCtr}%).
-2. "${competitorChannel.title}" (Competitor: ${competitorChannel.subscribers.toLocaleString()} subscribers, upload cadence of ${sideBySide.cadence.competitor.monthlyAvg} videos/mo, avg video duration ${sideBySide.avgDuration.competitor.formatted}).
+1. "The Electric Duo" (Our channel: ~${duoSubs.toLocaleString()} subscribers, ~100k monthly views, upload cadence of ${sideBySide.cadence.duo.monthlyAvg} videos/mo, avg video duration ${sideBySide.avgDuration.duo.formatted}, target CTR ${benchmarks.ourCtr}%).
+2. "${competitorChannel.title}" (Competitor: ${compSubs.toLocaleString()} subscribers, upload cadence of ${sideBySide.cadence.competitor.monthlyAvg} videos/mo, avg video duration ${sideBySide.avgDuration.competitor.formatted}).
 
 DATA INPUTS & BENCHMARKS:
 - Competitor Subscriber Scale Ratio: ${sideBySide.subscribers.ratio}x our size.
@@ -57,10 +60,10 @@ CONSULTING DIRECTIVES & MANDATES:
     console.warn("Gemini narrative summary failed, falling back to heuristic summary:", err.message);
   }
 
-  return generateFallbackSummary({ duoChannel, competitorChannel, outlierProfiles, underperformers, sideBySide });
+  return generateFallbackSummary({ duoChannel, competitorChannel, duoSubs, compSubs, outlierProfiles, underperformers, sideBySide });
 }
 
-function generateFallbackSummary({ duoChannel, competitorChannel, outlierProfiles, underperformers, sideBySide }) {
+function generateFallbackSummary({ duoChannel, competitorChannel, duoSubs, compSubs, outlierProfiles, underperformers, sideBySide }) {
   const subRatio = sideBySide.subscribers.ratio;
   const topOutlier = outlierProfiles[0];
   const topUnderperformer = underperformers[0];
@@ -68,7 +71,7 @@ function generateFallbackSummary({ duoChannel, competitorChannel, outlierProfile
   return `## Executive Channel Assessment & Strategic Roadmap
 
 ### 1. Strategic Positioning & Scale Reality
-**${competitorChannel.title}** operates at **${subRatio}x our subscriber scale** (${competitorChannel.subscribers.toLocaleString()} vs ${duoChannel.subscribers.toLocaleString()}). At this tier, their browse features and initial notification velocity are dramatically higher. Therefore, comparing raw view counts is a strategic trap. The focus must be entirely on **relative performance multipliers**—identifying what caused a video to surge to 3x+ of their normal benchmark and dissecting whether that trigger is repeatable at our scale.
+**${competitorChannel.title}** operates at **${subRatio}x our subscriber scale** (${compSubs.toLocaleString()} vs ${duoSubs.toLocaleString()}). At this tier, their browse features and initial notification velocity are dramatically higher. Therefore, comparing raw view counts is a strategic trap. The focus must be entirely on **relative performance multipliers**—identifying what caused a video to surge to 3x+ of their normal benchmark and dissecting whether that trigger is repeatable at our scale.
 
 ### 2. What The Electric Duo Should Capitalize On
 ${topOutlier ? `- **Top Replicable Trigger**: "${topOutlier.title}" surged to **${topOutlier.multiplier}x their rolling baseline** (${topOutlier.views.toLocaleString()} views). ${topOutlier.packagingDiff?.keyDiffSummary || "High-clarity title structure with specific pricing/specs."}
