@@ -1,5 +1,6 @@
 "use strict";
 
+require("dotenv").config();
 const { google } = require("googleapis");
 const axios = require("axios");
 const db = require("./db").articleDb;
@@ -21,8 +22,28 @@ function getYoutubeChannelId() {
   return process.env.YOUTUBE_CHANNEL_ID || "UCuhhyTS-Q66qq-gWrCcTOzg";
 }
 
-function getYoutubeClient() {
-  // If OAuth2 is connected, prefer OAuth client
+function getYoutubeClient(preferApiKey = false) {
+  // If preferApiKey is false and OAuth2 is connected, try OAuth client first
+  if (!preferApiKey && isOAuthConnected()) {
+    try {
+      const oauthClient = getAuthenticatedClient();
+      if (oauthClient) {
+        return google.youtube({ version: "v3", auth: oauthClient });
+      }
+    } catch (e) {
+      console.warn("OAuth client init failed, falling back to API Key:", e.message);
+    }
+  }
+
+  const apiKey = getYoutubeApiKey();
+  if (apiKey) {
+    return google.youtube({
+      version: "v3",
+      auth: apiKey,
+    });
+  }
+
+  // Fallback to OAuth client if apiKey not found
   if (isOAuthConnected()) {
     const oauthClient = getAuthenticatedClient();
     if (oauthClient) {
@@ -30,14 +51,7 @@ function getYoutubeClient() {
     }
   }
 
-  const apiKey = getYoutubeApiKey();
-  if (!apiKey) {
-    throw new Error("YouTube API Key is not configured. Please set YOUTUBE_API_KEY or connect via Google OAuth in Admin Settings.");
-  }
-  return google.youtube({
-    version: "v3",
-    auth: apiKey,
-  });
+  throw new Error("YouTube API Key is not configured. Please set YOUTUBE_API_KEY or connect via Google OAuth in Admin Settings.");
 }
 
 async function getUploadsPlaylistId(channelId) {
