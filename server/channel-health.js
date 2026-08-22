@@ -591,6 +591,7 @@ module.exports = {
   savePlaylistMapping,
   deletePlaylistMapping,
   overrideVideoCategory,
+  batchOverrideVideoCategories,
   getVideoCatalog,
   bulkReclassifyLibrary,
   captureSnapshot,
