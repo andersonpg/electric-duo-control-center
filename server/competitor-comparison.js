@@ -70,7 +70,7 @@ async function resolveChannel(input) {
   const parsed = parseChannelInput(input);
   if (!parsed) throw new Error("Please enter a valid YouTube channel URL, handle, or ID.");
 
-  const youtube = getYoutubeClient();
+  const youtube = getYoutubeClient(true);
 
   // 1. If handle: channels.list(forHandle)
   if (parsed.type === "handle") {
@@ -195,7 +195,7 @@ function extractChannelInfo(item) {
 
 // Fetch up to 12 months of uploads for a channel via YouTube Data API
 async function fetchChannelUploads(channelInfo, months = 12) {
-  const youtube = getYoutubeClient();
+  const youtube = getYoutubeClient(true);
   const cutoffDate = new Date();
   cutoffDate.setMonth(cutoffDate.getMonth() - months);
 
