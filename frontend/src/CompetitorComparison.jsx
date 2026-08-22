@@ -33,7 +33,7 @@ import {
 function MarkdownExecutiveSummary({ content }) {
   if (!content) return null;
 
-  // Clean unwanted header blocks if present
+  // Clean unwanted memo headers
   let cleanContent = content
     .replace(/^#\s*EXECUTIVE BRIEFING[^\n]*\n+/i, "")
     .replace(/^\*\*TO:\*\*[^\n]*\n+/gim, "")
@@ -43,76 +43,235 @@ function MarkdownExecutiveSummary({ content }) {
     .replace(/^---\s*\n+/gm, "")
     .trim();
 
-  // Split into paragraphs / blocks
-  const blocks = cleanContent.split(/\n\s*\n/);
+  // Parse lines into structured tokens
+  const lines = cleanContent.split("\n");
+  const elements = [];
+  let currentList = null; // { type: 'ul' | 'ol', items: [] }
+  let inCodeBlock = false;
+  let codeBlockLines = [];
+
+  const flushList = () => {
+    if (currentList) {
+      if (currentList.type === "ul") {
+        elements.push({
+          type: "ul",
+          items: [...currentList.items],
+        });
+      } else {
+        elements.push({
+          type: "ol",
+          items: [...currentList.items],
+        });
+      }
+      currentList = null;
+    }
+  };
+
+  const flushCodeBlock = () => {
+    if (codeBlockLines.length > 0) {
+      elements.push({
+        type: "code",
+        code: codeBlockLines.join("\n"),
+      });
+      codeBlockLines = [];
+    }
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i];
+    const line = rawLine.trim();
+
+    // Code block toggle (```)
+    if (line.startsWith("```")) {
+      if (inCodeBlock) {
+        flushCodeBlock();
+        inCodeBlock = false;
+      } else {
+        flushList();
+        inCodeBlock = true;
+      }
+      continue;
+    }
+
+    if (inCodeBlock) {
+      codeBlockLines.push(rawLine);
+      continue;
+    }
+
+    // Empty line
+    if (!line) {
+      flushList();
+      continue;
+    }
+
+    // Markdown Table Row (e.g. | col 1 | col 2 | or +---+---+)
+    if (line.startsWith("|") || line.startsWith("+-")) {
+      flushList();
+      // Skip separator lines like |---|---| or +---+
+      if (/^[|\s\-+:]+$/.test(line)) continue;
+
+      const cells = line
+        .split("|")
+        .map((c) => c.trim())
+        .filter((c) => c.length > 0 && !/^[\-+:]+$/.test(c));
+
+      if (cells.length > 0) {
+        elements.push({
+          type: "tableRow",
+          cells,
+        });
+      }
+      continue;
+    }
+
+    // Level 1 or 2 Heading (## )
+    if (line.startsWith("## ") || line.startsWith("# ")) {
+      flushList();
+      elements.push({
+        type: "h2",
+        text: line.replace(/^#+\s+/, ""),
+      });
+      continue;
+    }
+
+    // Level 3 Heading (### )
+    if (line.startsWith("### ")) {
+      flushList();
+      elements.push({
+        type: "h3",
+        text: line.replace(/^###\s+/, ""),
+      });
+      continue;
+    }
+
+    // Level 4 Heading (#### )
+    if (line.startsWith("#### ")) {
+      flushList();
+      elements.push({
+        type: "h4",
+        text: line.replace(/^####\s+/, ""),
+      });
+      continue;
+    }
+
+    // Bullet List item (- , * , • )
+    if (/^[-*•]\s+/.test(line)) {
+      const itemText = line.replace(/^[-*•]\s+/, "").trim();
+      if (!currentList || currentList.type !== "ul") {
+        flushList();
+        currentList = { type: "ul", items: [itemText] };
+      } else {
+        currentList.items.push(itemText);
+      }
+      continue;
+    }
+
+    // Numbered List item (1. , 2. )
+    if (/^\d+\.\s+/.test(line)) {
+      const itemText = line.replace(/^\d+\.\s+/, "").trim();
+      if (!currentList || currentList.type !== "ol") {
+        flushList();
+        currentList = { type: "ol", items: [itemText] };
+      } else {
+        currentList.items.push(itemText);
+      }
+      continue;
+    }
+
+    // Standard Paragraph text
+    flushList();
+    elements.push({
+      type: "p",
+      text: line,
+    });
+  }
+  flushList();
+  flushCodeBlock();
 
   return (
-    <div className="space-y-6 text-slate-300 text-sm leading-relaxed font-sans">
-      {blocks.map((block, bIdx) => {
-        const trimmed = block.trim();
-        if (!trimmed) return null;
-
-        // Level 2 Heading
-        if (trimmed.startsWith("## ")) {
-          const title = trimmed.replace(/^##\s+/, "");
+    <div className="space-y-4 text-slate-300 text-sm leading-relaxed font-sans">
+      {elements.map((el, idx) => {
+        if (el.type === "h2") {
           return (
-            <div key={bIdx} className="pt-6 pb-2 border-b border-slate-800 first:pt-0">
-              <h2 className="text-lg font-black text-white tracking-tight flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-gradient-to-r from-cyan-400 to-blue-500"></span>
-                <span>{title}</span>
+            <div key={idx} className="pt-6 pb-2.5 border-b border-slate-800 first:pt-0">
+              <h2 className="text-base sm:text-lg font-black text-white tracking-tight flex items-center gap-2.5">
+                <span className="w-2.5 h-2.5 rounded-full bg-gradient-to-r from-cyan-400 to-blue-500 shrink-0"></span>
+                <span>{el.text}</span>
               </h2>
             </div>
           );
         }
 
-        // Level 3 Heading
-        if (trimmed.startsWith("### ")) {
-          const title = trimmed.replace(/^###\s+/, "");
+        if (el.type === "h3") {
           return (
-            <h3 key={bIdx} className="text-sm font-extrabold text-cyan-300 tracking-wide uppercase mt-4 mb-2">
-              {title}
+            <h3 key={idx} className="text-xs sm:text-sm font-black text-cyan-400 tracking-wider uppercase mt-5 mb-2 flex items-center gap-2">
+              <span className="w-1.5 h-1.5 rounded-sm bg-cyan-400"></span>
+              <span>{el.text}</span>
             </h3>
           );
         }
 
-        // Bullet list
-        if (trimmed.startsWith("- ") || trimmed.startsWith("* ") || trimmed.startsWith("• ")) {
-          const items = trimmed.split(/\n/).map((line) => line.replace(/^[-*•]\s+/, "").trim());
+        if (el.type === "h4") {
           return (
-            <ul key={bIdx} className="space-y-2.5 my-3 pl-2">
-              {items.map((item, iIdx) => (
+            <h4 key={idx} className="text-xs font-bold text-slate-200 uppercase tracking-wide mt-3 mb-1">
+              {el.text}
+            </h4>
+          );
+        }
+
+        if (el.type === "ul") {
+          return (
+            <ul key={idx} className="space-y-2.5 my-3 pl-1">
+              {el.items.map((item, iIdx) => (
                 <li key={iIdx} className="flex items-start gap-2.5 text-xs sm:text-sm text-slate-300">
                   <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 mt-2 shrink-0"></span>
-                  <div dangerouslySetInnerHTML={{ __html: formatInlineMarkdown(item) }} />
+                  <div className="flex-1" dangerouslySetInnerHTML={{ __html: formatInlineMarkdown(item) }} />
                 </li>
               ))}
             </ul>
           );
         }
 
-        // Numbered list
-        if (/^\d+\.\s+/.test(trimmed)) {
-          const items = trimmed.split(/\n/).map((line) => line.replace(/^\d+\.\s+/, "").trim());
+        if (el.type === "ol") {
           return (
-            <ol key={bIdx} className="space-y-3 my-4 pl-2">
-              {items.map((item, iIdx) => (
+            <ol key={idx} className="space-y-3 my-4 pl-1">
+              {el.items.map((item, iIdx) => (
                 <li key={iIdx} className="flex items-start gap-3 text-xs sm:text-sm text-slate-200">
                   <span className="w-6 h-6 rounded-lg bg-cyan-950/80 border border-cyan-500/30 text-cyan-400 font-black text-xs flex items-center justify-center shrink-0">
                     {iIdx + 1}
                   </span>
-                  <div className="pt-0.5" dangerouslySetInnerHTML={{ __html: formatInlineMarkdown(item) }} />
+                  <div className="pt-0.5 flex-1" dangerouslySetInnerHTML={{ __html: formatInlineMarkdown(item) }} />
                 </li>
               ))}
             </ol>
           );
         }
 
-        // Regular Paragraph
+        if (el.type === "tableRow") {
+          return (
+            <div key={idx} className="grid grid-cols-2 sm:grid-cols-4 gap-2 bg-slate-950/80 border border-slate-800/80 p-3 rounded-xl text-xs my-2">
+              {el.cells.map((cell, cIdx) => (
+                <div key={cIdx} className="flex flex-col">
+                  <span className="text-slate-200 font-medium" dangerouslySetInnerHTML={{ __html: formatInlineMarkdown(cell) }} />
+                </div>
+              ))}
+            </div>
+          );
+        }
+
+        if (el.type === "code") {
+          return (
+            <pre key={idx} className="bg-slate-950 border border-slate-800 p-3.5 rounded-2xl overflow-x-auto text-xs text-cyan-300 font-mono my-3">
+              <code>{el.code}</code>
+            </pre>
+          );
+        }
+
         return (
           <p
-            key={bIdx}
+            key={idx}
             className="text-xs sm:text-sm text-slate-300 leading-relaxed"
-            dangerouslySetInnerHTML={{ __html: formatInlineMarkdown(trimmed) }}
+            dangerouslySetInnerHTML={{ __html: formatInlineMarkdown(el.text) }}
           />
         );
       })}

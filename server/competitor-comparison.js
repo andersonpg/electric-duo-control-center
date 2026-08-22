@@ -39,13 +39,14 @@ ${sideBySide.topics.duo.map(t => {
 CONSULTING DIRECTIVES & MANDATES:
 1. Write a direct, authoritative, and deeply practical YouTube Consultant Executive Briefing for The Electric Duo.
 2. DO NOT include any email/memo headers like "TO:", "FROM:", "DATE:", "SUBJECT:", or simulated header blocks. Start immediately with the first section heading (e.g., "## 1. Strategic Positioning & Scale Reality").
-3. Structure the briefing into clear, strategic sections:
+3. DO NOT output ASCII character tables (no "+---+---+", no code block tables). Use bullet points, bold key phrases, or clean numbered lists instead.
+4. Structure the briefing into clear, strategic sections:
    - **## 1. Strategic Positioning & Scale Reality**: Acknowledge the subscriber scale difference, explain why raw cross-channel views must be ignored, and assess our relative algorithmic strengths.
    - **## 2. What The Electric Duo MUST Capitalize On (Replicable Wins)**: Break down their real 3x+ outliers. Detail exact title packaging mechanics, speed-to-market triggers, and format opportunities we can test immediately.
    - **## 3. The "DO NOT COPY" Guardrails**: Explicitly call out competitor formats, overly vague titles, niche factory tours, or bloated videos that tanked even with their audience, plus formats where our channel scale would fail.
    - **## 4. Content Mix & Cadence Optimization**: Compare topic distributions (e.g. Reviews vs News vs Road Trips vs Charging tests) and prescribe our ideal monthly schedule.
    - **## 5. 90-Day Actionable Playbook**: 3 to 4 concrete, prioritized operational changes for Patrick & Liv to implement on the next 10 videos.
-4. Tone: Incisive, enthusiastic, objective, peer-to-peer, data-grounded. Avoid generic fluff or cliches ("in conclusion", "game-changer", "delve").`;
+5. Tone: Incisive, enthusiastic, objective, peer-to-peer, data-grounded. Avoid generic fluff or cliches ("in conclusion", "game-changer", "delve").`;
 
   const candidateModels = [
     "gemini-3.7-flash",
