@@ -895,6 +895,19 @@ app.post("/api/channel-health/override-category", auth.requireAuth(), (req, res)
   }
 });
 
+app.post("/api/channel-health/batch-override-categories", auth.requireAuth(), (req, res) => {
+  try {
+    const { updates } = req.body || {};
+    if (!updates || !Array.isArray(updates)) {
+      return res.status(400).json({ error: "updates array is required." });
+    }
+    const result = channelHealth.batchOverrideVideoCategories(updates);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get("/api/channel-health/annotations", auth.requireAuth(), (req, res) => {
   try {
     res.json(channelHealth.getAnnotations());

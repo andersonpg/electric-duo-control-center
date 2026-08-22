@@ -22,11 +22,38 @@ function getCategories() {
   return db.prepare("SELECT * FROM content_categories ORDER BY id ASC").all();
 }
 
-function addCategory({ name, description, color }) {
+function addCategory({ name, description, color, addToTemplates = false, promptTemplate = "" }) {
   if (!name || !name.trim()) throw new Error("Category name is required.");
+  const cleanName = name.trim();
+
+  // Insert into content_categories
   const stmt = db.prepare("INSERT INTO content_categories (name, description, color) VALUES (?, ?, ?)");
-  const info = stmt.run(name.trim(), description || "", color || "#06b6d4");
-  return { id: info.lastInsertRowid, name: name.trim(), description, color };
+  const info = stmt.run(cleanName, description || "", color || "#06b6d4");
+
+  // If requested, also create a content_template for Article Generator
+  if (addToTemplates) {
+    try {
+      const templateStmt = db.prepare(`
+        INSERT INTO content_templates (name, description, prompt_template)
+        VALUES (?, ?, ?)
+        ON CONFLICT(name) DO UPDATE SET
+          description = excluded.description,
+          prompt_template = excluded.prompt_template,
+          updated_at = CURRENT_TIMESTAMP
+      `);
+      templateStmt.run(
+        cleanName,
+        description || `Article template for ${cleanName}`,
+        promptTemplate && promptTemplate.trim()
+          ? promptTemplate.trim()
+          : `You are the lead content writer for The Electric Duo (theelectricduo.com). Write an in-depth, enthusiastic, first-person EV article based on the video transcript for "${cleanName}".`
+      );
+    } catch (tmplErr) {
+      console.warn("Could not auto-create template for category:", tmplErr.message);
+    }
+  }
+
+  return { id: info.lastInsertRowid, name: cleanName, description, color, addToTemplates };
 }
 
 function updateCategory(id, { name, description, color }) {
@@ -73,7 +100,7 @@ function savePlaylistMapping({ playlist_id, playlist_title, category }) {
       updated_at = CURRENT_TIMESTAMP
   `);
   stmt.run(playlist_id.trim(), playlist_title || "Playlist", category);
-  return { success: true };
+  return { success: true, playlist_id, playlist_title, category };
 }
 
 function deletePlaylistMapping(id) {
@@ -81,16 +108,36 @@ function deletePlaylistMapping(id) {
   return { success: true };
 }
 
-// 3. Manual Category Override
+// 3. Manual Category Override (Single & Batch)
 function overrideVideoCategory(youtubeId, category) {
   const updateStmt = db.prepare("UPDATE videos SET content_type = ?, category_source = 'manual' WHERE youtube_id = ?");
   updateStmt.run(category, youtubeId);
   return { success: true, youtubeId, category, source: "manual" };
 }
 
-// 4. Video Catalog Query for Easy Search & Re-categorization
+function batchOverrideVideoCategories(updates) {
+  if (!Array.isArray(updates) || updates.length === 0) {
+    return { success: true, count: 0 };
+  }
+
+  const updateStmt = db.prepare("UPDATE videos SET content_type = ?, category_source = 'manual' WHERE youtube_id = ?");
+  const runTx = db.transaction((list) => {
+    let count = 0;
+    for (const item of list) {
+      if (item.youtubeId && item.category) {
+        updateStmt.run(item.category, item.youtubeId);
+        count++;
+      }
+    }
+    return count;
+  });
+
+  const updatedCount = runTx(updates);
+  return { success: true, count: updatedCount };
+}
+
+// 4. Video Catalog Query for Easy Search & Re-categorization (50 items/page, Long-Form Only)
 function getVideoCatalog({ page = 1, limit = 50, search = "", category = "" }) {
-  const offset = (page - 1) * limit;
   let where = "WHERE 1=1";
   const params = [];
 
@@ -99,26 +146,27 @@ function getVideoCatalog({ page = 1, limit = 50, search = "", category = "" }) {
     params.push(`%${search.trim()}%`, `%${search.trim()}%`);
   }
 
-  if (category && category.trim()) {
+  if (category && category.trim() && category !== "all") {
     where += " AND content_type = ?";
     params.push(category.trim());
   }
 
-  const countQuery = `SELECT COUNT(*) as total FROM videos ${where}`;
-  const total = db.prepare(countQuery).get(...params).total;
+  // Retrieve matching videos and filter out shorts (<4m)
+  const allMatching = db.prepare(`SELECT * FROM videos ${where} ORDER BY published_at DESC`).all(...params);
+  const longFormVideos = allMatching.filter((v) => parseDurationSec(v.duration) >= 240);
 
-  const dataQuery = `SELECT * FROM videos ${where} ORDER BY view_count DESC, published_at DESC LIMIT ? OFFSET ?`;
-  const rows = db.prepare(dataQuery).all(...params, limit, offset);
-
-  // Filter out shorts (< 4 mins)
-  const longFormRows = rows.filter((v) => parseDurationSec(v.duration) >= 240);
+  const total = longFormVideos.length;
+  const totalPages = Math.max(1, Math.ceil(total / limit));
+  const validPage = Math.max(1, Math.min(page, totalPages));
+  const offset = (validPage - 1) * limit;
+  const paginatedRows = longFormVideos.slice(offset, offset + limit);
 
   return {
-    videos: longFormRows,
+    videos: paginatedRows,
     total,
-    page,
+    page: validPage,
     limit,
-    totalPages: Math.ceil(total / limit),
+    totalPages,
   };
 }
 

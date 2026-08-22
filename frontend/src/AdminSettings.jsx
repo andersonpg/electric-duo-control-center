@@ -21,6 +21,15 @@ import {
   ExternalLink,
   Unlink,
   CheckCircle,
+  Tag,
+  Plus,
+  List,
+  ChevronLeft,
+  ChevronRight,
+  Search,
+  ArrowLeft,
+  FileText,
+  Layers,
 } from "lucide-react";
 
 export default function AdminSettings({ currentUser }) {
@@ -64,6 +73,28 @@ export default function AdminSettings({ currentUser }) {
   // Maintenance State
   const [isSyncingDurations, setIsSyncingDurations] = useState(false);
   const [syncDurationResult, setSyncDurationResult] = useState(null);
+
+  // Category Manager State
+  const [isCategoryManagerOpen, setIsCategoryManagerOpen] = useState(false);
+  const [catalogVideos, setCatalogVideos] = useState([]);
+  const [catalogTotal, setCatalogTotal] = useState(0);
+  const [catalogTotalPages, setCatalogTotalPages] = useState(1);
+  const [catalogPage, setCatalogPage] = useState(1);
+  const [catalogSearch, setCatalogSearch] = useState("");
+  const [catalogCategoryFilter, setCatalogCategoryFilter] = useState("all");
+  const [isLoadingCatalog, setIsLoadingCatalog] = useState(false);
+  const [categories, setCategories] = useState([]);
+  const [stagedCategoryChanges, setStagedCategoryChanges] = useState({}); // { [youtubeId]: newCategory }
+  const [isSavingCategoryChanges, setIsSavingCategoryChanges] = useState(false);
+
+  // Create Category Modal State
+  const [isCreateCategoryModalOpen, setIsCreateCategoryModalOpen] = useState(false);
+  const [newCatName, setNewCatName] = useState("");
+  const [newCatDescription, setNewCatDescription] = useState("");
+  const [newCatColor, setNewCatColor] = useState("#06b6d4");
+  const [newCatAddToTemplates, setNewCatAddToTemplates] = useState(false);
+  const [newCatPromptTemplate, setNewCatPromptTemplate] = useState("");
+  const [isCreatingCategory, setIsCreatingCategory] = useState(false);
 
   // Feedback Toast
   const [toast, setToast] = useState(null);
@@ -267,14 +298,151 @@ export default function AdminSettings({ currentUser }) {
 
       if (data.success) {
         setSyncDurationResult(`Successfully updated exact real durations for ${data.updated} / ${data.total} catalog videos.`);
-        showToast(`Exact durations updated for ${data.updated} videos!`);
+        showToast(`Backfilled ${data.updated} exact video durations.`);
       } else {
-        setSyncDurationResult("Error: " + (data.error || "Duration sync failed."));
+        setSyncDurationResult("Error: " + (data.error || "Failed to backfill durations."));
       }
     } catch (err) {
       setSyncDurationResult("Error: " + err.message);
     } finally {
       setIsSyncingDurations(false);
+    }
+  };
+
+  // Fetch Categories for dropdowns
+  const fetchCategories = async () => {
+    try {
+      const res = await fetch("/api/channel-health/categories", { credentials: "same-origin" });
+      if (res.ok) {
+        const data = await res.json();
+        setCategories(Array.isArray(data) ? data : []);
+      }
+    } catch (e) {
+      console.error("Error fetching categories:", e);
+    }
+  };
+
+  // Fetch paginated videos for Category Manager
+  const fetchCatalogVideos = async (page = 1, search = catalogSearch, category = catalogCategoryFilter) => {
+    setIsLoadingCatalog(true);
+    try {
+      const params = new URLSearchParams({
+        page: page.toString(),
+        limit: "50",
+        search: search || "",
+        category: category !== "all" ? category : "",
+      });
+
+      const res = await fetch(`/api/channel-health/video-catalog?${params.toString()}`, { credentials: "same-origin" });
+      if (res.ok) {
+        const data = await res.json();
+        setCatalogVideos(data.videos || []);
+        setCatalogTotal(data.total || 0);
+        setCatalogTotalPages(data.totalPages || 1);
+        setCatalogPage(data.page || 1);
+      }
+    } catch (e) {
+      console.error("Error fetching video catalog:", e);
+      showToast("Failed to load videos.", "error");
+    } finally {
+      setIsLoadingCatalog(false);
+    }
+  };
+
+  const handleOpenCategoryManager = () => {
+    setIsCategoryManagerOpen(true);
+    setStagedCategoryChanges({});
+    fetchCategories();
+    fetchCatalogVideos(1, "", "all");
+  };
+
+  const handleCategorySelectChange = (youtubeId, newCategory) => {
+    setStagedCategoryChanges((prev) => ({
+      ...prev,
+      [youtubeId]: newCategory,
+    }));
+  };
+
+  const handleSaveBatchCategories = async () => {
+    const changeKeys = Object.keys(stagedCategoryChanges);
+    if (changeKeys.length === 0) {
+      showToast("No category changes to save.", "info");
+      return;
+    }
+
+    setIsSavingCategoryChanges(true);
+    try {
+      const updates = changeKeys.map((yId) => ({
+        youtubeId: yId,
+        category: stagedCategoryChanges[yId],
+      }));
+
+      const res = await fetch("/api/channel-health/batch-override-categories", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ updates }),
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        showToast(`Saved category updates for ${data.count} video${data.count === 1 ? "" : "s"}!`);
+        // Update local catalogVideos state
+        setCatalogVideos((prev) =>
+          prev.map((v) => {
+            if (stagedCategoryChanges[v.youtube_id]) {
+              return { ...v, content_type: stagedCategoryChanges[v.youtube_id] };
+            }
+            return v;
+          })
+        );
+        setStagedCategoryChanges({});
+      } else {
+        showToast(data.error || "Failed to save category updates.", "error");
+      }
+    } catch (err) {
+      showToast("Error saving category updates: " + err.message, "error");
+    } finally {
+      setIsSavingCategoryChanges(false);
+    }
+  };
+
+  const handleCreateNewCategory = async (e) => {
+    e.preventDefault();
+    if (!newCatName || !newCatName.trim()) return;
+
+    setIsCreatingCategory(true);
+    try {
+      const res = await fetch("/api/channel-health/categories", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: newCatName.trim(),
+          description: newCatDescription.trim(),
+          color: newCatColor,
+          addToTemplates: newCatAddToTemplates,
+          promptTemplate: newCatPromptTemplate,
+        }),
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        showToast(`Category "${newCatName.trim()}" created!${newCatAddToTemplates ? " (Added to Article Generator templates)" : ""}`);
+        setNewCatName("");
+        setNewCatDescription("");
+        setNewCatColor("#06b6d4");
+        setNewCatAddToTemplates(false);
+        setNewCatPromptTemplate("");
+        setIsCreateCategoryModalOpen(false);
+        fetchCategories();
+      } else {
+        showToast(data.error || "Failed to create category.", "error");
+      }
+    } catch (err) {
+      showToast("Error creating category: " + err.message, "error");
+    } finally {
+      setIsCreatingCategory(false);
     }
   };
 
@@ -739,27 +907,52 @@ export default function AdminSettings({ currentUser }) {
       )}
 
       {/* TAB 4: CATALOG MAINTENANCE */}
-      {activeTab === "maintenance" && (
+      {activeTab === "maintenance" && !isCategoryManagerOpen && (
         <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 flex flex-col gap-6">
           <div>
-            <h3 className="text-base font-bold text-white mb-1">Catalog Duration Backfill</h3>
+            <h3 className="text-base font-bold text-white mb-1">Catalog & Video Maintenance</h3>
             <p className="text-xs text-slate-400">
-              Query YouTube Data API v3 in batches of 50 to update exact real durations (e.g. 34:18 for Route 66, 8:45 for News) across all 562 videos in your local database.
+              Manage video classifications, batch update video categories, and backfill accurate video durations from YouTube.
             </p>
           </div>
 
+          {/* Quick Video Category Manager Card */}
           <div className="bg-slate-950/70 border border-slate-800 p-5 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
-              <div className="text-xs font-bold text-white">Backfill Exact Video Durations</div>
+              <div className="text-xs font-bold text-white flex items-center gap-2">
+                <Tag className="w-4 h-4 text-cyan-400" />
+                <span>Video Category Manager</span>
+              </div>
               <div className="text-[11px] text-slate-400 mt-0.5">
-                Replaces placeholder durations with exact durations from YouTube Data API v3.
+                Quickly browse all video titles (50 per page), change categories inline, and create new categories on the fly with Article Generator template support.
+              </div>
+            </div>
+
+            <button
+              onClick={handleOpenCategoryManager}
+              className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-bold text-xs uppercase tracking-wider shrink-0 shadow-md shadow-cyan-500/20"
+            >
+              <List className="w-4 h-4" />
+              <span>Open Category Manager</span>
+            </button>
+          </div>
+
+          {/* Catalog Duration Backfill Card */}
+          <div className="bg-slate-950/70 border border-slate-800 p-5 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <div className="text-xs font-bold text-white flex items-center gap-2">
+                <Clock className="w-4 h-4 text-cyan-400" />
+                <span>Backfill Exact Video Durations</span>
+              </div>
+              <div className="text-[11px] text-slate-400 mt-0.5">
+                Query YouTube Data API v3 in batches of 50 to update exact real durations (e.g. 34:18 for Route 66, 8:45 for News) across all catalog videos in your local database.
               </div>
             </div>
 
             <button
               onClick={handleSyncDurations}
               disabled={isSyncingDurations}
-              className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 font-bold text-xs uppercase tracking-wider shrink-0 disabled:opacity-50"
+              className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-bold text-xs uppercase tracking-wider shrink-0 disabled:opacity-50"
             >
               <RefreshCw className={`w-4 h-4 ${isSyncingDurations ? "animate-spin" : ""}`} />
               <span>{isSyncingDurations ? "Backfilling Durations…" : "Run Duration Backfill"}</span>
@@ -780,6 +973,343 @@ export default function AdminSettings({ currentUser }) {
               <span>{syncDurationResult}</span>
             </div>
           )}
+        </div>
+      )}
+
+      {/* FULL SCREEN VIDEO CATEGORY MANAGER SCREEN */}
+      {activeTab === "maintenance" && isCategoryManagerOpen && (
+        <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 shadow-2xl flex flex-col gap-6">
+          {/* Header Bar with Back & Create Category Actions */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-5">
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setIsCategoryManagerOpen(false)}
+                className="p-2 rounded-xl bg-slate-950 hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-800 transition-colors"
+                title="Back to Catalog Maintenance"
+              >
+                <ArrowLeft className="w-4 h-4" />
+              </button>
+              <div>
+                <h3 className="text-base font-extrabold text-white flex items-center gap-2">
+                  <Tag className="w-4 h-4 text-cyan-400" />
+                  <span>Video Category Manager</span>
+                </h3>
+                <p className="text-xs text-slate-400">
+                  {catalogTotal} long-form videos · 50 per page · Change categories and save in batch
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setIsCreateCategoryModalOpen(true)}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-400 border border-slate-700 text-xs font-bold transition-colors"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>New Category</span>
+              </button>
+
+              <button
+                onClick={handleSaveBatchCategories}
+                disabled={isSavingCategoryChanges || Object.keys(stagedCategoryChanges).length === 0}
+                className="flex items-center gap-2 px-5 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-extrabold text-xs shadow-md shadow-cyan-500/20 disabled:opacity-40 transition-all"
+              >
+                <Save className="w-3.5 h-3.5" />
+                <span>
+                  {isSavingCategoryChanges
+                    ? "Saving Changes…"
+                    : `Save Changes ${
+                        Object.keys(stagedCategoryChanges).length > 0
+                          ? `(${Object.keys(stagedCategoryChanges).length})`
+                          : ""
+                      }`}
+                </span>
+              </button>
+            </div>
+          </div>
+
+          {/* Search & Filter Bar */}
+          <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800">
+            <div className="sm:col-span-8 relative">
+              <Search className="w-4 h-4 absolute left-3.5 top-3 text-slate-500" />
+              <input
+                type="text"
+                placeholder="Search videos by title or keywords…"
+                value={catalogSearch}
+                onChange={(e) => {
+                  setCatalogSearch(e.target.value);
+                  fetchCatalogVideos(1, e.target.value, catalogCategoryFilter);
+                }}
+                className="w-full pl-10 pr-4 py-2 rounded-xl bg-slate-900 border border-slate-700/80 text-xs text-slate-100 focus:outline-none focus:border-cyan-500"
+              />
+            </div>
+
+            <div className="sm:col-span-4">
+              <select
+                value={catalogCategoryFilter}
+                onChange={(e) => {
+                  setCatalogCategoryFilter(e.target.value);
+                  fetchCatalogVideos(1, catalogSearch, e.target.value);
+                }}
+                className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700/80 text-xs font-semibold text-slate-200 focus:outline-none focus:border-cyan-500 cursor-pointer"
+              >
+                <option value="all">All Categories ({catalogTotal})</option>
+                {categories.map((c) => (
+                  <option key={c.id} value={c.name}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Video List Table (Titles only, no thumbnails) */}
+          <div className="border border-slate-800 rounded-2xl overflow-hidden bg-slate-950/60">
+            {isLoadingCatalog ? (
+              <div className="py-20 text-center text-slate-400 text-xs flex flex-col items-center gap-3">
+                <div className="w-8 h-8 rounded-full border-2 border-cyan-400 border-t-transparent animate-spin" />
+                <span>Loading video catalog…</span>
+              </div>
+            ) : catalogVideos.length === 0 ? (
+              <div className="py-16 text-center text-slate-400 text-xs">
+                No videos match your search or category filter.
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-800/80">
+                {/* Table Header */}
+                <div className="grid grid-cols-12 gap-4 px-5 py-3 bg-slate-900/90 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                  <div className="col-span-7 sm:col-span-8">Video Title</div>
+                  <div className="col-span-5 sm:col-span-4 text-right sm:text-left">Category Selection</div>
+                </div>
+
+                {/* Rows */}
+                {catalogVideos.map((video, idx) => {
+                  const currentCat = stagedCategoryChanges[video.youtube_id] || video.content_type || "Other";
+                  const isModified = stagedCategoryChanges[video.youtube_id] !== undefined && stagedCategoryChanges[video.youtube_id] !== video.content_type;
+
+                  return (
+                    <div
+                      key={video.youtube_id}
+                      className={`grid grid-cols-12 gap-4 px-5 py-3.5 items-center transition-colors ${
+                        isModified ? "bg-cyan-950/30 border-l-4 border-l-cyan-400" : "hover:bg-slate-900/50"
+                      }`}
+                    >
+                      {/* Title & Metadata */}
+                      <div className="col-span-7 sm:col-span-8 pr-2">
+                        <div className="text-xs font-semibold text-slate-100 line-clamp-2 leading-snug">
+                          {video.title}
+                        </div>
+                        <div className="flex items-center gap-3 text-[10px] text-slate-500 mt-1">
+                          <span>{new Date(video.published_at).toLocaleDateString()}</span>
+                          <span>•</span>
+                          <span>{video.duration || "15:00"}</span>
+                          {isModified && (
+                            <>
+                              <span>•</span>
+                              <span className="text-cyan-400 font-bold">Modified (Unsaved)</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Category Selector */}
+                      <div className="col-span-5 sm:col-span-4 flex items-center justify-end sm:justify-start gap-2">
+                        <select
+                          value={currentCat}
+                          onChange={(e) => handleCategorySelectChange(video.youtube_id, e.target.value)}
+                          className={`w-full max-w-[220px] px-3 py-1.5 rounded-xl text-xs font-bold border focus:outline-none transition-colors cursor-pointer ${
+                            isModified
+                              ? "bg-cyan-950 border-cyan-500 text-cyan-300 shadow-sm shadow-cyan-500/20"
+                              : "bg-slate-900 border-slate-700 text-slate-200 focus:border-cyan-500"
+                          }`}
+                        >
+                          {categories.map((c) => (
+                            <option key={c.id} value={c.name}>
+                              {c.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Bottom Bar: Pagination & Save Button */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-4 border-t border-slate-800">
+            {/* Pagination Controls */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  const prevPage = Math.max(1, catalogPage - 1);
+                  setCatalogPage(prevPage);
+                  fetchCatalogVideos(prevPage, catalogSearch, catalogCategoryFilter);
+                }}
+                disabled={catalogPage <= 1 || isLoadingCatalog}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-semibold text-slate-300 hover:text-white disabled:opacity-40 transition-colors"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+                <span>Prev</span>
+              </button>
+
+              <span className="text-xs text-slate-400 px-2 font-medium">
+                Page <b className="text-white font-bold">{catalogPage}</b> of <b className="text-white font-bold">{catalogTotalPages}</b>
+              </span>
+
+              <button
+                onClick={() => {
+                  const nextPage = Math.min(catalogTotalPages, catalogPage + 1);
+                  setCatalogPage(nextPage);
+                  fetchCatalogVideos(nextPage, catalogSearch, catalogCategoryFilter);
+                }}
+                disabled={catalogPage >= catalogTotalPages || isLoadingCatalog}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-semibold text-slate-300 hover:text-white disabled:opacity-40 transition-colors"
+              >
+                <span>Next</span>
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            {/* Bottom Save Option */}
+            <div className="flex items-center gap-3">
+              {Object.keys(stagedCategoryChanges).length > 0 && (
+                <span className="text-xs text-cyan-300 font-semibold">
+                  {Object.keys(stagedCategoryChanges).length} unsaved change{Object.keys(stagedCategoryChanges).length === 1 ? "" : "s"}
+                </span>
+              )}
+              <button
+                onClick={handleSaveBatchCategories}
+                disabled={isSavingCategoryChanges || Object.keys(stagedCategoryChanges).length === 0}
+                className="flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-black text-xs uppercase tracking-wider shadow-lg shadow-cyan-500/20 disabled:opacity-40 transition-all"
+              >
+                <Save className="w-4 h-4" />
+                <span>
+                  {isSavingCategoryChanges ? "Saving Updates…" : "Save / Update Category Info"}
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CREATE NEW CATEGORY MODAL (On The Fly) */}
+      {isCreateCategoryModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-lg w-full shadow-2xl flex flex-col gap-5">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-cyan-500/20 border border-cyan-500/40 flex items-center justify-center text-cyan-400">
+                  <Tag className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="text-base font-extrabold text-white">Create New Category</h4>
+                  <p className="text-[11px] text-slate-400">Add a new category classification on the fly.</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsCreateCategoryModalOpen(false)}
+                className="text-slate-500 hover:text-slate-200 text-lg font-bold"
+              >
+                ×
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateNewCategory} className="flex flex-col gap-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-300 mb-1">
+                  Category Name <span className="text-cyan-400">*</span>
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Battery Tech & Tear Downs"
+                  value={newCatName}
+                  onChange={(e) => setNewCatName(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white focus:outline-none focus:border-cyan-500 font-medium"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-300 mb-1">Description (Optional)</label>
+                <input
+                  type="text"
+                  placeholder="Brief description of videos belonging to this category"
+                  value={newCatDescription}
+                  onChange={(e) => setNewCatDescription(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white focus:outline-none focus:border-cyan-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-300 mb-1">Accent Badge Color</label>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="color"
+                    value={newCatColor}
+                    onChange={(e) => setNewCatColor(e.target.value)}
+                    className="w-10 h-10 rounded-xl bg-transparent border-0 cursor-pointer"
+                  />
+                  <span className="text-xs font-mono text-slate-400">{newCatColor}</span>
+                </div>
+              </div>
+
+              {/* Option to Add to Article Generator Templates */}
+              <div className="bg-slate-950/80 border border-slate-800 p-4 rounded-2xl flex flex-col gap-3">
+                <label className="flex items-center gap-3 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={newCatAddToTemplates}
+                    onChange={(e) => setNewCatAddToTemplates(e.target.checked)}
+                    className="w-4 h-4 rounded text-cyan-500 focus:ring-cyan-500 bg-slate-900 border-slate-700 cursor-pointer"
+                  />
+                  <span className="text-xs font-bold text-slate-200">
+                    Add to Article Generator Templates
+                  </span>
+                </label>
+                <p className="text-[11px] text-slate-400 pl-7">
+                  If enabled, this category will immediately appear as a selectable content type in the Article Generator.
+                </p>
+
+                {newCatAddToTemplates && (
+                  <div className="pt-2 border-t border-slate-800/80 pl-7 flex flex-col gap-2">
+                    <label className="block text-xs font-bold text-slate-300">
+                      Custom Prompt Template for Article Generator
+                    </label>
+                    <textarea
+                      rows={4}
+                      placeholder="Write your custom system prompt instructions for generating articles in this category..."
+                      value={newCatPromptTemplate}
+                      onChange={(e) => setNewCatPromptTemplate(e.target.value)}
+                      className="w-full p-3 rounded-xl bg-slate-900 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-cyan-500 font-mono leading-relaxed"
+                    />
+                    <span className="text-[10px] text-slate-500">
+                      Leave blank to use The Electric Duo's default EV editorial template.
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setIsCreateCategoryModalOpen(false)}
+                  className="px-4 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 text-slate-400 text-xs font-bold border border-slate-800 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isCreatingCategory || !newCatName.trim()}
+                  className="flex items-center gap-2 px-5 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-bold text-xs shadow-md shadow-cyan-500/20 disabled:opacity-40 transition-all"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>{isCreatingCategory ? "Creating Category…" : "Create Category"}</span>
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 
