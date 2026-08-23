@@ -84,7 +84,13 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
   const loadCategories = async () => {
     try {
       const res = await fetch("/api/channel-health/categories", { credentials: "same-origin" });
-      if (res.ok) setCategories(await res.json());
+      if (res.ok) {
+        const data = await res.json();
+        const sorted = Array.isArray(data)
+          ? [...data].sort((a, b) => (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" }))
+          : [];
+        setCategories(sorted);
+      }
     } catch (e) {}
   };
 

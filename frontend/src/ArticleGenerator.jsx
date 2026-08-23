@@ -57,7 +57,10 @@ export default function ArticleGenerator({ currentUser }) {
       const res = await fetch("/api/templates", { credentials: "same-origin" });
       if (res.status === 401) return;
       const data = await res.json();
-      setTemplates(Array.isArray(data) ? data : []);
+      const sorted = Array.isArray(data)
+        ? [...data].sort((a, b) => (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" }))
+        : [];
+      setTemplates(sorted);
     } catch (err) {
       console.error("Failed to fetch templates:", err);
     }

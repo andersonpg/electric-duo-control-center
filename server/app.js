@@ -300,7 +300,7 @@ app.post("/api/sync", auth.requireAuth(), async (req, res) => {
 // Content Templates
 app.get("/api/templates", auth.requireAuth(), (req, res) => {
   try {
-    const templates = articleDb.prepare("SELECT * FROM content_templates ORDER BY created_at ASC").all();
+    const templates = articleDb.prepare("SELECT * FROM content_templates ORDER BY name COLLATE NOCASE ASC").all();
     res.json(templates);
   } catch (error) {
     res.status(500).json({ error: error.message });

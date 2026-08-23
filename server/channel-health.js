@@ -19,7 +19,7 @@ function parseDurationSec(durationStr) {
 
 // 1. Dynamic Category Management
 function getCategories() {
-  return db.prepare("SELECT * FROM content_categories ORDER BY id ASC").all();
+  return db.prepare("SELECT * FROM content_categories ORDER BY name COLLATE NOCASE ASC").all();
 }
 
 function addCategory({ name, description, color, addToTemplates = false, promptTemplate = "" }) {

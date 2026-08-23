@@ -22,11 +22,26 @@ export default function VideoAudit({ currentUser, initialVideoId, onClearInitial
   const [auditFilter, setAuditFilter] = useState("all"); // 'all' | 'audited' | 'unaudited'
   const [selectedVideo, setSelectedVideo] = useState(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     fetchCatalogAndAudits();
+    fetchCategories();
   }, []);
+
+  const fetchCategories = async () => {
+    try {
+      const res = await fetch("/api/channel-health/categories", { credentials: "same-origin" });
+      if (res.ok) {
+        const data = await res.json();
+        const sorted = Array.isArray(data)
+          ? [...data].sort((a, b) => (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" }))
+          : [];
+        setCategories(sorted);
+      }
+    } catch (e) {}
+  };
 
   useEffect(() => {
     if (initialVideoId && videos.length > 0) {
@@ -171,11 +186,12 @@ export default function VideoAudit({ currentUser, initialVideoId, onClearInitial
             onChange={(e) => setCategoryFilter(e.target.value)}
             className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-700/80 text-xs text-slate-200 focus:outline-none focus:border-cyan-500"
           >
-            <option value="all">All Content Types</option>
-            <option value="Review">Review</option>
-            <option value="How-To / Instructional">How-To / Instructional</option>
-            <option value="EV News">EV News</option>
-            <option value="Road Trip / Vlog">Road Trip / Vlog</option>
+            <option value="all">All Categories</option>
+            {categories.map((c) => (
+              <option key={c.id || c.name} value={c.name}>
+                {c.name}
+              </option>
+            ))}
           </select>
         </div>
 

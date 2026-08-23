@@ -315,7 +315,10 @@ export default function AdminSettings({ currentUser }) {
       const res = await fetch("/api/channel-health/categories", { credentials: "same-origin" });
       if (res.ok) {
         const data = await res.json();
-        setCategories(Array.isArray(data) ? data : []);
+        const sorted = Array.isArray(data)
+          ? [...data].sort((a, b) => (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" }))
+          : [];
+        setCategories(sorted);
       }
     } catch (e) {
       console.error("Error fetching categories:", e);
