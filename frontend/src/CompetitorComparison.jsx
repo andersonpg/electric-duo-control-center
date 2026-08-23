@@ -298,6 +298,7 @@ export default function CompetitorComparison({ currentUser }) {
   const [activeReport, setActiveReport] = useState(null);
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [regeneratingSummary, setRegeneratingSummary] = useState(false);
   const [activeTab, setActiveTab] = useState("summary"); // 'summary' | 'outliers' | 'donotcopy' | 'sidebyside'
 
   // New Report Inputs
@@ -399,17 +400,50 @@ export default function CompetitorComparison({ currentUser }) {
         body: JSON.stringify({ ourCtr, ourAvd }),
       });
       const data = await res.json();
-      if (data.success) {
-        showToast("Report refreshed with latest data!");
+      if (data.success && data.reportId) {
+        showToast("Report refreshed successfully!");
         await fetchReports();
-        await loadReportDetails(activeReportId);
+        await loadReportDetails(data.reportId);
       } else {
-        showToast("Refresh error: " + data.error, "error");
+        showToast("Refresh error: " + (data.error || "Failed"), "error");
       }
-    } catch (e) {
-      showToast("Refresh failed: " + e.message, "error");
+    } catch (err) {
+      showToast("Refresh error: " + err.message, "error");
     } finally {
       setGenerating(false);
+    }
+  };
+
+  const handleRegenerateSummary = async () => {
+    if (!activeReportId) return;
+    setRegeneratingSummary(true);
+    showToast("Generating fresh consultant debrief narrative...", "info");
+    try {
+      const res = await fetch(`/api/comparison/reports/${activeReportId}/regenerate-summary`, {
+        method: "POST",
+        credentials: "same-origin",
+      });
+
+      const data = await res.json();
+      if (data.success && data.executiveSummary) {
+        showToast("Executive summary regenerated!");
+        setActiveReport((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            analysis: {
+              ...prev.analysis,
+              executiveSummary: data.executiveSummary,
+            },
+          };
+        });
+      } else {
+        showToast("Summary regeneration error: " + (data.error || "Failed"), "error");
+      }
+    } catch (err) {
+      showToast("Regeneration error: " + err.message, "error");
+    } finally {
+      setRegeneratingSummary(false);
     }
   };
 
@@ -688,33 +722,49 @@ export default function CompetitorComparison({ currentUser }) {
                     </div>
                     <div>
                       <h3 className="text-base font-extrabold text-white tracking-tight flex items-center gap-2">
-                        <span>YouTube Strategist Evaluation & Strategic Briefing</span>
+                        <span>YouTube Growth Consultant Debrief</span>
                         <span className="text-[10px] font-bold uppercase tracking-wider bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 px-2 py-0.5 rounded-full">
-                          AI Executive Audit
+                          Verbal Debrief
                         </span>
                       </h3>
                       <p className="text-xs text-slate-400">
-                        Competitive breakdown and prioritized growth roadmap tailored for <b className="text-slate-200">The Electric Duo</b> vs <b className="text-slate-200">{analysis.competitorChannel.title}</b>.
+                        Direct, conversational feedback and strategic insights comparing <b className="text-slate-200">The Electric Duo</b> with <b className="text-slate-200">{analysis.competitorChannel.title}</b>.
                       </p>
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2 self-start sm:self-center">
+                  <div className="flex items-center gap-3 self-start sm:self-center">
                     <span className="text-[11px] text-slate-400 bg-slate-950/80 px-3 py-1.5 rounded-xl border border-slate-800 font-mono">
-                      Scale Ratio: <b className="text-purple-400">{analysis.sideBySide.subscribers.ratio}x</b>
+                      Scale: <b className="text-purple-400">{analysis.sideBySide.subscribers.ratio}x</b>
                     </span>
+
+                    <button
+                      type="button"
+                      onClick={handleRegenerateSummary}
+                      disabled={regeneratingSummary || loading}
+                      className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 hover:text-cyan-200 border border-cyan-500/40 text-xs font-bold transition-all shadow-sm shadow-cyan-500/10 disabled:opacity-50"
+                      title="Re-roll narrative debrief without re-pulling YouTube data"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${regeneratingSummary ? "animate-spin text-cyan-400" : ""}`} />
+                      <span>{regeneratingSummary ? "Re-rolling..." : "Regenerate summary"}</span>
+                    </button>
                   </div>
                 </div>
               </div>
 
               {/* Narrative Content Body */}
               <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-8 shadow-xl">
-                {analysis.executiveSummary ? (
+                {regeneratingSummary ? (
+                  <div className="text-center py-16 text-slate-400 text-xs flex flex-col items-center gap-3">
+                    <div className="w-8 h-8 rounded-full border-2 border-cyan-400 border-t-transparent animate-spin" />
+                    <span>Re-rolling growth consultant debrief narrative with fresh tone pass…</span>
+                  </div>
+                ) : analysis.executiveSummary ? (
                   <MarkdownExecutiveSummary content={analysis.executiveSummary} />
                 ) : (
                   <div className="text-center py-12 text-slate-400 text-xs flex flex-col items-center gap-3">
                     <div className="w-8 h-8 rounded-full border-2 border-cyan-400 border-t-transparent animate-spin" />
-                    <span>Analyzing channel metrics and generating YouTube strategist briefing…</span>
+                    <span>Generating YouTube growth consultant debrief…</span>
                   </div>
                 )}
               </div>

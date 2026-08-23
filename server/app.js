@@ -1025,6 +1025,18 @@ app.post("/api/comparison/reports/:id/refresh", auth.requireAuth(), async (req, 
   }
 });
 
+// 4b. Regenerate only narrative executive summary without re-pulling API data
+app.post("/api/comparison/reports/:id/regenerate-summary", auth.requireAuth(), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const result = await competitorComparison.regenerateExecutiveSummary(id);
+    res.json({ success: true, ...result });
+  } catch (error) {
+    console.error("Executive summary regeneration failed:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 5. Delete comparison report
 app.delete("/api/comparison/reports/:id", auth.requireAuth(), (req, res) => {
   try {
