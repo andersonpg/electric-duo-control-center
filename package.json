@@ -8,14 +8,15 @@
     "start": "node server/app.js",
     "dev": "node server/app.js",
     "create-user": "node scripts/create-user.js",
-    "build:frontend": "cd frontend && npm install && npm run build && cp -r dist/* ../public/",
+    "build:frontend": "npm --prefix frontend run build && cp -r frontend/dist/* public/",
     "build": "npm run build:frontend"
   },
   "dependencies": {
     "@google/genai": "^2.17.1",
     "axios": "^1.7.9",
-    "bcryptjs": "^3.0.2",
-    "better-sqlite3": "^11.8.0",
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^13.0.3",
+    "cheerio": "^1.2.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",

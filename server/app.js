@@ -17,6 +17,7 @@ const { generateArticle } = require("./gemini");
 const { createWordPressDraft } = require("./wordpress");
 const { getOrRunAudit, getAuditsSummary } = require("./audit");
 const competitorComparison = require("./competitor-comparison");
+const fathomNewsRouter = require("./fathom-news");
 
 const app = express();
 app.use(cors());
@@ -1060,6 +1061,9 @@ app.get("/api/comparison/reports/:id/export-csv", auth.requireAuth(), (req, res)
     res.status(500).json({ error: error.message });
   }
 });
+
+/* ---------------- Ford Fathom News Endpoints ---------------- */
+app.use("/api/fathom-news", auth.requireAuth(), fathomNewsRouter);
 
 /* ---------------- static files & SPA fallback ---------------- */
 

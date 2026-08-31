@@ -60,6 +60,25 @@ controlDb.exec(`
     updated_by INTEGER REFERENCES users(id),
     updated_at TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS fathom_news_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_url TEXT NOT NULL,
+    source_type TEXT NOT NULL CHECK (source_type IN ('article', 'video')),
+    title TEXT,
+    summary TEXT,
+    image_url TEXT,
+    wp_media_id INTEGER,
+    the_take TEXT,
+    youtube_video_id TEXT,
+    wp_post_id INTEGER,
+    wp_post_url TEXT,
+    status TEXT NOT NULL CHECK (status IN ('draft_created', 'failed')),
+    created_by TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_fathom_news_created ON fathom_news_history (created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_fathom_news_source_url ON fathom_news_history (source_url);
 `);
 
 // 2. Article Generator & Video Audit DB (YouTube Videos Catalog, Content Templates, App Settings, Video Audits)
