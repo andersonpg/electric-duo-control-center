@@ -64,7 +64,7 @@ controlDb.exec(`
   CREATE TABLE IF NOT EXISTS fathom_news_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_url TEXT NOT NULL,
-    source_type TEXT NOT NULL CHECK (source_type IN ('article', 'video')),
+    source_type TEXT NOT NULL,
     title TEXT,
     summary TEXT,
     image_url TEXT,
@@ -73,7 +73,7 @@ controlDb.exec(`
     youtube_video_id TEXT,
     wp_post_id INTEGER,
     wp_post_url TEXT,
-    status TEXT NOT NULL CHECK (status IN ('draft_created', 'failed')),
+    status TEXT NOT NULL DEFAULT 'draft_created',
     created_by TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );

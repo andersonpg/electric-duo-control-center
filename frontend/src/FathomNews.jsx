@@ -68,6 +68,7 @@ export default function FathomNews({ currentUser }) {
   const [historyStatusFilter, setHistoryStatusFilter] = useState("all");
   const [historyTypeFilter, setHistoryTypeFilter] = useState("all");
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [isSyncingStatus, setIsSyncingStatus] = useState(false);
 
   const previewCardRef = useRef(null);
 
@@ -107,6 +108,21 @@ export default function FathomNews({ currentUser }) {
     }
   };
 
+  const handleSyncStatus = async () => {
+    setIsSyncingStatus(true);
+    try {
+      await fetch("/api/fathom-news/sync-status", {
+        method: "POST",
+        credentials: "same-origin",
+      });
+      await fetchHistory();
+    } catch (err) {
+      console.error("Failed to sync statuses with WordPress:", err);
+    } finally {
+      setIsSyncingStatus(false);
+    }
+  };
+
   const handleFetchPreview = async (e) => {
     if (e) e.preventDefault();
     if (!urlInput.trim()) return;
@@ -127,6 +143,19 @@ export default function FathomNews({ currentUser }) {
 
       if (res.status === 401) {
         window.location.href = "/login.html";
+        return;
+      }
+
+      if (!res.ok) {
+        const text = await res.text();
+        let errMsg = `Server returned HTTP ${res.status}`;
+        try {
+          const json = JSON.parse(text);
+          if (json.error) errMsg = json.error;
+        } catch (e) {}
+        setPreviewError(`${errMsg}. You can enter details manually below.`);
+        setCanManualEntry(true);
+        setPreviewLoaded(true);
         return;
       }
 
@@ -160,7 +189,7 @@ export default function FathomNews({ currentUser }) {
         }
       }, 100);
     } catch (err) {
-      setPreviewError("Network error while connecting to server. You can enter details manually below.");
+      setPreviewError(`Network error while connecting to server (${err.message}). You can enter details manually below.`);
       setCanManualEntry(true);
       setPreviewLoaded(true);
     } finally {
@@ -758,9 +787,22 @@ export default function FathomNews({ currentUser }) {
               className="px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-300 focus:border-cyan-500"
             >
               <option value="all">All Statuses</option>
-              <option value="draft_created">Draft Created</option>
+              <option value="published">Published</option>
+              <option value="draft_created">Draft</option>
+              <option value="trashed">Trashed</option>
               <option value="failed">Failed</option>
             </select>
+
+            {/* Live Sync Statuses Button */}
+            <button
+              onClick={handleSyncStatus}
+              disabled={isSyncingStatus || isLoadingHistory}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-400 font-bold text-xs border border-slate-700/80 transition-colors disabled:opacity-50"
+              title="Sync post statuses live with WordPress"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isSyncingStatus ? "animate-spin" : ""}`} />
+              <span>Sync Statuses</span>
+            </button>
           </div>
         </div>
 
@@ -846,10 +888,20 @@ export default function FathomNews({ currentUser }) {
 
                     {/* Status Badge */}
                     <td className="py-3 px-4 whitespace-nowrap">
-                      {item.status === "draft_created" ? (
+                      {item.status === "published" || item.status === "publish" ? (
                         <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
                           <CheckCircle2 className="w-3 h-3" />
-                          <span>Draft Created</span>
+                          <span>Published</span>
+                        </span>
+                      ) : item.status === "draft_created" || item.status === "draft" ? (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                          <FileText className="w-3 h-3" />
+                          <span>Draft</span>
+                        </span>
+                      ) : item.status === "trashed" ? (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-slate-500/15 text-slate-400 border border-slate-500/30">
+                          <Trash2 className="w-3 h-3" />
+                          <span>Trashed</span>
                         </span>
                       ) : (
                         <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-rose-500/15 text-rose-400 border border-rose-500/30">
@@ -867,12 +919,23 @@ export default function FathomNews({ currentUser }) {
 
                     {/* Actions */}
                     <td className="py-3 px-4 whitespace-nowrap text-right space-x-2">
+                      {item.wp_live_url && (item.status === "published" || item.status === "publish") && (
+                        <a
+                          href={item.wp_live_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 font-bold text-[11px] border border-emerald-500/30 transition-colors"
+                        >
+                          <span>View Live</span>
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      )}
                       {item.wp_post_url && (
                         <a
                           href={item.wp_post_url}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-400 hover:text-cyan-300 font-bold text-[11px] border border-slate-700/80 transition-colors"
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-400 hover:text-cyan-300 font-bold text-[11px] border border-slate-700/80 transition-colors"
                         >
                           <span>Edit in WP</span>
                           <ExternalLink className="w-3 h-3" />

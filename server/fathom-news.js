@@ -23,6 +23,53 @@ function escapeHtml(str) {
     .replace(/'/g, "&#039;");
 }
 
+// Helper: Extract smart focus keywords for Rank Math Pro
+function extractFocusKeyword(title) {
+  if (!title || typeof title !== "string") return "Ford EV";
+  const clean = title.replace(/[^\w\s-]/g, " ").replace(/\s+/g, " ").trim();
+
+  // Known high-value EV topics
+  const knownKeywords = [
+    "F-150 Lightning",
+    "Mustang Mach-E",
+    "Ford Lightning",
+    "Mach-E",
+    "Ford EV",
+    "Ford Fathom",
+    "Super Duty",
+    "Ranger EV",
+    "Transit Custom",
+    "Explorer EV",
+    "Capri EV",
+    "BlueCruise",
+    "NACS",
+    "Tesla Supercharger",
+  ];
+
+  for (const kw of knownKeywords) {
+    if (new RegExp(`\\b${kw.replace(/-/g, "[-\\s]")}\\b`, "i").test(clean)) {
+      return kw;
+    }
+  }
+
+  // Fallback: Pick first 2-3 significant words
+  const stopWords = new Set([
+    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "with",
+    "by", "from", "up", "about", "into", "over", "after", "is", "are", "was",
+    "were", "will", "new", "how", "why", "what", "video", "watch", "review",
+  ]);
+
+  const words = clean
+    .split(/\s+/)
+    .filter((w) => w.length > 2 && !stopWords.has(w.toLowerCase()));
+
+  if (words.length >= 2) {
+    return words.slice(0, 3).join(" ");
+  }
+
+  return "Ford EV";
+}
+
 // Helper: Get WordPress settings (checking app_settings table first, falling back to process.env)
 function getWpConfig() {
   let siteUrl = process.env.WP_SITE_URL || "https://theelectricduo.com";
@@ -30,7 +77,11 @@ function getWpConfig() {
   let password = process.env.WP_APPLICATION_PASSWORD || "";
 
   try {
-    const rows = articleDb.prepare("SELECT key, value FROM app_settings WHERE key IN ('wp_site_url', 'wp_username', 'wp_application_password')").all();
+    const rows = articleDb
+      .prepare(
+        "SELECT key, value FROM app_settings WHERE key IN ('wp_site_url', 'wp_username', 'wp_application_password')"
+      )
+      .all();
     rows.forEach((r) => {
       if (r.key === "wp_site_url" && r.value) siteUrl = r.value;
       if (r.key === "wp_username" && r.value) username = r.value;
@@ -70,7 +121,9 @@ function extractYoutubeVideoId(rawUrl) {
   } catch (e) {}
 
   // Fallback regex
-  const regexMatch = str.match(/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?|shorts|live)\/|.*[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/i);
+  const regexMatch = str.match(
+    /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?|shorts|live)\/|.*[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/i
+  );
   if (regexMatch && regexMatch[1]) {
     return regexMatch[1];
   }
@@ -89,7 +142,6 @@ function truncateToSentences(text, maxSentences = 3, maxChars = 420) {
 
   if (!cleaned) return "";
 
-  // Split into sentences using punctuation boundaries
   const sentences = cleaned.match(/[^.!?]+[.!?]+(?:\s|$)|[^.!?]+$/g) || [cleaned];
   const chosen = sentences.slice(0, maxSentences).map((s) => s.trim()).join(" ");
 
@@ -137,9 +189,10 @@ async function fetchYouTubeMetadata(videoId) {
 
   // 2. Fallback: YouTube oEmbed + public thumbnail endpoint
   try {
-    const oembedRes = await axios.get(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`, {
-      timeout: 6000,
-    });
+    const oembedRes = await axios.get(
+      `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`,
+      { timeout: 6000 }
+    );
     title = oembedRes.data?.title || `YouTube Video (${videoId})`;
     description = `Watch the video on YouTube by ${oembedRes.data?.author_name || "creator"}.`;
     imageUrl = oembedRes.data?.thumbnail_url || `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
@@ -199,13 +252,16 @@ async function fetchArticleMetadata(articleUrl) {
     "";
 
   if (!summary || summary.trim().length < 20) {
-    // Look for first paragraph in article body or main content
     const candidatePs = $("article p, main p, .entry-content p, .article-body p, .post-content p, p");
     candidatePs.each((_, el) => {
       const text = $(el).text().trim();
-      if (text.length > 40 && !text.toLowerCase().includes("cookie") && !text.toLowerCase().includes("subscribe")) {
+      if (
+        text.length > 40 &&
+        !text.toLowerCase().includes("cookie") &&
+        !text.toLowerCase().includes("subscribe")
+      ) {
         summary = text;
-        return false; // break loop
+        return false;
       }
     });
   }
@@ -222,7 +278,6 @@ async function fetchArticleMetadata(articleUrl) {
     "";
 
   if (!imageUrl) {
-    // Find hero or primary article image
     const heroImg = $("article img, main img, .entry-content img, img").first().attr("src");
     if (heroImg) imageUrl = heroImg;
   }
@@ -248,7 +303,6 @@ async function getOrCreateFathomCategory(wpConfig) {
   const categoryEndpoint = `${wpConfig.siteUrl}/wp-json/wp/v2/categories`;
 
   try {
-    // 1. Search for existing category by slug
     const searchRes = await axios.get(`${categoryEndpoint}?slug=${categorySlug}`, {
       headers: { Authorization: wpConfig.authHeader },
       timeout: 8000,
@@ -260,7 +314,6 @@ async function getOrCreateFathomCategory(wpConfig) {
       return cachedCategoryId;
     }
 
-    // 2. Create the category if not found
     const createRes = await axios.post(
       categoryEndpoint,
       {
@@ -334,48 +387,44 @@ async function uploadImageToWordPress(imageUrl, wpConfig, filenamePrefix = "fath
   return null;
 }
 
-// Helper: Assemble the post HTML content with styled Duo's Take, responsive embed / Read More button
+// Helper: Assemble the post HTML content with clean class-only markup
 function assemblePostContent({ summary, theTake, sourceType, sourceUrl, youtubeVideoId, title }) {
   const cleanSummary = String(summary || "").trim();
   const cleanTake = String(theTake || "").trim();
 
-  // Summary Paragraph
   let html = "";
   if (cleanSummary) {
-    html += `<p style="font-size: 1.1rem; line-height: 1.75; color: #334155; margin-bottom: 24px;">${escapeHtml(cleanSummary)}</p>\n\n`;
+    html += `<p>${escapeHtml(cleanSummary)}</p>\n\n`;
   }
 
-  // The Electric Duo's Take Block (dark card look with #00B1E2 accent border/glow)
   html += `<!-- wp:html -->
-<div class="fathom-take" style="background: #0b1329; border: 1px solid #1e293b; border-left: 5px solid #00B1E2; border-radius: 12px; padding: 24px 28px; margin: 32px 0; color: #f8fafc; box-shadow: 0 10px 25px -5px rgba(0, 177, 226, 0.15), 0 8px 10px -6px rgba(0, 0, 0, 0.3);">
-  <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;">
-    <span style="font-size: 1.35rem; line-height: 1;">⚡</span>
-    <h3 style="color: #00B1E2; margin: 0; font-size: 1.25rem; font-weight: 800; letter-spacing: -0.01em;">The Electric Duo's Take</h3>
+<div class="fathom-take">
+  <div class="fathom-take-header">
+    <span class="fathom-take-icon">⚡</span>
+    <h3 class="fathom-take-title">The Electric Duo's Take</h3>
   </div>
-  <div style="font-size: 1.05rem; line-height: 1.75; color: #e2e8f0; white-space: pre-line;">${escapeHtml(cleanTake)}</div>
+  <div class="fathom-take-body">${escapeHtml(cleanTake)}</div>
 </div>
 <!-- /wp:html -->\n\n`;
 
-  // Article Flow: "Read More" button opens source_url in new tab
   if (sourceType === "article" && sourceUrl) {
     html += `<!-- wp:html -->
-<div class="fathom-read-more-wrapper" style="margin: 32px 0;">
-  <a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer" style="display: inline-flex; align-items: center; gap: 8px; background: linear-gradient(135deg, #00B1E2 0%, #0284c7 100%); color: #ffffff !important; padding: 13px 26px; border-radius: 10px; text-decoration: none !important; font-weight: 700; font-size: 1rem; box-shadow: 0 4px 14px rgba(0, 177, 226, 0.35);">
+<div class="fathom-read-more-wrapper">
+  <a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer" class="fathom-read-more-btn">
     <span>Read Full Article</span>
-    <span style="font-size: 1.1rem;">&rarr;</span>
+    <span class="fathom-read-more-arrow">&rarr;</span>
   </a>
 </div>
 <!-- /wp:html -->\n`;
   }
 
-  // Video Flow: Responsive YouTube iframe embed BELOW the Take block
   if (sourceType === "video" && youtubeVideoId) {
     const videoUrl = `https://www.youtube.com/watch?v=${youtubeVideoId}`;
     html += `<!-- wp:embed {"url":"${videoUrl}","type":"video","providerNameSlug":"youtube","responsive":true,"className":"wp-block-embed-youtube"} -->
-<figure class="wp-block-embed is-type-video is-provider-youtube wp-block-embed-youtube" style="margin: 32px 0;">
+<figure class="wp-block-embed is-type-video is-provider-youtube wp-block-embed-youtube fathom-video-embed">
   <div class="wp-block-embed__wrapper">
-    <div style="position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden; max-width: 100%; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.25);">
-      <iframe src="https://www.youtube-nocookie.com/embed/${escapeHtml(youtubeVideoId)}" title="${escapeHtml(title || "YouTube video")}" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 0;" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+    <div class="fathom-video-frame">
+      <iframe src="https://www.youtube-nocookie.com/embed/${escapeHtml(youtubeVideoId)}" title="${escapeHtml(title || "YouTube video")}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
     </div>
   </div>
 </figure>
@@ -383,6 +432,71 @@ function assemblePostContent({ summary, theTake, sourceType, sourceUrl, youtubeV
   }
 
   return html;
+}
+
+// Helper: Sync status of items with WordPress REST API
+async function syncWpPostStatuses(items) {
+  if (!Array.isArray(items) || items.length === 0) return items;
+
+  const itemsWithPost = items.filter((it) => it.wp_post_id);
+  if (itemsWithPost.length === 0) return items;
+
+  const wpConfig = getWpConfig();
+  if (!wpConfig.password) return items;
+
+  const postIds = itemsWithPost.map((it) => it.wp_post_id);
+
+  try {
+    const postsEndpoint = `${wpConfig.siteUrl}/wp-json/wp/v2/posts`;
+    const res = await axios.get(postsEndpoint, {
+      params: {
+        include: postIds.join(","),
+        status: "publish,draft,pending,future,private,trash",
+        _fields: "id,status,link",
+      },
+      headers: { Authorization: wpConfig.authHeader },
+      timeout: 8000,
+    });
+
+    const wpPosts = Array.isArray(res.data) ? res.data : [];
+    const wpMap = {};
+    wpPosts.forEach((p) => {
+      wpMap[p.id] = p;
+    });
+
+    const updateStmt = db.prepare(
+      "UPDATE fathom_news_history SET status = ?, wp_post_url = COALESCE(?, wp_post_url) WHERE id = ?"
+    );
+
+    items.forEach((item) => {
+      if (item.wp_post_id && wpMap[item.wp_post_id]) {
+        const wpP = wpMap[item.wp_post_id];
+        let normalizedStatus = item.status;
+
+        if (wpP.status === "publish") {
+          normalizedStatus = "published";
+        } else if (wpP.status === "trash") {
+          normalizedStatus = "trashed";
+        } else if (wpP.status === "draft") {
+          normalizedStatus = "draft_created";
+        }
+
+        const liveUrl = wpP.link || item.wp_post_url;
+
+        if (normalizedStatus !== item.status) {
+          try {
+            updateStmt.run(normalizedStatus, liveUrl, item.id);
+            item.status = normalizedStatus;
+            item.wp_live_url = liveUrl;
+          } catch (dbErr) {}
+        }
+      }
+    });
+  } catch (syncErr) {
+    console.warn("WP post status sync skipped:", syncErr.response?.data?.message || syncErr.message);
+  }
+
+  return items;
 }
 
 /* ==========================================================================
@@ -455,7 +569,8 @@ router.post("/preview", async (req, res) => {
 
 /**
  * 2. POST /api/fathom-news/publish
- * Uploads media, creates category if needed, publishes draft post in WordPress, and stores in history.
+ * Uploads media, creates category if needed, injects Rank Math Pro SEO metadata,
+ * publishes draft post in WordPress, and stores in history.
  */
 router.post("/publish", async (req, res) => {
   const { url, sourceType, title, summary, imageUrl, youtubeVideoId, theTake } = req.body || {};
@@ -503,7 +618,7 @@ router.post("/publish", async (req, res) => {
     // 2. Ensure Category "ford-fathom-news" exists
     const categoryId = await getOrCreateFathomCategory(wpConfig);
 
-    // 3. Assemble HTML Content
+    // 3. Assemble HTML Content (clean class-only markup)
     const assembledContent = assemblePostContent({
       summary: cleanSummary,
       theTake: cleanTake,
@@ -513,12 +628,31 @@ router.post("/publish", async (req, res) => {
       title: cleanTitle,
     });
 
-    // 4. Create WordPress Draft Post
+    // 4. Rank Math Pro SEO metadata
+    const focusKeyword = extractFocusKeyword(cleanTitle);
+    const seoDescription = cleanSummary || truncateToSentences(cleanTake, 2, 160);
+
+    // 5. Create WordPress Draft Post
     const postsEndpoint = `${wpConfig.siteUrl}/wp-json/wp/v2/posts`;
     const postPayload = {
       title: cleanTitle,
       content: assembledContent,
       status: "draft",
+      meta: {
+        rank_math_title: cleanTitle,
+        rank_math_description: seoDescription,
+        rank_math_focus_keyword: focusKeyword,
+        rank_math_canonical_url: cleanType === "article" ? cleanUrl : "",
+        rank_math_og_title: cleanTitle,
+        rank_math_og_description: seoDescription,
+        rank_math_og_image: imageUrl || "",
+        rank_math_twitter_title: cleanTitle,
+        rank_math_twitter_description: seoDescription,
+        rank_math_twitter_image: imageUrl || "",
+        rank_math_robots: ["index", "follow"],
+        rank_math_news_article: true,
+        rank_math_rich_snippet: "newsarticle",
+      },
     };
 
     if (categoryId) {
@@ -539,7 +673,33 @@ router.post("/publish", async (req, res) => {
     wpPostId = postRes.data?.id;
     wpPostUrl = `${wpConfig.siteUrl}/wp-admin/post.php?post=${wpPostId}&action=edit`;
 
-    // 5. Insert successful record into SQLite fathom_news_history
+    // 6. Optional Rank Math REST API updateMeta hook (if enabled)
+    try {
+      await axios.post(
+        `${wpConfig.siteUrl}/wp-json/rankmath/v1/updateMeta`,
+        {
+          objectID: wpPostId,
+          objectType: "post",
+          meta: {
+            rank_math_title: cleanTitle,
+            rank_math_description: seoDescription,
+            rank_math_focus_keyword: focusKeyword,
+            rank_math_canonical_url: cleanType === "article" ? cleanUrl : "",
+            rank_math_robots: ["index", "follow"],
+            rank_math_rich_snippet: "newsarticle",
+          },
+        },
+        {
+          headers: {
+            Authorization: wpConfig.authHeader,
+            "Content-Type": "application/json",
+          },
+          timeout: 6000,
+        }
+      );
+    } catch (rmErr) {}
+
+    // 7. Insert successful record into SQLite fathom_news_history
     const insertStmt = db.prepare(`
       INSERT INTO fathom_news_history (
         source_url, source_type, title, summary, image_url,
@@ -608,9 +768,10 @@ router.post("/publish", async (req, res) => {
 
 /**
  * 3. GET /api/fathom-news/history
- * Returns paginated history records with search and status/type filtering.
+ * Returns paginated history records with search and status/type filtering,
+ * synced dynamically against WordPress live status.
  */
-router.get("/history", (req, res) => {
+router.get("/history", async (req, res) => {
   try {
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 25, 1), 100);
     const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
@@ -627,7 +788,7 @@ router.get("/history", (req, res) => {
       params.push(term, term, term);
     }
 
-    if (status && (status === "draft_created" || status === "failed")) {
+    if (status && (status === "draft_created" || status === "published" || status === "failed" || status === "trashed")) {
       whereClauses.push("status = ?");
       params.push(status);
     }
@@ -642,9 +803,12 @@ router.get("/history", (req, res) => {
     const totalRow = db.prepare(`SELECT count(*) as total FROM fathom_news_history ${whereSql}`).get(...params);
     const total = totalRow ? totalRow.total : 0;
 
-    const items = db
+    let items = db
       .prepare(`SELECT * FROM fathom_news_history ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
       .all(...params, limit, offset);
+
+    // Sync status against WordPress live post data
+    items = await syncWpPostStatuses(items);
 
     return res.json({
       ok: true,
@@ -660,7 +824,21 @@ router.get("/history", (req, res) => {
 });
 
 /**
- * 4. DELETE /api/fathom-news/history/:id
+ * 4. POST /api/fathom-news/sync-status
+ * Explicitly triggers a batch sync of all historical posts against WordPress.
+ */
+router.post("/sync-status", async (req, res) => {
+  try {
+    const items = db.prepare("SELECT * FROM fathom_news_history WHERE wp_post_id IS NOT NULL ORDER BY id DESC LIMIT 100").all();
+    const updated = await syncWpPostStatuses(items);
+    return res.json({ ok: true, syncedCount: updated.length });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/**
+ * 5. DELETE /api/fathom-news/history/:id
  * Removes a history item by ID.
  */
 router.delete("/history/:id", (req, res) => {
