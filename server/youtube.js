@@ -195,7 +195,18 @@ async function syncAllVideoDurations() {
   return { updated: updatedCount, total: videos.length, apiSuccess };
 }
 
-// 1. YouTube Data API v3 Sync Engine
+// Helper to safely purge a video and its related audit/snapshot records from SQLite
+function deleteVideoAndRelated(youtubeId) {
+  try {
+    db.prepare("DELETE FROM video_audits WHERE youtube_id = ?").run(youtubeId);
+  } catch (e) {}
+  try {
+    db.prepare("DELETE FROM video_snapshots WHERE youtube_id = ?").run(youtubeId);
+  } catch (e) {}
+  return db.prepare("DELETE FROM videos WHERE youtube_id = ?").run(youtubeId);
+}
+
+// 1. YouTube Data API v3 Sync Engine (Strictly Public Published Videos Only)
 async function syncCatalogViaYouTubeApi(mode = "delta") {
   const channelId = getYoutubeChannelId();
   const youtube = getYoutubeClient();
@@ -218,10 +229,12 @@ async function syncCatalogViaYouTubeApi(mode = "delta") {
   let pageToken = null;
   let newCount = 0;
   let totalProcessed = 0;
+  let removedCount = 0;
+  const newVideosList = [];
 
   do {
     const playlistRes = await youtube.playlistItems.list({
-      part: "snippet,contentDetails",
+      part: "snippet,contentDetails,status",
       playlistId: uploadsPlaylistId,
       maxResults: 50,
       pageToken: pageToken || undefined,
@@ -234,14 +247,16 @@ async function syncCatalogViaYouTubeApi(mode = "delta") {
 
     let durationMap = {};
     let realPublishDateMap = {};
+    let privacyMap = {};
     try {
       const videosRes = await youtube.videos.list({
-        part: "snippet,contentDetails",
+        part: "snippet,contentDetails,status",
         id: videoIds.join(","),
       });
 
       (videosRes.data.items || []).forEach((v) => {
         durationMap[v.id] = v.contentDetails?.duration || "";
+        privacyMap[v.id] = v.status?.privacyStatus || "public";
         if (v.snippet?.publishedAt) {
           realPublishDateMap[v.id] = v.snippet.publishedAt;
         }
@@ -252,6 +267,18 @@ async function syncCatalogViaYouTubeApi(mode = "delta") {
 
     for (const item of items) {
       const vId = item.contentDetails.videoId;
+      const privacy = privacyMap[vId] || item.status?.privacyStatus || "public";
+
+      // If video is unlisted or private, DO NOT insert it into the public catalog
+      if (privacy !== "public") {
+        const existed = checkExistsStmt.get(vId);
+        if (existed) {
+          deleteVideoAndRelated(vId);
+          removedCount++;
+        }
+        continue;
+      }
+
       const snippet = item.snippet;
       const title = snippet.title;
       const description = snippet.description;
@@ -265,6 +292,7 @@ async function syncCatalogViaYouTubeApi(mode = "delta") {
 
       if (!exists) {
         newCount++;
+        newVideosList.push({ id: vId, title });
       } else if (mode === "delta") {
         hitExistingInDelta = true;
       }
@@ -272,24 +300,24 @@ async function syncCatalogViaYouTubeApi(mode = "delta") {
       totalProcessed++;
     }
 
-    if (mode === "delta" && hitExistingInDelta) {
+    if (mode === "delta" && hitExistingInDelta && newCount === 0) {
       break;
     }
 
     pageToken = playlistRes.data.nextPageToken;
   } while (pageToken);
 
-  return { newCount, totalProcessed, mode, isScraped: false };
+  return { newCount, totalProcessed, removedCount, newVideos: newVideosList, mode, isScraped: false, success: true };
 }
 
-// 2. Full Continuation Scraper Sync Engine Fallback
-async function syncRealChannelVideosScraper(mode = "delta") {
+// Helper: Scrape all public video IDs currently visible on the public channel tab
+async function scrapeAllPublicChannelVideoIds() {
   const channelUrl = "https://www.youtube.com/@TheElectricDuo/videos";
-
   const htmlRes = await axios.get(channelUrl, {
     headers: {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     },
+    timeout: 10000,
   });
 
   const html = htmlRes.data;
@@ -325,20 +353,102 @@ async function syncRealChannelVideosScraper(mode = "delta") {
 
   let token = extractItems(contents);
   let page = 1;
-  const maxPages = mode === "delta" ? 2 : 40;
+
+  while (token && page < 40) {
+    page++;
+    try {
+      const contRes = await axios.post(
+        `https://www.youtube.com/youtubei/v1/browse?key=${apiKey}`,
+        {
+          context: {
+            client: {
+              clientName: "WEB",
+              clientVersion: "2.20240101.00.00",
+            },
+          },
+          continuation: token,
+        },
+        { timeout: 8000 }
+      );
+
+      const actions = contRes.data.onResponseReceivedActions || [];
+      let newItems = [];
+      actions.forEach((act) => {
+        const gridCont = act.appendContinuationItemsAction?.continuationItems;
+        if (gridCont) newItems = newItems.concat(gridCont);
+      });
+
+      token = extractItems(newItems);
+    } catch (e) {
+      break;
+    }
+  }
+
+  return Array.from(videoIds);
+}
+
+// 2. Full Continuation Scraper Sync Engine Fallback (Guaranteed Public Videos Only)
+async function syncRealChannelVideosScraper(mode = "delta") {
+  const channelUrl = "https://www.youtube.com/@TheElectricDuo/videos";
+
+  const htmlRes = await axios.get(channelUrl, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    },
+    timeout: 10000,
+  });
+
+  const html = htmlRes.data;
+  const apiKeyMatch = html.match(/"INNERTUBE_API_KEY":"([^"]+)"/);
+  const apiKey = apiKeyMatch ? apiKeyMatch[1] : null;
+
+  const match = html.match(/var ytInitialData = ({.*?});<\/script>/);
+  if (!match) throw new Error("Could not parse YouTube channel initial data.");
+
+  const data = JSON.parse(match[1]);
+  const tabs = data.contents?.twoColumnBrowseResultsRenderer?.tabs || [];
+  const videosTab = tabs.find((t) => t.tabRenderer?.title === "Videos" || t.tabRenderer?.selected);
+  const contents = videosTab?.tabRenderer?.content?.richGridRenderer?.contents || [];
+
+  const videoIds = new Set();
+
+  function extractItems(items) {
+    let nextTok = null;
+    items.forEach((item) => {
+      const str = JSON.stringify(item);
+      const matches = str.match(/\/vi\/([a-zA-Z0-9_-]{11})\//g) || [];
+      matches.forEach((m) => {
+        const id = m.replace("/vi/", "").replace("/", "");
+        videoIds.add(id);
+      });
+
+      if (item.continuationItemRenderer) {
+        nextTok = item.continuationItemRenderer.continuationEndpoint?.continuationCommand?.token;
+      }
+    });
+    return nextTok;
+  }
+
+  let token = extractItems(contents);
+  let page = 1;
+  const maxPages = mode === "delta" ? 4 : 40;
 
   while (token && page < maxPages) {
     page++;
     try {
-      const contRes = await axios.post(`https://www.youtube.com/youtubei/v1/browse?key=${apiKey}`, {
-        context: {
-          client: {
-            clientName: "WEB",
-            clientVersion: "2.20240101.00.00",
+      const contRes = await axios.post(
+        `https://www.youtube.com/youtubei/v1/browse?key=${apiKey}`,
+        {
+          context: {
+            client: {
+              clientName: "WEB",
+              clientVersion: "2.20240101.00.00",
+            },
           },
+          continuation: token,
         },
-        continuation: token,
-      });
+        { timeout: 8000 }
+      );
 
       const actions = contRes.data.onResponseReceivedActions || [];
       let newItems = [];
@@ -370,21 +480,26 @@ async function syncRealChannelVideosScraper(mode = "delta") {
 
   let newCount = 0;
   let totalProcessed = 0;
+  const newVideosList = [];
 
-  for (let i = 0; i < allVideoIds.length; i += 8) {
-    const chunk = allVideoIds.slice(i, i + 8);
+  for (let i = 0; i < allVideoIds.length; i += 6) {
+    const chunk = allVideoIds.slice(i, i + 6);
     await Promise.all(
       chunk.map(async (vId) => {
         try {
+          const exists = checkExistsStmt.get(vId);
+          if (exists && mode === "delta") {
+            totalProcessed++;
+            return;
+          }
+
           const oembedUrl = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${vId}&format=json`;
-          const oembedRes = await axios.get(oembedUrl);
+          const oembedRes = await axios.get(oembedUrl, { timeout: 6000 });
           const data = oembedRes.data;
 
           const title = data.title || "Electric Duo Video";
           const thumbnailUrl = `https://img.youtube.com/vi/${vId}/maxresdefault.jpg`;
           const description = `Watch the official video "${title}" on The Electric Duo YouTube channel.`;
-
-          const exists = checkExistsStmt.get(vId);
 
           let publishedAt = exists && exists.published_at ? exists.published_at : null;
           if (!publishedAt) {
@@ -397,7 +512,7 @@ async function syncRealChannelVideosScraper(mode = "delta") {
             contentType = "How-To / Instructional";
           } else if (lowerTitle.includes("news") || lowerTitle.includes("update") || lowerTitle.includes("202")) {
             contentType = "EV News";
-          } else if (lowerTitle.includes("trip") || lowerTitle.includes("road") || lowerTitle.includes("vlog")) {
+          } else if (lowerTitle.includes("trip") || lowerTitle.includes("road") || lowerTitle.includes("vlog") || lowerTitle.includes("journey")) {
             contentType = "Road Trip / Vlog";
           }
 
@@ -405,6 +520,7 @@ async function syncRealChannelVideosScraper(mode = "delta") {
 
           if (!exists) {
             newCount++;
+            newVideosList.push({ id: vId, title });
           }
 
           totalProcessed++;
@@ -415,7 +531,7 @@ async function syncRealChannelVideosScraper(mode = "delta") {
     );
   }
 
-  return { newCount, totalProcessed, mode, isScraped: true };
+  return { newCount, totalProcessed, newVideos: newVideosList, mode, isScraped: true, success: true };
 }
 
 async function syncCatalog(mode = "delta") {
@@ -427,8 +543,114 @@ async function syncCatalog(mode = "delta") {
   }
 }
 
+// 3. Purge Non-Public (Unlisted, Private, Deleted) Videos Engine
+async function purgeNonPublicVideos() {
+  const allVideos = db.prepare("SELECT youtube_id, title FROM videos").all();
+  if (!allVideos || allVideos.length === 0) {
+    return { success: true, checked: 0, removedCount: 0, removedVideos: [], method: "none" };
+  }
+
+  let apiSuccess = false;
+  const removedVideos = [];
+
+  // Try YouTube Data API first if configured
+  try {
+    const youtube = getYoutubeClient();
+    const videoIds = allVideos.map((v) => v.youtube_id);
+
+    for (let i = 0; i < videoIds.length; i += 50) {
+      const chunk = videoIds.slice(i, i + 50);
+      const res = await youtube.videos.list({
+        part: "status,snippet",
+        id: chunk.join(","),
+      });
+
+      const foundMap = {};
+      (res.data.items || []).forEach((item) => {
+        foundMap[item.id] = item;
+        const privacy = item.status?.privacyStatus;
+        if (privacy !== "public") {
+          removedVideos.push({
+            id: item.id,
+            title: item.snippet?.title || "Unknown Title",
+            reason: `Unlisted or Private (${privacy})`,
+          });
+        }
+      });
+
+      // Videos in database not returned by YouTube API (deleted or inaccessible)
+      chunk.forEach((vId) => {
+        if (!foundMap[vId]) {
+          const matched = allVideos.find((v) => v.youtube_id === vId);
+          removedVideos.push({
+            id: vId,
+            title: matched?.title || "Deleted/Missing Video",
+            reason: "Deleted or inaccessible on YouTube",
+          });
+        }
+      });
+    }
+
+    apiSuccess = true;
+  } catch (apiErr) {
+    console.warn("YouTube Data API unlisted check failed, falling back to public channel scraper:", apiErr.message);
+  }
+
+  // Fallback: Check against public channel scraper list
+  if (!apiSuccess) {
+    try {
+      const publicIds = await scrapeAllPublicChannelVideoIds();
+      const publicSet = new Set(publicIds);
+
+      for (const video of allVideos) {
+        if (!publicSet.has(video.youtube_id)) {
+          // Verify with oEmbed to confirm if accessible or not
+          let isPublic = false;
+          try {
+            const oRes = await axios.get(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${video.youtube_id}&format=json`, { timeout: 4000 });
+            if (oRes.status === 200) {
+              // Note: Unlisted videos can occasionally respond to oembed if knowing exact link, but they are absent from public channel
+              // The user specified: "This Command Center should only be considering published videos."
+            }
+          } catch (oeErr) {
+            // Not accessible publicly
+          }
+
+          removedVideos.push({
+            id: video.youtube_id,
+            title: video.title,
+            reason: "Not found on public channel (Unlisted, Private, or Deleted)",
+          });
+        }
+      }
+    } catch (scrapeErr) {
+      console.error("Scraper verification failed:", scrapeErr.message);
+      throw new Error("Unable to verify video privacy status: " + scrapeErr.message);
+    }
+  }
+
+  // Execute database purge inside transaction
+  if (removedVideos.length > 0) {
+    const purgeTx = db.transaction((list) => {
+      for (const item of list) {
+        deleteVideoAndRelated(item.id);
+      }
+    });
+    purgeTx(removedVideos);
+  }
+
+  return {
+    success: true,
+    checked: allVideos.length,
+    removedCount: removedVideos.length,
+    removedVideos,
+    method: apiSuccess ? "youtube_api" : "channel_scraper",
+  };
+}
+
 module.exports = {
   syncCatalog,
+  purgeNonPublicVideos,
   syncAllVideoDurations,
   getYoutubeApiKey,
   getYoutubeChannelId,

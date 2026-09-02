@@ -30,6 +30,10 @@ import {
   ArrowLeft,
   FileText,
   Layers,
+  Trash2,
+  EyeOff,
+  DownloadCloud,
+  ShieldCheck,
 } from "lucide-react";
 
 export default function AdminSettings({ currentUser }) {
@@ -71,6 +75,11 @@ export default function AdminSettings({ currentUser }) {
   const [models, setModels] = useState([]);
 
   // Maintenance State
+  const [isSyncingCatalog, setIsSyncingCatalog] = useState(false);
+  const [catalogSyncMode, setCatalogSyncMode] = useState(null); // 'delta' | 'full'
+  const [syncCatalogResult, setSyncCatalogResult] = useState(null);
+  const [isPurgingNonPublic, setIsPurgingNonPublic] = useState(false);
+  const [purgeNonPublicResult, setPurgeNonPublicResult] = useState(null);
   const [isSyncingDurations, setIsSyncingDurations] = useState(false);
   const [syncDurationResult, setSyncDurationResult] = useState(null);
 
@@ -282,6 +291,98 @@ export default function AdminSettings({ currentUser }) {
       }
     } catch (err) {
       showToast("Error updating password: " + err.message, "error");
+    }
+  };
+
+  const handleSyncCatalog = async (mode = "delta") => {
+    setIsSyncingCatalog(true);
+    setCatalogSyncMode(mode);
+    setSyncCatalogResult(null);
+
+    try {
+      const res = await fetch("/api/catalog/sync", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode }),
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        const newCount = data.newCount || 0;
+        const total = data.totalProcessed || 0;
+        const removed = data.removedCount || 0;
+        let msg = `Catalog sync complete (${mode === "delta" ? "Delta Sync" : "Full Library Sync"}): ${newCount} new published video${newCount === 1 ? "" : "s"} added (${total} checked).`;
+        if (removed > 0) {
+          msg += ` Removed ${removed} unlisted/private video${removed === 1 ? "" : "s"}.`;
+        }
+        setSyncCatalogResult({
+          ok: true,
+          message: msg,
+          newCount,
+          total,
+          removed,
+          newVideos: data.newVideos || [],
+          isScraped: data.isScraped,
+        });
+        showToast(
+          newCount > 0
+            ? `Added ${newCount} new published video${newCount === 1 ? "" : "s"} to catalog!`
+            : "Catalog is up-to-date! No new videos found."
+        );
+      } else {
+        setSyncCatalogResult({ ok: false, error: data.error || "Catalog sync failed." });
+        showToast("Catalog sync failed: " + (data.error || "Unknown error"), "error");
+      }
+    } catch (err) {
+      setSyncCatalogResult({ ok: false, error: err.message });
+      showToast("Catalog sync error: " + err.message, "error");
+    } finally {
+      setIsSyncingCatalog(false);
+      setCatalogSyncMode(null);
+    }
+  };
+
+  const handlePurgeNonPublic = async () => {
+    if (!confirm("This will audit all videos in the database against YouTube and permanently remove any unlisted, private, or deleted videos so only published videos remain. Proceed?")) {
+      return;
+    }
+
+    setIsPurgingNonPublic(true);
+    setPurgeNonPublicResult(null);
+
+    try {
+      const res = await fetch("/api/catalog/purge-non-public", {
+        method: "POST",
+        credentials: "same-origin",
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        const removed = data.removedCount || 0;
+        const checked = data.checked || 0;
+        const msg = removed > 0
+          ? `Public video audit complete: Purged ${removed} unlisted/private/deleted video${removed === 1 ? "" : "s"} out of ${checked} checked.`
+          : `Public video audit complete: All ${checked} catalog videos are verified public and published! 0 non-public videos found.`;
+        
+        setPurgeNonPublicResult({
+          ok: true,
+          message: msg,
+          removedCount: removed,
+          checked,
+          removedVideos: data.removedVideos || [],
+          method: data.method,
+        });
+        showToast(removed > 0 ? `Purged ${removed} non-public videos.` : "All catalog videos verified public!", "success");
+      } else {
+        setPurgeNonPublicResult({ ok: false, error: data.error || "Purge failed." });
+        showToast("Purge error: " + (data.error || "Failed to audit non-public videos."), "error");
+      }
+    } catch (err) {
+      setPurgeNonPublicResult({ ok: false, error: err.message });
+      showToast("Purge error: " + err.message, "error");
+    } finally {
+      setIsPurgingNonPublic(false);
     }
   };
 
@@ -915,11 +1016,140 @@ export default function AdminSettings({ currentUser }) {
           <div>
             <h3 className="text-base font-bold text-white mb-1">Catalog & Video Maintenance</h3>
             <p className="text-xs text-slate-400">
-              Manage video classifications, batch update video categories, and backfill accurate video durations from YouTube.
+              Update the video catalog with newly published videos, purge unlisted and private videos so only published content is tracked, batch update video categories, and backfill accurate video durations.
             </p>
           </div>
 
-          {/* Quick Video Category Manager Card */}
+          {/* 1. Update Video Catalog (New Videos Sync) Card */}
+          <div className="bg-slate-950/70 border border-slate-800 p-5 rounded-2xl flex flex-col gap-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <div className="text-xs font-bold text-white flex items-center gap-2">
+                  <DownloadCloud className="w-4 h-4 text-cyan-400" />
+                  <span>Update Video Catalog (Fetch New Published Videos)</span>
+                </div>
+                <div className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                  Scan YouTube for newly published public videos and import them into the Command Center catalog. Unlisted and private uploads are automatically filtered out.
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => handleSyncCatalog("delta")}
+                  disabled={isSyncingCatalog}
+                  className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-bold text-xs uppercase tracking-wider shrink-0 shadow-md shadow-cyan-500/20 disabled:opacity-50 transition-all"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isSyncingCatalog && catalogSyncMode === "delta" ? "animate-spin" : ""}`} />
+                  <span>{isSyncingCatalog && catalogSyncMode === "delta" ? "Updating Catalog…" : "Update Catalog (New Videos)"}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleSyncCatalog("full")}
+                  disabled={isSyncingCatalog}
+                  className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700/80 text-xs font-semibold shrink-0 disabled:opacity-50 transition-colors"
+                  title="Run a full catalog scan of all historical videos"
+                >
+                  <RefreshCw className={`w-3 h-3 ${isSyncingCatalog && catalogSyncMode === "full" ? "animate-spin" : ""}`} />
+                  <span>Full Sync</span>
+                </button>
+              </div>
+            </div>
+
+            {syncCatalogResult && (
+              <div
+                className={`p-4 rounded-xl text-xs font-medium border flex flex-col gap-2 ${
+                  syncCatalogResult.ok
+                    ? "bg-emerald-950/60 border-emerald-500/30 text-emerald-300"
+                    : "bg-red-950/60 border-red-500/30 text-red-300"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  {syncCatalogResult.ok ? (
+                    <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+                  ) : (
+                    <AlertTriangle className="w-4 h-4 shrink-0 text-red-400" />
+                  )}
+                  <span className="font-semibold">{syncCatalogResult.message || syncCatalogResult.error}</span>
+                </div>
+
+                {syncCatalogResult.newVideos && syncCatalogResult.newVideos.length > 0 && (
+                  <div className="mt-1 pl-6 pt-2 border-t border-emerald-500/20 flex flex-col gap-1 text-[11px] text-emerald-200">
+                    <span className="font-bold uppercase tracking-wider text-[10px] text-emerald-400">Newly Added Published Videos:</span>
+                    <ul className="list-disc list-inside space-y-0.5">
+                      {syncCatalogResult.newVideos.map((v) => (
+                        <li key={v.id} className="truncate">
+                          <span className="font-semibold">{v.title}</span> <code className="text-[10px] opacity-70">({v.id})</code>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* 2. Audit & Remove Unlisted / Private Videos Card */}
+          <div className="bg-slate-950/70 border border-slate-800 p-5 rounded-2xl flex flex-col gap-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <div className="text-xs font-bold text-white flex items-center gap-2">
+                  <EyeOff className="w-4 h-4 text-rose-400" />
+                  <span>Remove Unlisted & Private Videos</span>
+                </div>
+                <div className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                  Cross-reference all stored videos against YouTube to identify and purge any unlisted, private, or deleted uploads. Ensures the Command Center only considers public published videos.
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handlePurgeNonPublic}
+                disabled={isPurgingNonPublic}
+                className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-red-950/40 hover:bg-red-950/70 border border-red-500/40 text-red-300 font-bold text-xs uppercase tracking-wider shrink-0 disabled:opacity-50 transition-colors shadow-sm"
+              >
+                <Trash2 className={`w-3.5 h-3.5 ${isPurgingNonPublic ? "animate-spin" : ""}`} />
+                <span>{isPurgingNonPublic ? "Auditing Videos…" : "Audit & Purge Non-Public"}</span>
+              </button>
+            </div>
+
+            {purgeNonPublicResult && (
+              <div
+                className={`p-4 rounded-xl text-xs font-medium border flex flex-col gap-2 ${
+                  purgeNonPublicResult.ok
+                    ? purgeNonPublicResult.removedCount > 0
+                      ? "bg-amber-950/60 border-amber-500/30 text-amber-200"
+                      : "bg-emerald-950/60 border-emerald-500/30 text-emerald-300"
+                    : "bg-red-950/60 border-red-500/30 text-red-300"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  {purgeNonPublicResult.ok ? (
+                    <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+                  ) : (
+                    <AlertTriangle className="w-4 h-4 shrink-0 text-red-400" />
+                  )}
+                  <span className="font-semibold">{purgeNonPublicResult.message || purgeNonPublicResult.error}</span>
+                </div>
+
+                {purgeNonPublicResult.removedVideos && purgeNonPublicResult.removedVideos.length > 0 && (
+                  <div className="mt-1 pl-6 pt-2 border-t border-amber-500/20 flex flex-col gap-1 text-[11px]">
+                    <span className="font-bold uppercase tracking-wider text-[10px] text-amber-400">Purged Videos:</span>
+                    <ul className="list-disc list-inside space-y-0.5">
+                      {purgeNonPublicResult.removedVideos.map((v) => (
+                        <li key={v.id} className="truncate">
+                          <span className="font-semibold">{v.title}</span> <code className="text-[10px] opacity-70">({v.id})</code> — <span className="italic opacity-80">{v.reason}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* 3. Quick Video Category Manager Card */}
           <div className="bg-slate-950/70 border border-slate-800 p-5 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
               <div className="text-xs font-bold text-white flex items-center gap-2">
@@ -940,7 +1170,7 @@ export default function AdminSettings({ currentUser }) {
             </button>
           </div>
 
-          {/* Catalog Duration Backfill Card */}
+          {/* 4. Catalog Duration Backfill Card */}
           <div className="bg-slate-950/70 border border-slate-800 p-5 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
               <div className="text-xs font-bold text-white flex items-center gap-2">

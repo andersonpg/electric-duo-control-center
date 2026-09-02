@@ -12,7 +12,7 @@ const content = require("./content");
 const periods = require("./periods");
 const auth = require("./auth");
 
-const { syncCatalog } = require("./youtube");
+const { syncCatalog, purgeNonPublicVideos, syncAllVideoDurations } = require("./youtube");
 const { generateArticle } = require("./gemini");
 const { createWordPressDraft } = require("./wordpress");
 const { getOrRunAudit, getAuditsSummary } = require("./audit");
@@ -288,15 +288,31 @@ app.post("/api/videos/reset", auth.requireAuth(), (req, res) => {
 });
 
 // YouTube Catalog Sync
-app.post("/api/sync", auth.requireAuth(), async (req, res) => {
+const handleCatalogSync = async (req, res) => {
   try {
-    const { mode } = req.body;
+    const { mode } = req.body || {};
     const result = await syncCatalog(mode || "delta");
     res.json({ success: true, ...result });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
-});
+};
+
+app.post("/api/sync", auth.requireAuth(), handleCatalogSync);
+app.post("/api/catalog/sync", auth.requireAuth(), handleCatalogSync);
+
+// YouTube Catalog Non-Public Video Purge
+const handlePurgeNonPublic = async (req, res) => {
+  try {
+    const result = await purgeNonPublicVideos();
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+app.post("/api/catalog/purge-non-public", auth.requireAuth(), handlePurgeNonPublic);
+app.post("/api/admin/purge-non-public", auth.requireAuth(), handlePurgeNonPublic);
 
 // Content Templates
 app.get("/api/templates", auth.requireAuth(), (req, res) => {
