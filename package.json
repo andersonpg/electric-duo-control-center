@@ -22,6 +22,7 @@
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "googleapis": "^144.0.0",
+    "pm2": "^7.0.4",
     "youtube-transcript": "^1.2.1"
   }
 }
