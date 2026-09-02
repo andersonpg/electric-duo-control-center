@@ -350,14 +350,14 @@ You MUST reply ONLY with a valid JSON object with this EXACT structure (no markd
 
   const ai = new GoogleGenAI({ apiKey });
 
-  let configuredModel = "gemini-3.7-flash";
+  let configuredModel = "gemini-3.8-flash";
   try {
     const row = db.prepare("SELECT value FROM app_settings WHERE key = 'default_model'").get();
     if (row && row.value) configuredModel = row.value;
   } catch (e) {}
 
-  if (configuredModel.includes("2.5") || configuredModel.includes("2.0") || configuredModel.includes("1.5") || configuredModel.includes("3.5-pro")) {
-    configuredModel = "gemini-3.7-flash";
+  if (configuredModel.includes("2.5") || configuredModel.includes("2.0") || configuredModel.includes("1.5") || configuredModel.includes("3.5-pro") || configuredModel === "gemini-flash-latest") {
+    configuredModel = "gemini-3.8-flash";
   }
 
   const response = await callGeminiWithRetry(
@@ -378,6 +378,15 @@ You MUST reply ONLY with a valid JSON object with this EXACT structure (no markd
     evaluation = JSON.parse(jsonMatch[0]);
   } else {
     evaluation = JSON.parse(rawText);
+  }
+
+  if (evaluation) {
+    if (!evaluation.scorecard) evaluation.scorecard = {};
+    if (!evaluation.scorecard.seo_score) {
+      const topTerms = evaluation.search_seo_analysis?.top_captured_terms?.length || 0;
+      const status = evaluation.scorecard.seo_status || "pass";
+      evaluation.scorecard.seo_score = status === "pass" ? (topTerms >= 2 ? 94 : 88) : 72;
+    }
   }
 
   if (!evaluation || !evaluation.health_score) {

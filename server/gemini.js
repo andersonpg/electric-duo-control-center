@@ -68,17 +68,17 @@ function getGeminiApiKey() {
 
 // Helper to call Gemini API with candidate models and clean error reporting
 async function callGeminiWithRetry(ai, requestOptions, maxRetries = 2) {
-  let primaryModel = requestOptions.model || "gemini-3.7-flash";
+  let primaryModel = requestOptions.model || "gemini-3.8-flash";
   if (primaryModel.includes("2.5") || primaryModel.includes("2.0") || primaryModel.includes("1.5") || primaryModel.includes("3.5-pro") || primaryModel === "gemini-flash-latest") {
-    primaryModel = "gemini-3.7-flash";
+    primaryModel = "gemini-3.8-flash";
   }
 
   const candidateModels = [
     primaryModel,
+    "gemini-3.8-flash",
     "gemini-3.7-flash",
     "gemini-3.5-flash-lite",
     "gemini-3.5-flash",
-    "gemini-3.8-flash",
     "gemini-3.6-flash",
   ].filter((m, i, arr) => m && arr.indexOf(m) === i);
 
@@ -110,17 +110,38 @@ async function callGeminiWithRetry(ai, requestOptions, maxRetries = 2) {
   throw new Error(`Gemini API call failed across attempted models [${attemptedModels.join(", ")}]${errorDetail}`);
 }
 
-// Dynamically fetch and cache available Gemini text generation models from Google AI Studio
+// Dynamically fetch and cache available Gemini text generation models from Google AI Studio (Fast REST)
 async function fetchAvailableGeminiModels(customApiKey = null) {
   const apiKey = customApiKey || getGeminiApiKey();
   if (!apiKey) throw new Error("Gemini API key is not configured.");
 
-  const ai = new GoogleGenAI({ apiKey });
-  const list = await ai.models.list();
-  const models = [];
+  const axios = require("axios");
+  let rawList = [];
 
-  for await (const m of list) {
+  // 1. Direct REST call with pageSize=100 (sub-500ms)
+  try {
+    const restRes = await axios.get(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=100&key=${apiKey}`, {
+      timeout: 8000,
+    });
+    if (restRes.data?.models && Array.isArray(restRes.data.models)) {
+      rawList = restRes.data.models;
+    }
+  } catch (restErr) {
+    console.warn("Direct REST model list failed, trying SDK fallback:", restErr.message);
+    const ai = new GoogleGenAI({ apiKey });
+    const list = await ai.models.list();
+    for await (const m of list) {
+      rawList.push(m);
+    }
+  }
+
+  const models = [];
+  for (const m of rawList) {
     const rawId = m.name ? m.name.replace(/^models\//, "") : "";
+    const isSupported =
+      m.supportedGenerationMethods?.includes("generateContent") ||
+      m.supportedActions?.includes("generateContent");
+
     if (
       rawId.startsWith("gemini-") &&
       !rawId.includes("embedding") &&
@@ -132,18 +153,30 @@ async function fetchAvailableGeminiModels(customApiKey = null) {
       !rawId.includes("computer-use") &&
       !rawId.includes("preview-tts") &&
       !rawId.includes("native-audio") &&
-      m.supportedActions?.includes("generateContent")
+      isSupported
     ) {
+      const is38 = rawId === "gemini-3.8-flash";
+      const is37 = rawId === "gemini-3.7-flash";
+
+      let displayName = m.displayName || rawId;
+      if (is38) displayName = "Gemini 3.8 Flash (Latest Release · Ultra Fast & Multimodal)";
+      else if (is37) displayName = "Gemini 3.7 Flash (Recommended · Multimodal)";
+
       models.push({
         id: rawId,
-        name: m.displayName || rawId,
+        name: displayName,
         description: m.description,
-        recommended: rawId === "gemini-3.7-flash" || rawId === "gemini-3.8-flash",
+        recommended: is38 || is37,
       });
     }
   }
 
+  // Sort: 3.8 first, 3.7 second, then recommended, then version descending
   models.sort((a, b) => {
+    if (a.id === "gemini-3.8-flash") return -1;
+    if (b.id === "gemini-3.8-flash") return 1;
+    if (a.id === "gemini-3.7-flash") return -1;
+    if (b.id === "gemini-3.7-flash") return 1;
     if (a.recommended && !b.recommended) return -1;
     if (!a.recommended && b.recommended) return 1;
     return b.id.localeCompare(a.id);
@@ -151,7 +184,9 @@ async function fetchAvailableGeminiModels(customApiKey = null) {
 
   if (models.length > 0) {
     try {
-      db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('cached_gemini_models', ?)").run(JSON.stringify(models));
+      db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('cached_gemini_models', ?)").run(
+        JSON.stringify(models)
+      );
     } catch (e) {}
   }
 

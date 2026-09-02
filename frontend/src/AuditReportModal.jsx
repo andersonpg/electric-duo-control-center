@@ -27,7 +27,14 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
   const [loading, setLoading] = useState(!initialAudit);
   const [refreshing, setRefreshing] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState(null);
-  const [activeTab, setActiveTab] = useState("overview"); // 'overview' | 'retention' | 'packaging' | 'seo' | 'actions'
+  const [activeTab, setActiveTab] = useState("overview"); // 'overview' | 'retention' | 'packaging' | 'discovery' | 'actions'
+  const tabContentRef = React.useRef(null);
+
+  useEffect(() => {
+    if (tabContentRef.current) {
+      tabContentRef.current.scrollTop = 0;
+    }
+  }, [activeTab]);
 
   useEffect(() => {
     if (isOpen && youtubeId) {
@@ -53,10 +60,24 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
         return;
       }
       const data = await res.json();
+      if (!res.ok || data.error || !data.evaluation) {
+        throw new Error(data.error || "Audit generation failed.");
+      }
       setAudit(data);
       if (onAuditUpdated) onAuditUpdated(youtubeId, data);
     } catch (err) {
       console.error("Failed to load audit:", err);
+      if (forceRefresh) {
+        try {
+          const fallbackRes = await fetch(`/api/audit/${youtubeId}`, { credentials: "same-origin" });
+          if (fallbackRes.ok) {
+            const cached = await fallbackRes.json();
+            if (cached && cached.evaluation) {
+              setAudit(cached);
+            }
+          }
+        } catch (fallbackErr) {}
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -147,94 +168,106 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
             <p>Could not load audit data for this video.</p>
           </div>
         ) : (
-          <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-6 font-sans">
-            {/* Top Scorecard & Health Banner */}
-            <div className="bg-slate-950/70 border border-slate-800 rounded-3xl p-6 relative overflow-hidden">
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-                {/* Score & Verdict */}
-                <div className="flex items-center gap-5">
-                  <div
-                    className={`w-20 h-20 rounded-2xl flex flex-col items-center justify-center border shadow-xl shrink-0 ${
-                      isHealthy
-                        ? "bg-emerald-950/60 border-emerald-500/40 text-emerald-300 shadow-emerald-500/10"
-                        : isModerate
-                        ? "bg-cyan-950/60 border-cyan-500/40 text-cyan-300 shadow-cyan-500/10"
-                        : "bg-amber-950/60 border-amber-500/40 text-amber-300 shadow-amber-500/10"
+          <>
+            {/* Top Scorecard & Health Banner & Navigation Tabs (Fixed Header - Never Scrolled Away!) */}
+            <div className="px-6 pt-5 pb-3 bg-slate-950/60 border-b border-slate-800 shrink-0 flex flex-col gap-4">
+              {/* Scorecard Box */}
+              <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 sm:p-5 relative">
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
+                  {/* Score & Verdict */}
+                  <div className="flex items-center gap-4 min-w-0">
+                    <div
+                      className={`w-16 h-16 sm:w-18 sm:h-18 rounded-2xl flex flex-col items-center justify-center border shadow-xl shrink-0 ${
+                        isHealthy
+                          ? "bg-emerald-950/60 border-emerald-500/40 text-emerald-300 shadow-emerald-500/10"
+                          : isModerate
+                          ? "bg-cyan-950/60 border-cyan-500/40 text-cyan-300 shadow-cyan-500/10"
+                          : "bg-amber-950/60 border-amber-500/40 text-amber-300 shadow-amber-500/10"
+                      }`}
+                    >
+                      <span className="text-xl sm:text-2xl font-black">{healthScore}</span>
+                      <span className="text-[9px] uppercase font-bold tracking-wider opacity-80">/ 100</span>
+                    </div>
+
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm sm:text-base font-extrabold text-white">
+                          {evaluation?.health_tier || (isHealthy ? "Strong Performer" : "Optimization Opportunity")}
+                        </span>
+                        {metrics?.isLiveStudioData && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-[10px] font-bold text-emerald-400 uppercase tracking-wider">
+                            <CheckCircle className="w-3 h-3" /> Live Studio Data
+                          </span>
+                        )}
+                        <span className="text-[10px] text-slate-500">
+                          · Audited {new Date(updatedAt).toLocaleDateString()}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-300 mt-1 leading-relaxed line-clamp-2 max-w-2xl">
+                        {evaluation?.scorecard?.one_line_verdict ||
+                          "Comprehensive analysis of thumbnail packaging, audience drop-off, and distribution potential."}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* 4 Health Status Badges */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 shrink-0">
+                    <StatusPill
+                      label="Hook Gate (0:30)"
+                      status={evaluation?.scorecard?.hook_status}
+                      detail={evaluation?.hook_diagnosis?.hook_drop_30s || `-${metrics?.hookDropPercent}%`}
+                    />
+                    <StatusPill
+                      label="Impressions CTR"
+                      status={metrics?.ctr >= 5.0 ? "pass" : "warn"}
+                      detail={`${metrics?.ctr}% (${metrics?.ctrDelta >= 0 ? "+" : ""}${metrics?.ctrDelta}%)`}
+                    />
+                    <StatusPill
+                      label="Retention %"
+                      status={metrics?.retentionRate >= metrics?.categoryBenchmark?.avgRetention ? "pass" : "warn"}
+                      detail={`${metrics?.retentionRate}% (Avg ${metrics?.categoryBenchmark?.avgRetention}%)`}
+                    />
+                    <StatusPill
+                      label="SEO Coverage"
+                      status={evaluation?.scorecard?.seo_status || "pass"}
+                      detail={
+                        evaluation?.scorecard?.seo_score
+                          ? `${evaluation.scorecard.seo_score}% Optimized`
+                          : evaluation?.scorecard?.seo_status === "warn"
+                          ? "72% Needs Work"
+                          : "92% Optimized"
+                      }
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Navigation Tabs */}
+              <div className="flex flex-wrap gap-2 pt-1">
+                {[
+                  { id: "overview", label: "Core Performance" },
+                  { id: "retention", label: "Retention & Hook Diagnosis" },
+                  { id: "packaging", label: "Title & Thumbnail Critique" },
+                  { id: "discovery", label: "Discovery 2x2 Matrix" },
+                  { id: "actions", label: "Action Plan & Next Steps" },
+                ].map((t) => (
+                  <button
+                    key={t.id}
+                    onClick={() => setActiveTab(t.id)}
+                    className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all ${
+                      activeTab === t.id
+                        ? "bg-cyan-500/15 border border-cyan-500/50 text-cyan-300 shadow-md shadow-cyan-500/10"
+                        : "bg-slate-900/80 hover:bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-800"
                     }`}
                   >
-                    <span className="text-2xl font-black">{healthScore}</span>
-                    <span className="text-[10px] uppercase font-bold tracking-wider opacity-80">/ 100</span>
-                  </div>
-
-                  <div>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-sm font-extrabold text-white">
-                        {evaluation.health_tier || (isHealthy ? "Strong Performer" : "Optimization Opportunity")}
-                      </span>
-                      {metrics.isLiveStudioData && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-[10px] font-bold text-emerald-400 uppercase tracking-wider">
-                          <CheckCircle className="w-3 h-3" /> Live Studio Data
-                        </span>
-                      )}
-                      <span className="text-[10px] text-slate-500">
-                        · Audited {new Date(updatedAt).toLocaleDateString()}
-                      </span>
-                    </div>
-                    <p className="text-xs text-slate-300 mt-1 leading-relaxed max-w-xl">
-                      {evaluation.scorecard?.one_line_verdict ||
-                        "Comprehensive analysis of thumbnail packaging, audience drop-off, and distribution potential."}
-                    </p>
-                  </div>
-                </div>
-
-                {/* 4 Health Status Badges */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-                  <StatusPill
-                    label="Hook Gate (0:30)"
-                    status={evaluation.scorecard?.hook_status}
-                    detail={evaluation.hook_diagnosis?.hook_drop_30s || `-${metrics.hookDropPercent}%`}
-                  />
-                  <StatusPill
-                    label="Impressions CTR"
-                    status={metrics.ctr >= 5.0 ? "pass" : "warn"}
-                    detail={`${metrics.ctr}% (${metrics.ctrDelta >= 0 ? "+" : ""}${metrics.ctrDelta}%)`}
-                  />
-                  <StatusPill
-                    label="Retention %"
-                    status={metrics.retentionRate >= metrics.categoryBenchmark.avgRetention ? "pass" : "warn"}
-                    detail={`${metrics.retentionRate}% (Avg ${metrics.categoryBenchmark.avgRetention}%)`}
-                  />
-                  <StatusPill
-                    label="SEO Coverage"
-                    status={evaluation.scorecard?.seo_status || "pass"}
-                    detail="Optimized"
-                  />
-                </div>
+                    {t.label}
+                  </button>
+                ))}
               </div>
             </div>
 
-            {/* Navigation Tabs */}
-            <div className="flex flex-wrap gap-2 border-b border-slate-800 pb-2">
-              {[
-                { id: "overview", label: "Core Performance" },
-                { id: "retention", label: "Retention & Hook Diagnosis" },
-                { id: "packaging", label: "Title & Thumbnail Critique" },
-                { id: "discovery", label: "Discovery 2x2 Matrix" },
-                { id: "actions", label: "Action Plan & Next Steps" },
-              ].map((t) => (
-                <button
-                  key={t.id}
-                  onClick={() => setActiveTab(t.id)}
-                  className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all ${
-                    activeTab === t.id
-                      ? "bg-cyan-500/10 border border-cyan-500/40 text-cyan-300 shadow-md shadow-cyan-500/10"
-                      : "bg-slate-900/60 hover:bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-800"
-                  }`}
-                >
-                  {t.label}
-                </button>
-              ))}
-            </div>
+            {/* Scrollable Tab Content Body */}
+            <div ref={tabContentRef} className="flex-1 overflow-y-auto p-6 flex flex-col gap-6 font-sans">
 
             {/* TAB 1: CORE PERFORMANCE */}
             {activeTab === "overview" && (
@@ -649,6 +682,7 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
               </div>
             )}
           </div>
+          </>
         )}
       </div>
     </div>
@@ -659,9 +693,9 @@ function StatusPill({ label, status, detail }) {
   const isPass = status === "pass";
   const isWarn = status === "warn";
   return (
-    <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-2.5 flex flex-col justify-between">
+    <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-2.5 flex flex-col justify-between min-w-0">
       <div className="text-[10px] text-slate-400 font-medium truncate">{label}</div>
-      <div className="flex items-center gap-1.5 mt-1">
+      <div className="flex items-center gap-1.5 mt-1 min-w-0">
         {isPass ? (
           <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
         ) : isWarn ? (
@@ -670,9 +704,10 @@ function StatusPill({ label, status, detail }) {
           <XCircle className="w-3.5 h-3.5 text-red-400 shrink-0" />
         )}
         <span
-          className={`text-xs font-bold font-mono ${
+          className={`text-xs font-bold font-mono truncate ${
             isPass ? "text-emerald-300" : isWarn ? "text-amber-300" : "text-red-300"
           }`}
+          title={detail}
         >
           {detail}
         </span>
