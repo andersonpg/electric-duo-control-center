@@ -751,26 +751,31 @@ app.post("/api/admin/test-connection", auth.requireAuth(), async (req, res) => {
 
     if (service === "gemini") {
       const { GoogleGenAI } = require("@google/genai");
-      const { getGeminiApiKey } = require("./gemini");
+      const { getGeminiApiKey, callGeminiWithRetry } = require("./gemini");
       const apiKey = getGeminiApiKey();
       if (!apiKey) throw new Error("Gemini API key is not configured.");
       const ai = new GoogleGenAI({ apiKey });
-      const candidateModels = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash", "gemini-3.7-flash"];
-      let lastErr = null;
-      for (const m of candidateModels) {
-        try {
-          const start = Date.now();
-          const response = await ai.models.generateContent({
-            model: m,
-            contents: "Respond with the single word: OK",
-          });
-          const latency = Date.now() - start;
-          return res.json({ ok: true, message: `Connected to Gemini API using ${m} (${latency}ms) — Response: ${response.text?.trim()}` });
-        } catch (err) {
-          lastErr = err;
-        }
-      }
-      throw lastErr || new Error("Gemini API connection failed.");
+
+      let configuredModel = "gemini-3.7-flash";
+      try {
+        const row = articleDb.prepare("SELECT value FROM app_settings WHERE key = 'default_model'").get();
+        if (row && row.value) configuredModel = row.value;
+      } catch (e) {}
+
+      const start = Date.now();
+      const response = await callGeminiWithRetry(
+        ai,
+        {
+          model: configuredModel,
+          contents: "Respond with the single word: OK",
+        },
+        2
+      );
+      const latency = Date.now() - start;
+      return res.json({
+        ok: true,
+        message: `Connected to Gemini API using ${configuredModel} (${latency}ms) — Response: ${response.text?.trim()}`,
+      });
     }
 
     if (service === "wordpress") {
@@ -811,10 +816,7 @@ app.get("/api/models", auth.requireAuth(), (req, res) => {
     { id: "gemini-3.7-flash", name: "Gemini 3.7 Flash (Recommended · Ultra Fast & Multimodal)", recommended: true },
     { id: "gemini-3.6-flash", name: "Gemini 3.6 Flash" },
     { id: "gemini-3.5-pro", name: "Gemini 3.5 Pro (Deep Reasoning)" },
-    { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" },
-    { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" },
-    { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash" },
-    { id: "gemini-1.5-pro", name: "Gemini 1.5 Pro" },
+    { id: "gemini-3.1-pro-preview", name: "Gemini 3.1 Pro Preview" },
   ]);
 });
 

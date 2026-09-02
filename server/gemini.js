@@ -69,7 +69,7 @@ function getGeminiApiKey() {
 // Helper to call Gemini API with candidate models and clean error reporting
 async function callGeminiWithRetry(ai, requestOptions, maxRetries = 2) {
   let primaryModel = requestOptions.model || "gemini-3.7-flash";
-  if (primaryModel === "gemini-flash-latest" || primaryModel === "gemini-2.5-flash") {
+  if (primaryModel.includes("2.5") || primaryModel.includes("2.0") || primaryModel.includes("1.5") || primaryModel === "gemini-flash-latest") {
     primaryModel = "gemini-3.7-flash";
   }
 
@@ -77,10 +77,9 @@ async function callGeminiWithRetry(ai, requestOptions, maxRetries = 2) {
     primaryModel,
     "gemini-3.7-flash",
     "gemini-3.6-flash",
-    "gemini-3.5-flash",
-    "gemini-3.1-flash-lite",
-    "gemini-flash-latest",
-  ];
+    "gemini-3.5-pro",
+    "gemini-3.1-pro-preview",
+  ].filter((m, i, arr) => m && arr.indexOf(m) === i);
 
   const attemptedModels = [];
   let lastError = null;
@@ -189,4 +188,4 @@ CRITICAL MANDATES:
   return htmlContent;
 }
 
-module.exports = { getTranscript, generateArticle, getGeminiApiKey };
+module.exports = { getTranscript, generateArticle, getGeminiApiKey, callGeminiWithRetry };
