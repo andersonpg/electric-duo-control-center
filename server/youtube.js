@@ -102,9 +102,23 @@ async function fetchExactPublishDate(vId) {
   return null;
 }
 
+// Helper to convert seconds to ISO 8601 duration "PT18M34S"
+function secondsToIsoDuration(seconds) {
+  const total = parseInt(seconds, 10);
+  if (isNaN(total) || total <= 0) return "PT15M00S";
+  const hrs = Math.floor(total / 3600);
+  const mins = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hrs > 0) {
+    return `PT${hrs}H${mins}M${secs}S`;
+  }
+  return `PT${mins}M${secs}S`;
+}
+
 // Convert "18:06", "1:24:10", or "0:45" to ISO 8601 duration "PT18M6S"
 function formatDurationToIso(timeStr) {
   if (!timeStr || typeof timeStr !== "string") return "PT15M00S";
+  if (timeStr.startsWith("PT")) return timeStr;
   const parts = timeStr.trim().split(":").map((p) => parseInt(p, 10));
   if (parts.some((n) => isNaN(n))) return "PT15M00S";
 
@@ -118,22 +132,36 @@ function formatDurationToIso(timeStr) {
   return "PT15M00S";
 }
 
-// Extract video duration directly from search result without quota usage
+// Extract exact video duration directly from YouTube watch page without quota usage
 async function fetchVideoDurationDirect(vId) {
   try {
-    const res = await axios.get(`https://www.youtube.com/results?search_query=${vId}`, {
+    const res = await axios.get(`https://www.youtube.com/watch?v=${vId}`, {
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
       },
-      timeout: 5000,
+      timeout: 6000,
     });
     const html = res.data;
-    const match = html.match(/"lengthText":\{"accessibility":\{"accessibilityData":\{"label":"[^"]+"\}\},"simpleText":"([^"]+)"\}/);
-    if (match && match[1]) {
-      return formatDurationToIso(match[1]);
+    const metaMatch = html.match(/itemprop="duration" content="([^"]+)"/);
+    if (metaMatch && metaMatch[1]) {
+      return metaMatch[1];
     }
-  } catch (e) {}
+    const lengthSecMatch = html.match(/"lengthSeconds":"(\d+)"/);
+    if (lengthSecMatch && lengthSecMatch[1]) {
+      return secondsToIsoDuration(lengthSecMatch[1]);
+    }
+    const approxMatch = html.match(/"approxDurationMs":"(\d+)"/);
+    if (approxMatch && approxMatch[1]) {
+      return secondsToIsoDuration(Math.round(parseInt(approxMatch[1], 10) / 1000));
+    }
+    const simpleTextMatch = html.match(/"simpleText":"(\d+:\d+(?::\d+)?)"/);
+    if (simpleTextMatch && simpleTextMatch[1]) {
+      return formatDurationToIso(simpleTextMatch[1]);
+    }
+  } catch (e) {
+    console.warn(`Could not fetch exact duration for ${vId}:`, e.message);
+  }
   return null;
 }
 
@@ -162,7 +190,7 @@ async function syncAllVideoDurations() {
       for (const item of items) {
         const vId = item.id;
         const duration = item.contentDetails?.duration;
-        if (duration) {
+        if (duration && duration !== "PT15M00S") {
           updateStmt.run(duration, vId);
           updatedCount++;
         }
@@ -173,13 +201,11 @@ async function syncAllVideoDurations() {
     console.warn("YouTube API quota exceeded or error, using direct duration parser fallback:", apiErr.message);
   }
 
-  // 2. If API was blocked by quota, run direct zero-quota extractor
-  if (!apiSuccess) {
-    const targets = videos.filter((v) => !v.duration || v.duration === "PT15M00S" || v.duration === "PT15M");
-    const listToProcess = targets.length > 0 ? targets : videos;
-
-    for (let i = 0; i < listToProcess.length; i += 8) {
-      const chunk = listToProcess.slice(i, i + 8);
+  // 2. Run high-accuracy direct page extractor for all remaining default/unresolved videos
+  const remaining = db.prepare("SELECT youtube_id, title FROM videos WHERE duration IS NULL OR duration = 'PT15M00S' OR duration = 'PT15M'").all();
+  if (remaining.length > 0) {
+    for (let i = 0; i < remaining.length; i += 10) {
+      const chunk = remaining.slice(i, i + 10);
       await Promise.all(
         chunk.map(async (v) => {
           const exactDuration = await fetchVideoDurationDirect(v.youtube_id);
@@ -516,7 +542,9 @@ async function syncRealChannelVideosScraper(mode = "delta") {
             contentType = "Road Trip / Vlog";
           }
 
-          insertVideoStmt.run(vId, title, description, publishedAt, thumbnailUrl, "PT15M00S", contentType);
+          let duration = (await fetchVideoDurationDirect(vId)) || "PT15M00S";
+
+          insertVideoStmt.run(vId, title, description, publishedAt, thumbnailUrl, duration, contentType);
 
           if (!exists) {
             newCount++;

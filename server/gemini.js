@@ -69,16 +69,17 @@ function getGeminiApiKey() {
 // Helper to call Gemini API with candidate models and clean error reporting
 async function callGeminiWithRetry(ai, requestOptions, maxRetries = 2) {
   let primaryModel = requestOptions.model || "gemini-3.7-flash";
-  if (primaryModel.includes("2.5") || primaryModel.includes("2.0") || primaryModel.includes("1.5") || primaryModel === "gemini-flash-latest") {
+  if (primaryModel.includes("2.5") || primaryModel.includes("2.0") || primaryModel.includes("1.5") || primaryModel.includes("3.5-pro") || primaryModel === "gemini-flash-latest") {
     primaryModel = "gemini-3.7-flash";
   }
 
   const candidateModels = [
     primaryModel,
     "gemini-3.7-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-3.8-flash",
     "gemini-3.6-flash",
-    "gemini-3.5-pro",
-    "gemini-3.1-pro-preview",
   ].filter((m, i, arr) => m && arr.indexOf(m) === i);
 
   const attemptedModels = [];
@@ -107,6 +108,54 @@ async function callGeminiWithRetry(ai, requestOptions, maxRetries = 2) {
 
   const errorDetail = lastError ? ` (Last error: ${lastError.message})` : "";
   throw new Error(`Gemini API call failed across attempted models [${attemptedModels.join(", ")}]${errorDetail}`);
+}
+
+// Dynamically fetch and cache available Gemini text generation models from Google AI Studio
+async function fetchAvailableGeminiModels(customApiKey = null) {
+  const apiKey = customApiKey || getGeminiApiKey();
+  if (!apiKey) throw new Error("Gemini API key is not configured.");
+
+  const ai = new GoogleGenAI({ apiKey });
+  const list = await ai.models.list();
+  const models = [];
+
+  for await (const m of list) {
+    const rawId = m.name ? m.name.replace(/^models\//, "") : "";
+    if (
+      rawId.startsWith("gemini-") &&
+      !rawId.includes("embedding") &&
+      !rawId.includes("image") &&
+      !rawId.includes("tts") &&
+      !rawId.includes("robotics") &&
+      !rawId.includes("transcribe") &&
+      !rawId.includes("live-translate") &&
+      !rawId.includes("computer-use") &&
+      !rawId.includes("preview-tts") &&
+      !rawId.includes("native-audio") &&
+      m.supportedActions?.includes("generateContent")
+    ) {
+      models.push({
+        id: rawId,
+        name: m.displayName || rawId,
+        description: m.description,
+        recommended: rawId === "gemini-3.7-flash" || rawId === "gemini-3.8-flash",
+      });
+    }
+  }
+
+  models.sort((a, b) => {
+    if (a.recommended && !b.recommended) return -1;
+    if (!a.recommended && b.recommended) return 1;
+    return b.id.localeCompare(a.id);
+  });
+
+  if (models.length > 0) {
+    try {
+      db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('cached_gemini_models', ?)").run(JSON.stringify(models));
+    } catch (e) {}
+  }
+
+  return models;
 }
 
 async function generateArticle({ youtubeId, title, contentType, customNotes, photos, modelOverride, thinkingModeOverride }) {
@@ -188,4 +237,4 @@ CRITICAL MANDATES:
   return htmlContent;
 }
 
-module.exports = { getTranscript, generateArticle, getGeminiApiKey, callGeminiWithRetry };
+module.exports = { getTranscript, generateArticle, getGeminiApiKey, callGeminiWithRetry, fetchAvailableGeminiModels };

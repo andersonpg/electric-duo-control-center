@@ -192,9 +192,32 @@ export default function AdminSettings({ currentUser }) {
     }
   };
 
+  const [isRefreshingModels, setIsRefreshingModels] = useState(false);
+
+  const handleRefreshModels = async () => {
+    setIsRefreshingModels(true);
+    try {
+      const res = await fetch("/api/models/refresh", {
+        method: "POST",
+        credentials: "same-origin",
+      });
+      const data = await res.json();
+      if (res.ok && data.models) {
+        setModels(data.models);
+        showToast(`Refreshed ${data.models.length} active models from Google AI Studio`);
+      } else {
+        showToast(data.error || "Failed to refresh models", "error");
+      }
+    } catch (e) {
+      showToast("Failed to refresh models: " + e.message, "error");
+    } finally {
+      setIsRefreshingModels(false);
+    }
+  };
+
   const handleTestConnection = async (service) => {
     setTestingService(service);
-    setTestResults((prev) => ({ ...prev, [service]: { loading: true } }));
+    setTestResults((prev) => ({ ...prev, [service]: null }));
 
     try {
       const res = await fetch("/api/admin/test-connection", {
@@ -213,7 +236,7 @@ export default function AdminSettings({ currentUser }) {
       } else {
         setTestResults((prev) => ({
           ...prev,
-          [service]: { ok: false, error: data.error || "Connection failed." },
+          [service]: { ok: false, error: data.error || data.message || "Connection failed." },
         }));
       }
     } catch (err) {
@@ -861,7 +884,19 @@ export default function AdminSettings({ currentUser }) {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
-              <label className="block text-xs font-semibold text-slate-300 mb-2">Default Gemini Model</label>
+              <div className="flex items-center justify-between mb-2">
+                <label className="block text-xs font-semibold text-slate-300">Default Gemini Model</label>
+                <button
+                  type="button"
+                  onClick={handleRefreshModels}
+                  disabled={isRefreshingModels}
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 text-[11px] font-semibold border border-slate-700 transition-colors"
+                  title="Query Google AI Studio live for available models"
+                >
+                  <RefreshCw className={`w-3 h-3 ${isRefreshingModels ? "animate-spin" : ""}`} />
+                  <span>Refresh Models from AI Studio</span>
+                </button>
+              </div>
               <select
                 value={integrations.default_model}
                 onChange={(e) => setIntegrations({ ...integrations, default_model: e.target.value })}

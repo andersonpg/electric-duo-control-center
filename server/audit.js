@@ -2,7 +2,7 @@
 
 const { GoogleGenAI } = require("@google/genai");
 const db = require("./db").articleDb;
-const { getTranscript, getGeminiApiKey } = require("./gemini");
+const { getTranscript, getGeminiApiKey, callGeminiWithRetry } = require("./gemini");
 const { isOAuthConnected, fetchLiveVideoAnalytics } = require("./youtube-analytics");
 
 // Category benchmark definitions for The Electric Duo
@@ -356,41 +356,32 @@ You MUST reply ONLY with a valid JSON object with this EXACT structure (no markd
     if (row && row.value) configuredModel = row.value;
   } catch (e) {}
 
-  const candidateModels = [
-    configuredModel,
-    "gemini-3.7-flash",
-    "gemini-3.6-flash",
-    "gemini-3.5-pro",
-    "gemini-2.5-flash",
-    "gemini-2.5-pro",
-    "gemini-2.0-flash",
-    "gemini-flash-latest",
-    "gemini-pro-latest",
-  ];
+  if (configuredModel.includes("2.5") || configuredModel.includes("2.0") || configuredModel.includes("1.5") || configuredModel.includes("3.5-pro")) {
+    configuredModel = "gemini-3.7-flash";
+  }
+
+  const response = await callGeminiWithRetry(
+    ai,
+    {
+      model: configuredModel,
+      contents: prompt,
+    },
+    2
+  );
+
+  let rawText = response.text || "";
+  rawText = rawText.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/, "").trim();
 
   let evaluation = null;
-  let lastError = null;
-
-  for (const modelName of candidateModels) {
-    if (!modelName) continue;
-    try {
-      const response = await ai.models.generateContent({
-        model: modelName,
-        contents: prompt,
-      });
-
-      let rawText = response.text || "";
-      rawText = rawText.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/, "").trim();
-      evaluation = JSON.parse(rawText);
-      if (evaluation && evaluation.health_score) break;
-    } catch (err) {
-      lastError = err;
-      console.warn(`Model ${modelName} audit evaluation error:`, err.message);
-    }
+  const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    evaluation = JSON.parse(jsonMatch[0]);
+  } else {
+    evaluation = JSON.parse(rawText);
   }
 
   if (!evaluation || !evaluation.health_score) {
-    throw new Error(`Gemini AI audit generation failed. Detail: ${lastError ? lastError.message : "Invalid JSON output"}`);
+    throw new Error("Gemini AI audit generation failed to produce a valid evaluation object.");
   }
 
   return evaluation;
