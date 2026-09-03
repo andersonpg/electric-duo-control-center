@@ -47,6 +47,7 @@ export default function FathomNews({ currentUser }) {
 
   // Editable Draft Fields
   const [sourceType, setSourceType] = useState("article"); // 'article' | 'video'
+  const [sourceName, setSourceName] = useState("");
   const [title, setTitle] = useState("");
   const [summary, setSummary] = useState("");
   const [imageUrl, setImageUrl] = useState("");
@@ -167,6 +168,7 @@ export default function FathomNews({ currentUser }) {
 
       if (data.ok) {
         setSourceType(data.sourceType || "article");
+        setSourceName(data.sourceName || (data.sourceType === "video" ? "YouTube" : ""));
         setTitle(data.title || "");
         setSummary(data.summary || "");
         setImageUrl(data.imageUrl || "");
@@ -178,6 +180,7 @@ export default function FathomNews({ currentUser }) {
         setPreviewError(data.error || "Could not auto-fetch page content.");
         setCanManualEntry(true);
         setSourceType(data.sourceType || "article");
+        setSourceName(data.sourceName || (data.sourceType === "video" ? "YouTube" : ""));
         setYoutubeVideoId(data.youtubeVideoId || "");
         setPreviewLoaded(true);
       }
@@ -216,6 +219,7 @@ export default function FathomNews({ currentUser }) {
       const payload = {
         url: urlInput.trim(),
         sourceType,
+        sourceName: sourceName.trim(),
         title: title.trim(),
         summary: summary.trim(),
         imageUrl: imageUrl.trim(),
@@ -257,6 +261,7 @@ export default function FathomNews({ currentUser }) {
     setUrlInput("");
     setPreviewLoaded(false);
     setTitle("");
+    setSourceName("");
     setSummary("");
     setImageUrl("");
     setYoutubeVideoId("");
@@ -570,6 +575,25 @@ export default function FathomNews({ currentUser }) {
                 onChange={(e) => setTitle(e.target.value)}
                 placeholder="Enter post title..."
                 className="w-full px-4 py-3 rounded-2xl bg-slate-950/80 border border-slate-800 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20 text-slate-100 text-sm font-semibold placeholder-slate-500 transition-all"
+              />
+            </div>
+
+            {/* Source Name Input */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-300">
+                  Source Publication / Name <span className="text-slate-500 font-normal lowercase">(e.g. Electrek, Wall Street Journal, YouTube)</span>
+                </label>
+                <span className="text-[11px] text-cyan-400 font-mono">
+                  {sourceName ? `Source: ${sourceName}` : "Auto-detected"}
+                </span>
+              </div>
+              <input
+                type="text"
+                value={sourceName}
+                onChange={(e) => setSourceName(e.target.value)}
+                placeholder="e.g. Electrek, Wall Street Journal, YouTube..."
+                className="w-full px-4 py-2.5 rounded-2xl bg-slate-950/80 border border-slate-800 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20 text-slate-100 text-sm placeholder-slate-500 transition-all"
               />
             </div>
 

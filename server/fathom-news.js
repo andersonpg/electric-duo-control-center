@@ -151,11 +151,90 @@ function truncateToSentences(text, maxSentences = 3, maxChars = 420) {
   return chosen;
 }
 
+// Helper: Map well-known domains or extract clean publisher name from URL
+function detectSourceNameFromUrl(url) {
+  if (!url || typeof url !== "string") return "Source";
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
+    const domainMap = {
+      "youtube.com": "YouTube",
+      "youtu.be": "YouTube",
+      "electrek.co": "Electrek",
+      "wsj.com": "Wall Street Journal",
+      "ford.com": "Ford",
+      "autoblog.com": "Autoblog",
+      "insideevs.com": "InsideEVs",
+      "motortrend.com": "MotorTrend",
+      "caranddriver.com": "Car and Driver",
+      "theverge.com": "The Verge",
+      "reuters.com": "Reuters",
+      "bloomberg.com": "Bloomberg",
+      "cnbc.com": "CNBC",
+      "autoevolution.com": "Autoevolution",
+      "greencarreports.com": "Green Car Reports",
+      "jalopnik.com": "Jalopnik",
+      "techcrunch.com": "TechCrunch",
+      "arstechnica.com": "Ars Technica",
+      "wired.com": "Wired",
+      "nytimes.com": "The New York Times",
+      "forbes.com": "Forbes",
+      "edmunds.com": "Edmunds",
+      "kbb.com": "Kelley Blue Book",
+    };
+    if (domainMap[host]) return domainMap[host];
+    const firstPart = host.split(".")[0];
+    return firstPart.charAt(0).toUpperCase() + firstPart.slice(1);
+  } catch (e) {
+    return "Source";
+  }
+}
+
+// Helper: Format multi-paragraph text into clean Gutenberg paragraph blocks
+function formatGutenbergParagraphs(text) {
+  if (!text || typeof text !== "string") return "";
+  const paragraphs = text
+    .replace(/<p[^>]*>/gi, "")
+    .split(/<\/p>|\n\n+|\r\n\r\n+/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  if (paragraphs.length === 0) {
+    const single = text.trim();
+    return single ? `<!-- wp:paragraph -->\n<p>${escapeHtml(single)}</p>\n<!-- /wp:paragraph -->\n\n` : "";
+  }
+
+  return (
+    paragraphs
+      .map((p) => `<!-- wp:paragraph -->\n<p>${escapeHtml(p)}</p>\n<!-- /wp:paragraph -->`)
+      .join("\n\n") + "\n\n"
+  );
+}
+
+// Helper: Format Take text into paragraph HTML for the ACF WYSIWYG field
+function formatTakeToHtml(text) {
+  if (!text || typeof text !== "string") return "";
+  const paragraphs = text
+    .split(/\n\n+|\r\n\r\n+/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  if (paragraphs.length === 0) {
+    const single = text.trim();
+    return single ? `<p>${escapeHtml(single)}</p>` : "";
+  }
+
+  return paragraphs
+    .map((p) => `<p>${escapeHtml(p).replace(/\n/g, "<br />")}</p>`)
+    .join("");
+}
+
 // Helper: Fetch YouTube metadata via googleapis or oembed fallback
 async function fetchYouTubeMetadata(videoId) {
   let title = "";
   let description = "";
   let imageUrl = `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
+  const sourceName = "YouTube";
 
   // 1. Try Google YouTube Data API client
   try {
@@ -181,6 +260,7 @@ async function fetchYouTubeMetadata(videoId) {
         title,
         summary: truncateToSentences(description, 3, 400),
         imageUrl,
+        sourceName,
       };
     }
   } catch (apiErr) {
@@ -201,6 +281,7 @@ async function fetchYouTubeMetadata(videoId) {
       title,
       summary: description,
       imageUrl,
+      sourceName,
     };
   } catch (oembedErr) {
     console.warn(`YouTube oEmbed fallback failed for ${videoId}:`, oembedErr.message);
@@ -210,6 +291,7 @@ async function fetchYouTubeMetadata(videoId) {
     title: `YouTube Video: ${videoId}`,
     summary: `YouTube video content for ${videoId}.`,
     imageUrl,
+    sourceName,
   };
 }
 
@@ -288,10 +370,22 @@ async function fetchArticleMetadata(articleUrl) {
     } catch (e) {}
   }
 
+  // Extract Site Name / Publication Name
+  let sourceName =
+    $('meta[property="og:site_name"]').attr("content") ||
+    $('meta[name="application-name"]').attr("content") ||
+    $('meta[name="publisher"]').attr("content") ||
+    "";
+  sourceName = sourceName.replace(/\s+/g, " ").trim();
+  if (!sourceName) {
+    sourceName = detectSourceNameFromUrl(articleUrl);
+  }
+
   return {
     title,
     summary,
     imageUrl: imageUrl || null,
+    sourceName,
   };
 }
 
@@ -387,51 +481,63 @@ async function uploadImageToWordPress(imageUrl, wpConfig, filenamePrefix = "fath
   return null;
 }
 
-// Helper: Assemble the post HTML content with clean class-only markup
-function assemblePostContent({ summary, theTake, sourceType, sourceUrl, youtubeVideoId, title }) {
+// Helper: Assemble the post HTML content with native Gutenberg blocks
+function assemblePostContent({ summary, theTake, sourceType, sourceUrl, youtubeVideoId, title, sourceName }) {
   const cleanSummary = String(summary || "").trim();
   const cleanTake = String(theTake || "").trim();
 
   let html = "";
+
+  // 1. Lead Summary: clean Gutenberg paragraph blocks
   if (cleanSummary) {
-    html += `<p>${escapeHtml(cleanSummary)}</p>\n\n`;
+    html += formatGutenbergParagraphs(cleanSummary);
   }
 
-  html += `<!-- wp:html -->
-<div class="fathom-take">
-  <div class="fathom-take-header">
-    <span class="fathom-take-icon">⚡</span>
-    <h3 class="fathom-take-title">The Electric Duo's Take</h3>
-  </div>
-  <div class="fathom-take-body">${escapeHtml(cleanTake)}</div>
-</div>
-<!-- /wp:html -->\n\n`;
+  // 2. Source attribution paragraph block
+  if (sourceUrl) {
+    const cleanSource = sourceName || (sourceType === "video" ? "YouTube" : detectSourceNameFromUrl(sourceUrl));
+    html += `<!-- wp:paragraph -->\n<p><strong><a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer">Source: ${escapeHtml(cleanSource)}</a></strong></p>\n<!-- /wp:paragraph -->\n\n`;
+  }
 
+  // 3. The Electric Duo's Take (native Gutenberg ACF block: acf/eduo-take)
+  if (cleanTake) {
+    const takeHtml = formatTakeToHtml(cleanTake);
+    const eduoTakeAttrs = {
+      name: "acf/eduo-take",
+      data: {
+        take_title: "The Electric Duo's Take",
+        _take_title: "field_eduo_take_title",
+        take_icon: "⚡",
+        _take_icon: "field_eduo_take_icon",
+        take_content: takeHtml,
+        _take_content: "field_eduo_take_content",
+      },
+      mode: "preview",
+    };
+    html += `<!-- wp:acf/eduo-take ${JSON.stringify(eduoTakeAttrs)} /-->\n\n`;
+  }
+
+  // 4. Action block: Read More button (acf/eduo-read-more) or YouTube embed
   if (sourceType === "article" && sourceUrl) {
-    html += `<!-- wp:html -->
-<div class="fathom-read-more-wrapper">
-  <a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer" class="fathom-read-more-btn">
-    <span>Read Full Article</span>
-    <span class="fathom-read-more-arrow">&rarr;</span>
-  </a>
-</div>
-<!-- /wp:html -->\n`;
-  }
-
-  if (sourceType === "video" && youtubeVideoId) {
+    const readMoreAttrs = {
+      name: "acf/eduo-read-more",
+      data: {
+        button_text: "Read Full Article",
+        _button_text: "field_eduo_read_more_text",
+        article_url: sourceUrl,
+        _article_url: "field_eduo_read_more_url",
+        open_new_tab: "1",
+        _open_new_tab: "field_eduo_read_more_new_tab",
+      },
+      mode: "preview",
+    };
+    html += `<!-- wp:acf/eduo-read-more ${JSON.stringify(readMoreAttrs)} /-->\n`;
+  } else if (sourceType === "video" && youtubeVideoId) {
     const videoUrl = `https://www.youtube.com/watch?v=${youtubeVideoId}`;
-    html += `<!-- wp:embed {"url":"${videoUrl}","type":"video","providerNameSlug":"youtube","responsive":true,"className":"wp-block-embed-youtube"} -->
-<figure class="wp-block-embed is-type-video is-provider-youtube wp-block-embed-youtube fathom-video-embed">
-  <div class="wp-block-embed__wrapper">
-    <div class="fathom-video-frame">
-      <iframe src="https://www.youtube-nocookie.com/embed/${escapeHtml(youtubeVideoId)}" title="${escapeHtml(title || "YouTube video")}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-    </div>
-  </div>
-</figure>
-<!-- /wp:embed -->\n`;
+    html += `<!-- wp:embed {"url":"${videoUrl}","type":"video","providerNameSlug":"youtube","responsive":true,"className":"wp-block-embed-youtube"} -->\n<figure class="wp-block-embed is-type-video is-provider-youtube wp-block-embed-youtube"><div class="wp-block-embed__wrapper">\n${videoUrl}\n</div></figure>\n<!-- /wp:embed -->\n`;
   }
 
-  return html;
+  return html.trim() + "\n";
 }
 
 // Helper: Sync status of items with WordPress REST API
@@ -541,6 +647,7 @@ router.post("/preview", async (req, res) => {
     return res.json({
       ok: true,
       sourceType,
+      sourceName: metadata.sourceName || (sourceType === "video" ? "YouTube" : detectSourceNameFromUrl(trimmedUrl)),
       title: metadata.title || "",
       summary: metadata.summary || "",
       imageUrl: metadata.imageUrl || "",
@@ -556,6 +663,7 @@ router.post("/preview", async (req, res) => {
       error: `Could not auto-fetch page content (${err.message}). You can fill in the title, summary, and image manually below.`,
       canManualEntry: true,
       sourceType,
+      sourceName: sourceType === "video" ? "YouTube" : detectSourceNameFromUrl(trimmedUrl),
       title: "",
       summary: "",
       imageUrl: "",
@@ -573,7 +681,7 @@ router.post("/preview", async (req, res) => {
  * publishes draft post in WordPress, and stores in history.
  */
 router.post("/publish", async (req, res) => {
-  const { url, sourceType, title, summary, imageUrl, youtubeVideoId, theTake } = req.body || {};
+  const { url, sourceType, title, summary, imageUrl, youtubeVideoId, theTake, sourceName } = req.body || {};
 
   const cleanUrl = String(url || "").trim();
   const cleanTitle = String(title || "").trim();
@@ -581,6 +689,7 @@ router.post("/publish", async (req, res) => {
   const cleanSummary = String(summary || "").trim();
   const cleanType = sourceType === "video" ? "video" : "article";
   const cleanYtId = cleanType === "video" ? youtubeVideoId || extractYoutubeVideoId(cleanUrl) : null;
+  const cleanSourceName = String(sourceName || "").trim() || (cleanType === "video" ? "YouTube" : detectSourceNameFromUrl(cleanUrl));
   const username = req.user?.username || req.user?.name || "admin";
 
   if (!cleanUrl) {
@@ -618,7 +727,7 @@ router.post("/publish", async (req, res) => {
     // 2. Ensure Category "ford-fathom-news" exists
     const categoryId = await getOrCreateFathomCategory(wpConfig);
 
-    // 3. Assemble HTML Content (clean class-only markup)
+    // 3. Assemble Gutenberg Post Content
     const assembledContent = assemblePostContent({
       summary: cleanSummary,
       theTake: cleanTake,
@@ -626,6 +735,7 @@ router.post("/publish", async (req, res) => {
       sourceUrl: cleanUrl,
       youtubeVideoId: cleanYtId,
       title: cleanTitle,
+      sourceName: cleanSourceName,
     });
 
     // 4. Rank Math Pro SEO metadata
