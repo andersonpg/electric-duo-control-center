@@ -12,6 +12,10 @@ if (fs.existsSync(viteBin)) {
   try {
     console.log("Compiling frontend bundle with Vite...");
     execSync("npm --prefix frontend run build", { stdio: "inherit", cwd: rootDir });
+    const publicAssetsDir = path.join(rootDir, "public", "assets");
+    if (fs.existsSync(publicAssetsDir)) {
+      fs.rmSync(publicAssetsDir, { recursive: true, force: true });
+    }
     execSync("cp -r frontend/dist/* public/", { stdio: "inherit", cwd: rootDir });
     console.log("Frontend assets successfully updated in public/");
   } catch (err) {

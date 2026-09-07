@@ -20,7 +20,9 @@ function getSetting(key) {
   try {
     const row = db.prepare("SELECT value FROM app_settings WHERE key = ?").get(key);
     if (row && row.value && row.value.trim()) return row.value.trim();
-  } catch (e) {}
+  } catch (e) {
+    console.warn(`Could not read app_setting ${key}:`, e.message);
+  }
   return process.env[key.toUpperCase()] || null;
 }
 
@@ -97,17 +99,20 @@ function isOAuthConnected() {
   return !!(tokens && (tokens.access_token || tokens.refresh_token));
 }
 
-function generateAuthUrl() {
+function generateAuthUrl(state) {
   const oauth2Client = createOAuth2Client();
   if (!oauth2Client) {
     throw new Error("Google Client ID and Client Secret must be configured before connecting.");
   }
 
-  return oauth2Client.generateAuthUrl({
+  const options = {
     access_type: "offline",
     scope: SCOPES,
     prompt: "consent",
-  });
+  };
+  if (state) options.state = state;
+
+  return oauth2Client.generateAuthUrl(options);
 }
 
 async function handleAuthCallback(code) {
@@ -137,7 +142,17 @@ async function handleAuthCallback(code) {
 function disconnectOAuth() {
   try {
     db.prepare("DELETE FROM app_settings WHERE key IN ('google_oauth_tokens', 'connected_channel_title', 'connected_channel_id')").run();
-  } catch (e) {}
+  } catch (e) {
+    console.warn("Could not delete OAuth settings on disconnect:", e.message);
+  }
+}
+
+function getGrantedScopes() {
+  const tokens = getSavedTokens();
+  if (!tokens || tokens.scope === undefined || tokens.scope === null) return null;
+  if (Array.isArray(tokens.scope)) return tokens.scope;
+  if (typeof tokens.scope === "string") return tokens.scope.split(" ").filter(Boolean);
+  return null;
 }
 
 async function getOAuthStatus() {
@@ -146,6 +161,20 @@ async function getOAuthStatus() {
   const channelTitle = getSetting("connected_channel_title") || (connected ? "The Electric Duo" : null);
   const channelId = getSetting("connected_channel_id") || getSetting("youtube_channel_id");
 
+  const grantedScopes = getGrantedScopes();
+  let hasCaptionScope = null;
+  let captionScopeStatus = "unknown";
+
+  if (connected) {
+    if (grantedScopes === null) {
+      hasCaptionScope = null; // unknown: stored tokens have no scope field
+      captionScopeStatus = "unknown";
+    } else {
+      hasCaptionScope = grantedScopes.includes("https://www.googleapis.com/auth/youtube.force-ssl");
+      captionScopeStatus = hasCaptionScope ? "granted" : "missing";
+    }
+  }
+
   return {
     isConfigured: !!(clientId && clientSecret),
     isConnected: connected,
@@ -153,6 +182,9 @@ async function getOAuthStatus() {
     redirectUri,
     channelTitle,
     channelId,
+    grantedScopes,
+    hasCaptionScope,
+    captionScopeStatus,
   };
 }
 
@@ -272,6 +304,7 @@ module.exports = {
   handleAuthCallback,
   disconnectOAuth,
   getOAuthStatus,
+  getGrantedScopes,
   isOAuthConnected,
   getAuthenticatedClient,
   fetchLiveVideoAnalytics,

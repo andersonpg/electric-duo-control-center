@@ -282,14 +282,20 @@ function MarkdownExecutiveSummary({ content }) {
 // Inline markdown helper for bold, italics, and code tags
 function formatInlineMarkdown(text) {
   if (!text) return "";
-  let formatted = text
+  const escaped = String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
+  return escaped
     // Bold
     .replace(/\*\*(.*?)\*\*/g, '<strong class="text-white font-bold">$1</strong>')
     // Italics
     .replace(/\*(.*?)\*/g, '<em class="text-slate-200 italic">$1</em>')
     // Inline code
     .replace(/`(.*?)`/g, '<code class="px-1.5 py-0.5 rounded bg-slate-950 border border-slate-800 text-cyan-300 text-xs font-mono">$1</code>');
-  return formatted;
 }
 
 export default function CompetitorComparison({ currentUser }) {

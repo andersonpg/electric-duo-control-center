@@ -243,7 +243,9 @@ async function resolveChannel(input) {
       if (res.data.items && res.data.items.length > 0) {
         return extractChannelInfo(res.data.items[0]);
       }
-    } catch (e) {}
+    } catch (e) {
+      console.warn("Could not fetch channel by forUsername:", e.message);
+    }
   }
 
   // 4. Web Scrape / Search fallback for Handles, Vanity URLs, and Channel Pages
@@ -340,7 +342,9 @@ async function resolveChannel(input) {
         return extractChannelInfo(apiRes.data.items[0]);
       }
     }
-  } catch (searchErr) {}
+  } catch (searchErr) {
+    console.warn("Could not find channel via search fallback:", searchErr.message);
+  }
 
   throw new Error(`Could not find a YouTube channel matching "${input}". Please provide the full channel URL or @handle.`);
 }
@@ -1143,7 +1147,9 @@ function getReportById(id) {
   let analysis = null;
   try {
     analysis = JSON.parse(row.analysis_json);
-  } catch (e) {}
+  } catch (e) {
+    console.warn(`Could not parse analysis_json for competitor report ${id}:`, e.message);
+  }
 
   return {
     id: row.id,

@@ -153,6 +153,15 @@ export default function VideoAudit({ currentUser, initialVideoId, onClearInitial
       }
 
       if (!res.ok) {
+        if (data.isScopeError) {
+          setToast({
+            type: "error",
+            text: data.error || "The YouTube connection is missing the youtube.force-ssl permission and must be reconnected in Admin Settings.",
+            actionText: "Reconnect YouTube in Admin Settings",
+            actionUrl: "/?module=admin",
+          });
+          return;
+        }
         if (data.canQuickPaste || data.isCloudIpBlock) {
           setQuickPasteModal({
             isOpen: true,
@@ -343,6 +352,14 @@ export default function VideoAudit({ currentUser, initialVideoId, onClearInitial
               <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
             )}
             <span>{toast.text}</span>
+            {toast.actionUrl && (
+              <a
+                href={toast.actionUrl}
+                className="px-2.5 py-1 rounded-lg bg-red-500/30 hover:bg-red-500/40 text-white border border-red-500/50 text-[11px] font-bold underline shrink-0 transition-colors"
+              >
+                {toast.actionText || "Action"}
+              </a>
+            )}
             <button
               onClick={() => setToast(null)}
               className="ml-2 text-slate-400 hover:text-white p-0.5"

@@ -4,8 +4,10 @@ require("dotenv").config();
 const path = require("path");
 const express = require("express");
 const fs = require("fs");
+const crypto = require("crypto");
 const cookieParser = require("cookie-parser");
-const cors = require("cors");
+const helmet = require("helmet");
+const { rateLimit } = require("express-rate-limit");
 const axios = require("axios");
 const db = require("./db");
 const articleDb = db.articleDb;
@@ -14,7 +16,7 @@ const periods = require("./periods");
 const auth = require("./auth");
 
 const { syncCatalog, purgeNonPublicVideos, syncAllVideoDurations, addManualVideo } = require("./youtube");
-const { generateArticle, getGeminiApiKey, callGeminiWithRetry } = require("./gemini");
+const { generateArticle, getGeminiApiKey, callGeminiWithRetry, DEFAULT_GEMINI_MODEL } = require("./gemini");
 const { createWordPressDraft } = require("./wordpress");
 const { getOrRunAudit, getAuditsSummary } = require("./audit");
 const { GoogleGenAI } = require("@google/genai");
@@ -34,18 +36,64 @@ const {
 const termsPath = path.join(__dirname, "..", "ev_terms.json");
 
 const app = express();
-app.use(cors());
+
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", "data:", "https://img.youtube.com", "https://i.ytimg.com"],
+        connectSrc: ["'self'"],
+        fontSrc: ["'self'", "data:"],
+        objectSrc: ["'none'"],
+        mediaSrc: ["'self'"],
+        frameSrc: ["'self'"],
+      },
+    },
+  })
+);
+
 app.use(express.json({ limit: "25mb" }));
 app.use(cookieParser());
+
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many login attempts from this IP, please try again in 15 minutes." },
+});
+
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many API requests, please try again later." },
+});
+
+const aiLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many AI generation requests, please try again in an hour." },
+});
+
+app.use("/api/", apiLimiter);
 
 const PUBLIC_DIR = path.join(__dirname, "..", "public");
 
 /* ---------------- auth routes ---------------- */
 
-app.post("/login", (req, res) => {
+app.post("/login", loginLimiter, (req, res) => {
   const { username, password } = req.body || {};
   const user = auth.findUserByUsername(username);
   if (!user || !auth.verifyPassword(user, password)) {
+    const ip = req.ip || req.headers["x-forwarded-for"] || req.socket?.remoteAddress;
+    console.warn(`[Auth] Failed login attempt for username "${username}" from IP ${ip}`);
     return res.status(401).json({ error: "invalid_credentials" });
   }
   const { token, expires } = auth.createSession(user.id);
@@ -55,7 +103,7 @@ app.post("/login", (req, res) => {
     secure: req.secure || req.headers["x-forwarded-proto"] === "https",
     expires: new Date(expires),
   });
-  res.json({ ok: true, user: { id: user.id, name: user.name, username: user.username } });
+  res.json({ ok: true, user: { id: user.id, name: user.name, username: user.username, is_admin: Boolean(user.is_admin) } });
 });
 
 app.post("/logout", (req, res) => {
@@ -154,7 +202,7 @@ app.get("/api/version", (req, res) => {
   });
 });
 
-app.get("/api/changelog", (req, res) => {
+app.get("/api/changelog", (req, res, next) => {
   try {
     const changelogPath = path.join(__dirname, "..", "CHANGELOG.md");
     if (fs.existsSync(changelogPath)) {
@@ -164,7 +212,7 @@ app.get("/api/changelog", (req, res) => {
       res.status(404).send("CHANGELOG.md not found");
     }
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    next(err);
   }
 });
 
@@ -248,7 +296,7 @@ app.post("/api/runrate", auth.requireAuth(), (req, res) => {
 /* ---------------- Article Generator endpoints ---------------- */
 
 // Videos Catalog
-app.get("/api/videos", auth.requireAuth(), (req, res) => {
+app.get("/api/videos", auth.requireAuth(), (req, res, next) => {
   try {
     const { search, status, contentType, privacy, excludeShorts, captionStatus } = req.query;
 
@@ -312,31 +360,37 @@ app.get("/api/videos", auth.requireAuth(), (req, res) => {
 
     res.json(videos);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
-app.patch("/api/videos/:id", auth.requireAuth(), (req, res) => {
+app.patch("/api/videos/:id", auth.requireAuth(), (req, res, next) => {
   try {
     const { id } = req.params;
-    const { content_type, custom_notes } = req.body;
+    const allowed = ["content_type", "custom_notes", "working_title", "status", "caption_status"];
+    const updates = [];
+    const values = [];
 
-    const stmt = articleDb.prepare(`
-      UPDATE videos
-      SET content_type = COALESCE(?, content_type),
-          custom_notes = COALESCE(?, custom_notes)
-      WHERE youtube_id = ?
-    `);
+    for (const field of allowed) {
+      if (Object.prototype.hasOwnProperty.call(req.body || {}, field)) {
+        updates.push(`${field} = ?`);
+        values.push(req.body[field]);
+      }
+    }
 
-    stmt.run(content_type, custom_notes, id);
+    if (updates.length > 0) {
+      values.push(id);
+      articleDb.prepare(`UPDATE videos SET ${updates.join(", ")} WHERE youtube_id = ?`).run(...values);
+    }
+
     const updated = articleDb.prepare("SELECT * FROM videos WHERE youtube_id = ?").get(id);
     res.json(updated);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
-app.post("/api/videos/reset", auth.requireAuth(), (req, res) => {
+app.post("/api/videos/reset", auth.requireAuth(), (req, res, next) => {
   try {
     const { youtubeIds } = req.body;
     if (!youtubeIds || !Array.isArray(youtubeIds) || youtubeIds.length === 0) {
@@ -357,18 +411,18 @@ app.post("/api/videos/reset", auth.requireAuth(), (req, res) => {
 
     res.json({ success: true, count: youtubeIds.length });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
 // YouTube Catalog Sync
-const handleCatalogSync = async (req, res) => {
+const handleCatalogSync = async (req, res, next) => {
   try {
     const { mode } = req.body || {};
     const result = await syncCatalog(mode || "delta");
     res.json({ success: true, ...result });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 };
 
@@ -376,20 +430,20 @@ app.post("/api/sync", auth.requireAuth(), handleCatalogSync);
 app.post("/api/catalog/sync", auth.requireAuth(), handleCatalogSync);
 
 // YouTube Catalog Non-Public Video Purge
-const handlePurgeNonPublic = async (req, res) => {
+const handlePurgeNonPublic = async (req, res, next) => {
   try {
     const result = await purgeNonPublicVideos();
     res.json(result);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 };
 
 app.post("/api/catalog/purge-non-public", auth.requireAuth(), handlePurgeNonPublic);
-app.post("/api/admin/purge-non-public", auth.requireAuth(), handlePurgeNonPublic);
+app.post("/api/admin/purge-non-public", auth.requireAuth(), auth.requireAdmin(), handlePurgeNonPublic);
 
 // Manually Add Unlisted Video
-const handleAddUnlisted = async (req, res) => {
+const handleAddUnlisted = async (req, res, next) => {
   try {
     const { urlOrId } = req.body || {};
     if (!urlOrId || !urlOrId.trim()) {
@@ -398,24 +452,24 @@ const handleAddUnlisted = async (req, res) => {
     const video = await addManualVideo(urlOrId.trim(), "unlisted");
     res.json({ success: true, video });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 };
 
 app.post("/api/catalog/add-unlisted", auth.requireAuth(), handleAddUnlisted);
-app.post("/api/admin/add-unlisted", auth.requireAuth(), handleAddUnlisted);
+app.post("/api/admin/add-unlisted", auth.requireAuth(), auth.requireAdmin(), handleAddUnlisted);
 
 // Content Templates
-app.get("/api/templates", auth.requireAuth(), (req, res) => {
+app.get("/api/templates", auth.requireAuth(), (req, res, next) => {
   try {
     const templates = articleDb.prepare("SELECT * FROM content_templates ORDER BY name COLLATE NOCASE ASC").all();
     res.json(templates);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
-app.post("/api/templates", auth.requireAuth(), (req, res) => {
+app.post("/api/templates", auth.requireAuth(), (req, res, next) => {
   try {
     const { name, description, prompt_template } = req.body;
     if (!name || !prompt_template) {
@@ -431,11 +485,11 @@ app.post("/api/templates", auth.requireAuth(), (req, res) => {
     const newTemplate = articleDb.prepare("SELECT * FROM content_templates WHERE id = ?").get(info.lastInsertRowid);
     res.json(newTemplate);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
-app.put("/api/templates/:id", auth.requireAuth(), (req, res) => {
+app.put("/api/templates/:id", auth.requireAuth(), (req, res, next) => {
   try {
     const { id } = req.params;
     const { name, description, prompt_template } = req.body;
@@ -450,22 +504,22 @@ app.put("/api/templates/:id", auth.requireAuth(), (req, res) => {
     const updated = articleDb.prepare("SELECT * FROM content_templates WHERE id = ?").get(id);
     res.json(updated);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
-app.delete("/api/templates/:id", auth.requireAuth(), (req, res) => {
+app.delete("/api/templates/:id", auth.requireAuth(), (req, res, next) => {
   try {
     const { id } = req.params;
     articleDb.prepare("DELETE FROM content_templates WHERE id = ?").run(id);
     res.json({ success: true, id });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
 // App Settings
-app.get("/api/settings", auth.requireAuth(), (req, res) => {
+app.get("/api/settings", auth.requireAuth(), (req, res, next) => {
   try {
     const rows = articleDb.prepare("SELECT * FROM app_settings").all();
     const settings = {};
@@ -474,11 +528,11 @@ app.get("/api/settings", auth.requireAuth(), (req, res) => {
     });
     res.json(settings);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
-app.post("/api/settings", auth.requireAuth(), (req, res) => {
+app.post("/api/settings", auth.requireAuth(), (req, res, next) => {
   try {
     const settings = req.body;
     const stmt = articleDb.prepare("INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
@@ -489,12 +543,12 @@ app.post("/api/settings", auth.requireAuth(), (req, res) => {
 
     res.json({ success: true, settings });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
 // Article Generation & WordPress Publishing
-app.post("/api/process", auth.requireAuth(), async (req, res) => {
+app.post("/api/process", auth.requireAuth(), aiLimiter, async (req, res, next) => {
   try {
     const { youtubeIds, modelOverride, thinkingModeOverride } = req.body;
 
@@ -555,12 +609,12 @@ app.post("/api/process", auth.requireAuth(), async (req, res) => {
 
     res.json({ results });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
 // Single Video Article Generation with Custom Prompt Notes & Photos
-app.post("/api/articles/generate-single", auth.requireAuth(), async (req, res) => {
+app.post("/api/articles/generate-single", auth.requireAuth(), aiLimiter, async (req, res, next) => {
   try {
     const { youtubeId, templateName, customNotes, photos, modelOverride, thinkingModeOverride } = req.body || {};
 
@@ -640,46 +694,46 @@ app.post("/api/articles/generate-single", auth.requireAuth(), async (req, res) =
     });
   } catch (error) {
     console.error("Single article generation error:", error);
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
 /* ---------------- Video Audit endpoints ---------------- */
 
-app.get("/api/audits/summary", auth.requireAuth(), (req, res) => {
+app.get("/api/audits/summary", auth.requireAuth(), (req, res, next) => {
   try {
     const summary = getAuditsSummary();
     res.json(summary);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
-app.get("/api/audit/:youtubeId", auth.requireAuth(), async (req, res) => {
+app.get("/api/audit/:youtubeId", auth.requireAuth(), async (req, res, next) => {
   try {
     const { youtubeId } = req.params;
     const forceRefresh = req.query.refresh === "true";
     const audit = await getOrRunAudit(youtubeId, forceRefresh);
     res.json(audit);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
-app.post("/api/audit/:youtubeId", auth.requireAuth(), async (req, res) => {
+app.post("/api/audit/:youtubeId", auth.requireAuth(), async (req, res, next) => {
   try {
     const { youtubeId } = req.params;
     const audit = await getOrRunAudit(youtubeId, true);
     res.json(audit);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
 /* ---------------- Transcripts & EV Vocabulary endpoints ---------------- */
 
 // 1. Preview cleaned transcript & corrections summary without saving
-app.post("/api/transcripts/preview", auth.requireAuth(), (req, res) => {
+app.post("/api/transcripts/preview", auth.requireAuth(), (req, res, next) => {
   try {
     const { srtText, isVtt } = req.body || {};
     if (!srtText || typeof srtText !== "string") {
@@ -698,12 +752,12 @@ app.post("/api/transcripts/preview", auth.requireAuth(), (req, res) => {
       log,
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
 // 2. Save transcript linked 1:1 to video
-app.post("/api/transcripts/:videoId", auth.requireAuth(), (req, res) => {
+app.post("/api/transcripts/:videoId", auth.requireAuth(), (req, res, next) => {
   try {
     const { videoId } = req.params;
     const { raw_srt, cleaned_srt, plain_text } = req.body || {};
@@ -730,12 +784,12 @@ app.post("/api/transcripts/:videoId", auth.requireAuth(), (req, res) => {
     const saved = articleDb.prepare("SELECT * FROM transcripts WHERE video_id = ?").get(videoId);
     res.json({ success: true, transcript: saved });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
 // 3. Get transcript for a video
-app.get("/api/transcripts/:videoId", auth.requireAuth(), (req, res) => {
+app.get("/api/transcripts/:videoId", auth.requireAuth(), (req, res, next) => {
   try {
     const { videoId } = req.params;
     const transcript = articleDb.prepare("SELECT * FROM transcripts WHERE video_id = ?").get(videoId);
@@ -745,12 +799,12 @@ app.get("/api/transcripts/:videoId", auth.requireAuth(), (req, res) => {
     }
     res.json({ ...transcript, video });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
 // 4. Download Cleaned SRT file
-app.get("/api/transcripts/:videoId/download", auth.requireAuth(), (req, res) => {
+app.get("/api/transcripts/:videoId/download", auth.requireAuth(), (req, res, next) => {
   try {
     const { videoId } = req.params;
     const transcript = articleDb.prepare("SELECT cleaned_srt FROM transcripts WHERE video_id = ?").get(videoId);
@@ -761,7 +815,7 @@ app.get("/api/transcripts/:videoId/download", auth.requireAuth(), (req, res) => 
     res.setHeader("Content-Disposition", `attachment; filename="${videoId}-cleaned.srt"`);
     res.send(transcript.cleaned_srt);
   } catch (error) {
-    res.status(500).send("Error downloading transcript: " + error.message);
+    next(error);
   }
 });
 
@@ -801,15 +855,17 @@ app.post("/api/videos/:videoId/captions/retrieve", auth.requireAuth(), async (re
     console.warn(`[Captions] Retrieve captions error for ${req.params?.videoId}:`, error.message);
     res.status(500).json({
       error: error.message,
-      canQuickPaste: error.canQuickPaste ?? true,
+      canQuickPaste: error.canQuickPaste ?? false,
       youtubeUrl: error.youtubeUrl || `https://www.youtube.com/watch?v=${req.params?.videoId}`,
-      isCloudIpBlock: error.isCloudIpBlock ?? true,
+      isCloudIpBlock: error.isCloudIpBlock ?? false,
+      isScopeError: !!error.isScopeError,
+      isAuthError: !!error.isAuthError,
     });
   }
 });
 
 // 4a-2. Paste raw transcript text or copied YouTube transcript directly
-app.post("/api/videos/:videoId/captions/paste", auth.requireAuth(), (req, res) => {
+app.post("/api/videos/:videoId/captions/paste", auth.requireAuth(), (req, res, next) => {
   try {
     const { videoId } = req.params;
     const inputText = (req.body?.text || req.body?.rawText || "").trim();
@@ -837,12 +893,12 @@ app.post("/api/videos/:videoId/captions/paste", auth.requireAuth(), (req, res) =
       transcript: saved,
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
 // 4b. Clean existing captions with EV terminology
-app.post("/api/videos/:videoId/captions/clean", auth.requireAuth(), (req, res) => {
+app.post("/api/videos/:videoId/captions/clean", auth.requireAuth(), (req, res, next) => {
   try {
     const { videoId } = req.params;
     const transcript = articleDb.prepare("SELECT * FROM transcripts WHERE video_id = ?").get(videoId);
@@ -866,12 +922,12 @@ app.post("/api/videos/:videoId/captions/clean", auth.requireAuth(), (req, res) =
       transcript: saved,
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
 // 4c. Upload cleaned SRT subtitle track to YouTube Data API v3
-app.post("/api/videos/:videoId/captions/upload", auth.requireAuth(), async (req, res) => {
+app.post("/api/videos/:videoId/captions/upload", auth.requireAuth(), async (req, res, next) => {
   try {
     const { videoId } = req.params;
     const transcript = articleDb.prepare("SELECT * FROM transcripts WHERE video_id = ?").get(videoId);
@@ -887,33 +943,33 @@ app.post("/api/videos/:videoId/captions/upload", auth.requireAuth(), async (req,
       captionId: uploadRes.captionId,
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
 // 4d. Full Orchestrator: retrieve -> fix -> save -> upload
-app.post("/api/videos/:videoId/captions/orchestrate", auth.requireAuth(), async (req, res) => {
+app.post("/api/videos/:videoId/captions/orchestrate", auth.requireAuth(), async (req, res, next) => {
   try {
     const { videoId } = req.params;
     const result = await processVideoCaptions(videoId);
     res.json(result);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
 // 5. EV Terms Registry: list all terms
-app.get("/api/terms", auth.requireAuth(), (req, res) => {
+app.get("/api/terms", auth.requireAuth(), (req, res, next) => {
   try {
     const rows = listTerms(termsPath);
     res.json(rows);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
 // 6. EV Terms Registry: add term mapping
-app.post("/api/terms", auth.requireAuth(), (req, res) => {
+app.post("/api/terms", auth.requireAuth(), (req, res, next) => {
   try {
     const category = req.body?.category;
     const correct = req.body?.correct || req.body?.term;
@@ -924,12 +980,12 @@ app.post("/api/terms", auth.requireAuth(), (req, res) => {
     const result = addTerm(termsPath, category.trim(), correct.trim(), wrong.trim());
     res.json({ success: true, ...result });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
 // 7. EV Terms Registry: remove variant
-app.delete("/api/terms", auth.requireAuth(), (req, res) => {
+app.delete("/api/terms", auth.requireAuth(), (req, res, next) => {
   try {
     const category = req.body?.category;
     const correct = req.body?.correct || req.body?.term;
@@ -940,24 +996,24 @@ app.delete("/api/terms", auth.requireAuth(), (req, res) => {
     const result = removeVariant(termsPath, category.trim(), correct.trim(), wrong.trim());
     res.json({ success: true, ...result });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
 /* ---------------- Title Prompt Settings & Gemini Generation ---------------- */
 
 // 1. Get Title Prompt Instructions
-app.get("/api/title-prompt-settings", auth.requireAuth(), (req, res) => {
+app.get("/api/title-prompt-settings", auth.requireAuth(), (req, res, next) => {
   try {
     const row = articleDb.prepare("SELECT instructions, updated_at FROM title_prompt_settings WHERE id = 1").get();
     res.json(row || { instructions: "", updated_at: null });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
 // 2. Update Title Prompt Instructions
-app.put("/api/title-prompt-settings", auth.requireAuth(), (req, res) => {
+app.put("/api/title-prompt-settings", auth.requireAuth(), (req, res, next) => {
   try {
     const { instructions } = req.body || {};
     if (!instructions || typeof instructions !== "string") {
@@ -971,12 +1027,12 @@ app.put("/api/title-prompt-settings", auth.requireAuth(), (req, res) => {
     const updated = articleDb.prepare("SELECT instructions, updated_at FROM title_prompt_settings WHERE id = 1").get();
     res.json({ success: true, ...updated });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
 // 3. Generate Gemini Title Suggestions (8 structured candidates)
-app.post("/api/videos/:videoId/generate-titles", auth.requireAuth(), async (req, res) => {
+app.post("/api/videos/:videoId/generate-titles", auth.requireAuth(), aiLimiter, async (req, res, next) => {
   try {
     const { videoId } = req.params;
     const { context } = req.body || {};
@@ -1004,11 +1060,13 @@ app.post("/api/videos/:videoId/generate-titles", auth.requireAuth(), async (req,
 
     const ai = new GoogleGenAI({ apiKey });
 
-    let configuredModel = "gemini-3.8-flash";
+    let configuredModel = DEFAULT_GEMINI_MODEL;
     try {
       const row = articleDb.prepare("SELECT value FROM app_settings WHERE key = 'default_model'").get();
       if (row && row.value) configuredModel = row.value;
-    } catch (e) {}
+    } catch (e) {
+      console.warn("Error reading default_model app setting:", e.message);
+    }
 
     let userPrompt = `Video Title: "${video.title}"\n`;
     if (context && context.trim()) {
@@ -1084,19 +1142,19 @@ app.post("/api/videos/:videoId/generate-titles", auth.requireAuth(), async (req,
     res.json({ success: true, candidates: formatted });
   } catch (error) {
     console.error("Gemini title generation error:", error);
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
 // 4. Save Selected Working Title to Video Record
-app.post("/api/videos/:videoId/working-title", auth.requireAuth(), (req, res) => {
+app.post("/api/videos/:videoId/working-title", auth.requireAuth(), (req, res, next) => {
   try {
     const { videoId } = req.params;
     const { workingTitle } = req.body || {};
     articleDb.prepare("UPDATE videos SET working_title = ? WHERE youtube_id = ?").run(workingTitle || null, videoId);
     res.json({ success: true, videoId, working_title: workingTitle || null });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
@@ -1104,17 +1162,28 @@ app.post("/api/videos/:videoId/working-title", auth.requireAuth(), (req, res) =>
 
 const youtubeAnalytics = require("./youtube-analytics");
 
-app.get("/api/auth/google", auth.requireAuth(), (req, res) => {
+app.get("/api/auth/google", auth.requireAuth(), auth.requireAdmin(), (req, res) => {
   try {
-    const url = youtubeAnalytics.generateAuthUrl();
+    const token = req.cookies ? req.cookies[auth.SESSION_COOKIE] : null;
+    const state = crypto.randomBytes(24).toString("hex");
+    auth.setSessionOAuthState(token, state);
+    const url = youtubeAnalytics.generateAuthUrl(state);
     res.redirect(url);
   } catch (error) {
     res.status(400).send(`<html><body style="background:#020617;color:#f87171;font-family:sans-serif;padding:40px;"><h2>Google OAuth Configuration Error</h2><p>${error.message}</p><a href="/?module=admin" style="color:#38bdf8;">Return to Admin Settings</a></body></html>`);
   }
 });
 
-app.get("/api/auth/google/callback", async (req, res) => {
-  const { code, error } = req.query;
+app.get("/api/auth/google/callback", auth.requireAuth(), auth.requireAdmin(), async (req, res) => {
+  const { code, error, state } = req.query;
+  const token = req.cookies ? req.cookies[auth.SESSION_COOKIE] : null;
+  const storedState = auth.getSessionOAuthState(token);
+  auth.clearSessionOAuthState(token);
+
+  if (!state || !storedState || state !== storedState) {
+    return res.status(400).send(`<html><body style="background:#020617;color:#f87171;font-family:sans-serif;padding:40px;"><h2>Invalid OAuth State</h2><p>Invalid or expired OAuth state token. Reconnect rejected for security.</p><a href="/?module=admin" style="color:#38bdf8;">Return to Admin Settings</a></body></html>`);
+  }
+
   if (error) {
     return res.redirect(`/?module=admin&oauth_error=${encodeURIComponent(error)}`);
   }
@@ -1131,21 +1200,21 @@ app.get("/api/auth/google/callback", async (req, res) => {
   }
 });
 
-app.post("/api/auth/google/disconnect", auth.requireAuth(), (req, res) => {
+app.post("/api/auth/google/disconnect", auth.requireAuth(), auth.requireAdmin(), (req, res, next) => {
   try {
     youtubeAnalytics.disconnectOAuth();
     res.json({ success: true });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
-app.get("/api/admin/oauth-status", auth.requireAuth(), async (req, res) => {
+app.get("/api/admin/oauth-status", auth.requireAuth(), auth.requireAdmin(), async (req, res, next) => {
   try {
     const status = await youtubeAnalytics.getOAuthStatus();
     res.json(status);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
@@ -1154,55 +1223,71 @@ app.get("/api/admin/oauth-status", auth.requireAuth(), async (req, res) => {
 const bcrypt = require("bcryptjs");
 
 // 1. Account Management
-app.get("/api/admin/users", auth.requireAuth(), (req, res) => {
+app.get("/api/admin/users", auth.requireAuth(), auth.requireAdmin(), (req, res, next) => {
   try {
-    const users = db.prepare("SELECT id, name, username, created_at FROM users ORDER BY name ASC").all();
+    const users = db.prepare("SELECT id, name, username, is_admin, created_at FROM users ORDER BY name ASC").all();
     res.json(users);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
-app.post("/api/admin/users", auth.requireAuth(), (req, res) => {
+app.post("/api/admin/users", auth.requireAuth(), auth.requireAdmin(), (req, res, next) => {
   try {
-    const { name, username, password } = req.body || {};
+    const { name, username, password, is_admin } = req.body || {};
     if (!name || !username || !password) {
       return res.status(400).json({ error: "Name, username, and password are required." });
     }
     const hash = bcrypt.hashSync(password, 10);
-    const info = db.prepare("INSERT INTO users (name, username, password_hash) VALUES (?, ?, ?)").run(name, username.trim().toLowerCase(), hash);
+    const info = db.prepare("INSERT INTO users (name, username, password_hash, is_admin) VALUES (?, ?, ?, ?)").run(
+      name,
+      username.trim().toLowerCase(),
+      hash,
+      is_admin ? 1 : 0
+    );
     res.json({ success: true, userId: info.lastInsertRowid });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
-app.post("/api/admin/users/password", auth.requireAuth(), (req, res) => {
+app.post("/api/admin/users/password", auth.requireAuth(), (req, res, next) => {
   try {
     const { userId, newPassword } = req.body || {};
     if (!userId || !newPassword) {
       return res.status(400).json({ error: "User ID and new password are required." });
     }
+    const targetId = Number(userId);
+    const requesterId = Number(req.user.id);
+    const isAdmin = Boolean(req.user.is_admin);
+
+    if (targetId !== requesterId && !isAdmin) {
+      return res.status(403).json({ error: "Forbidden: You can only change your own password." });
+    }
+
     const hash = bcrypt.hashSync(newPassword, 10);
-    db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(hash, userId);
+    db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(hash, targetId);
+    auth.destroyUserSessions(targetId);
     res.json({ success: true });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
 // 2. Integrations & API Keys
-app.get("/api/admin/integrations", auth.requireAuth(), (req, res) => {
+app.get("/api/admin/integrations", auth.requireAuth(), auth.requireAdmin(), (req, res, next) => {
   try {
     const rows = articleDb.prepare("SELECT * FROM app_settings").all();
     const settings = {};
     rows.forEach((r) => { settings[r.key] = r.value; });
 
+    const rawSecret = settings.google_client_secret || process.env.GOOGLE_CLIENT_SECRET || "";
+
     res.json({
       youtube_channel_id: settings.youtube_channel_id || process.env.YOUTUBE_CHANNEL_ID || "UCuhhyTS-Q66qq-gWrCcTOzg",
       youtube_api_key_configured: !!(settings.youtube_api_key || process.env.YOUTUBE_API_KEY),
       google_client_id: settings.google_client_id || process.env.GOOGLE_CLIENT_ID || "",
-      google_client_secret: settings.google_client_secret || process.env.GOOGLE_CLIENT_SECRET || "",
+      google_client_secret_configured: !!rawSecret,
       gemini_api_key_configured: !!(settings.gemini_api_key || process.env.GEMINI_API_KEY),
       wp_site_url: settings.wp_site_url || process.env.WP_SITE_URL || "https://theelectricduo.com",
       wp_username: settings.wp_username || process.env.WP_USERNAME || "patricka",
@@ -1211,11 +1296,11 @@ app.get("/api/admin/integrations", auth.requireAuth(), (req, res) => {
       thinking_mode: settings.thinking_mode || "standard",
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
-app.post("/api/admin/integrations", auth.requireAuth(), (req, res) => {
+app.post("/api/admin/integrations", auth.requireAuth(), auth.requireAdmin(), (req, res, next) => {
   try {
     const {
       youtube_api_key,
@@ -1245,12 +1330,12 @@ app.post("/api/admin/integrations", auth.requireAuth(), (req, res) => {
 
     res.json({ success: true });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
 // 3. Test Connections
-app.post("/api/admin/test-connection", auth.requireAuth(), async (req, res) => {
+app.post("/api/admin/test-connection", auth.requireAuth(), auth.requireAdmin(), async (req, res) => {
   const { service } = req.body || {};
   try {
     if (service === "youtube") {
@@ -1275,7 +1360,9 @@ app.post("/api/admin/test-connection", auth.requireAuth(), async (req, res) => {
       try {
         const row = articleDb.prepare("SELECT value FROM app_settings WHERE key = 'default_model'").get();
         if (row && row.value) configuredModel = row.value;
-      } catch (e) {}
+      } catch (e) {
+        console.warn("Could not read default_model for connection test:", e.message);
+      }
 
       if (configuredModel.includes("2.5") || configuredModel.includes("2.0") || configuredModel.includes("1.5") || configuredModel.includes("3.5-pro")) {
         configuredModel = "gemini-3.7-flash";
@@ -1335,13 +1422,13 @@ app.post("/api/admin/test-connection", auth.requireAuth(), async (req, res) => {
 });
 
 // 4. Backfill exact durations for all videos
-app.post("/api/catalog/sync-durations", auth.requireAuth(), async (req, res) => {
+app.post("/api/catalog/sync-durations", auth.requireAuth(), async (req, res, next) => {
   try {
     const { syncAllVideoDurations } = require("./youtube");
     const result = await syncAllVideoDurations();
     res.json({ success: true, ...result });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
@@ -1358,7 +1445,9 @@ app.get("/api/models", auth.requireAuth(), async (req, res) => {
           return res.json(parsed);
         }
       }
-    } catch (e) {}
+    } catch (e) {
+      console.warn("Could not read or parse cached_gemini_models:", e.message);
+    }
 
     // Fetch live from AI Studio
     const models = await fetchAvailableGeminiModels();
@@ -1377,13 +1466,13 @@ app.get("/api/models", auth.requireAuth(), async (req, res) => {
 });
 
 // 5b. Refresh Models from Google AI Studio Live
-app.post("/api/models/refresh", auth.requireAuth(), async (req, res) => {
+app.post("/api/models/refresh", auth.requireAuth(), async (req, res, next) => {
   try {
     const { fetchAvailableGeminiModels } = require("./gemini");
     const models = await fetchAvailableGeminiModels();
     res.json({ success: true, count: models.length, models });
   } catch (error) {
-    res.status(500).json({ error: error.message || "Failed to refresh models from Google AI Studio" });
+    next(error);
   }
 });
 
@@ -1391,27 +1480,27 @@ app.post("/api/models/refresh", auth.requireAuth(), async (req, res) => {
 
 const channelHealth = require("./channel-health");
 
-app.get("/api/channel-health/report", auth.requireAuth(), async (req, res) => {
+app.get("/api/channel-health/report", auth.requireAuth(), async (req, res, next) => {
   try {
     const periodDays = parseInt(req.query.period || "28", 10);
     const report = await channelHealth.getChannelHealthReport(periodDays);
     res.json(report);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
-app.post("/api/channel-health/snapshot", auth.requireAuth(), async (req, res) => {
+app.post("/api/channel-health/snapshot", auth.requireAuth(), async (req, res, next) => {
   try {
     const periodDays = parseInt(req.body?.periodDays || "28", 10);
     const result = await channelHealth.captureSnapshot(periodDays);
     res.json(result);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
-app.get("/api/channel-health/video-catalog", auth.requireAuth(), (req, res) => {
+app.get("/api/channel-health/video-catalog", auth.requireAuth(), (req, res, next) => {
   try {
     const page = parseInt(req.query.page || "1", 10);
     const limit = parseInt(req.query.limit || "50", 10);
@@ -1420,68 +1509,68 @@ app.get("/api/channel-health/video-catalog", auth.requireAuth(), (req, res) => {
     const catalog = channelHealth.getVideoCatalog({ page, limit, search, category });
     res.json(catalog);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
-app.get("/api/channel-health/categories", auth.requireAuth(), (req, res) => {
+app.get("/api/channel-health/categories", auth.requireAuth(), (req, res, next) => {
   try {
     res.json(channelHealth.getCategories());
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
-app.post("/api/channel-health/categories", auth.requireAuth(), (req, res) => {
+app.post("/api/channel-health/categories", auth.requireAuth(), (req, res, next) => {
   try {
     const cat = channelHealth.addCategory(req.body || {});
     res.json({ success: true, category: cat });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
-app.put("/api/channel-health/categories/:id", auth.requireAuth(), (req, res) => {
+app.put("/api/channel-health/categories/:id", auth.requireAuth(), (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     const cat = channelHealth.updateCategory(id, req.body || {});
     res.json({ success: true, category: cat });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
-app.delete("/api/channel-health/categories/:id", auth.requireAuth(), (req, res) => {
+app.delete("/api/channel-health/categories/:id", auth.requireAuth(), (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     const result = channelHealth.deleteCategory(id);
     res.json(result);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
-app.post("/api/channel-health/reclassify", auth.requireAuth(), async (req, res) => {
+app.post("/api/channel-health/reclassify", auth.requireAuth(), async (req, res, next) => {
   try {
     const result = await channelHealth.bulkReclassifyLibrary();
     res.json(result);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
-app.post("/api/channel-health/override-category", auth.requireAuth(), (req, res) => {
+app.post("/api/channel-health/override-category", auth.requireAuth(), (req, res, next) => {
   try {
     const { youtubeId, category } = req.body || {};
     if (!youtubeId || !category) return res.status(400).json({ error: "youtubeId and category are required." });
     const result = channelHealth.overrideVideoCategory(youtubeId, category);
     res.json(result);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
-app.post("/api/channel-health/batch-override-categories", auth.requireAuth(), (req, res) => {
+app.post("/api/channel-health/batch-override-categories", auth.requireAuth(), (req, res, next) => {
   try {
     const { updates } = req.body || {};
     if (!updates || !Array.isArray(updates)) {
@@ -1490,75 +1579,75 @@ app.post("/api/channel-health/batch-override-categories", auth.requireAuth(), (r
     const result = channelHealth.batchOverrideVideoCategories(updates);
     res.json(result);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
-app.get("/api/channel-health/annotations", auth.requireAuth(), (req, res) => {
+app.get("/api/channel-health/annotations", auth.requireAuth(), (req, res, next) => {
   try {
     res.json(channelHealth.getAnnotations());
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
-app.post("/api/channel-health/annotations", auth.requireAuth(), (req, res) => {
+app.post("/api/channel-health/annotations", auth.requireAuth(), (req, res, next) => {
   try {
     const anno = channelHealth.addAnnotation(req.body || {});
     res.json({ success: true, annotation: anno });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
-app.delete("/api/channel-health/annotations/:id", auth.requireAuth(), (req, res) => {
+app.delete("/api/channel-health/annotations/:id", auth.requireAuth(), (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     res.json(channelHealth.deleteAnnotation(id));
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
-app.get("/api/channel-health/playlists", auth.requireAuth(), (req, res) => {
+app.get("/api/channel-health/playlists", auth.requireAuth(), (req, res, next) => {
   try {
     res.json(channelHealth.getPlaylistMappings());
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
-app.post("/api/channel-health/playlists", auth.requireAuth(), (req, res) => {
+app.post("/api/channel-health/playlists", auth.requireAuth(), (req, res, next) => {
   try {
     res.json(channelHealth.savePlaylistMapping(req.body || {}));
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
-app.delete("/api/channel-health/playlists/:id", auth.requireAuth(), (req, res) => {
+app.delete("/api/channel-health/playlists/:id", auth.requireAuth(), (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     res.json(channelHealth.deletePlaylistMapping(id));
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
 /* ---------------- Competitor Comparison Endpoints ---------------- */
 
 // 1. List all saved comparison reports
-app.get("/api/comparison/reports", auth.requireAuth(), (req, res) => {
+app.get("/api/comparison/reports", auth.requireAuth(), (req, res, next) => {
   try {
     const reports = competitorComparison.listSavedReports();
     res.json(reports);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
 // 2. Get specific comparison report by ID
-app.get("/api/comparison/reports/:id", auth.requireAuth(), (req, res) => {
+app.get("/api/comparison/reports/:id", auth.requireAuth(), (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     const report = competitorComparison.getReportById(id);
@@ -1567,12 +1656,12 @@ app.get("/api/comparison/reports/:id", auth.requireAuth(), (req, res) => {
     }
     res.json(report);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
 // 3. Generate new comparison report or update existing
-app.post("/api/comparison/generate", auth.requireAuth(), async (req, res) => {
+app.post("/api/comparison/generate", auth.requireAuth(), aiLimiter, async (req, res, next) => {
   try {
     const { channelUrl, ourCtr, ourAvd } = req.body || {};
     if (!channelUrl || !channelUrl.trim()) {
@@ -1586,12 +1675,12 @@ app.post("/api/comparison/generate", auth.requireAuth(), async (req, res) => {
     res.json({ success: true, ...result });
   } catch (error) {
     console.error("Comparison report generation failed:", error);
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
 // 4. Refresh existing report
-app.post("/api/comparison/reports/:id/refresh", auth.requireAuth(), async (req, res) => {
+app.post("/api/comparison/reports/:id/refresh", auth.requireAuth(), async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     const report = competitorComparison.getReportById(id);
@@ -1607,35 +1696,35 @@ app.post("/api/comparison/reports/:id/refresh", auth.requireAuth(), async (req, 
     res.json({ success: true, ...result });
   } catch (error) {
     console.error("Report refresh failed:", error);
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
 // 4b. Regenerate only narrative executive summary without re-pulling API data
-app.post("/api/comparison/reports/:id/regenerate-summary", auth.requireAuth(), async (req, res) => {
+app.post("/api/comparison/reports/:id/regenerate-summary", auth.requireAuth(), async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     const result = await competitorComparison.regenerateExecutiveSummary(id);
     res.json({ success: true, ...result });
   } catch (error) {
     console.error("Executive summary regeneration failed:", error);
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
 // 5. Delete comparison report
-app.delete("/api/comparison/reports/:id", auth.requireAuth(), (req, res) => {
+app.delete("/api/comparison/reports/:id", auth.requireAuth(), (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     competitorComparison.deleteReport(id);
     res.json({ success: true });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
 // 6. Export report to CSV
-app.get("/api/comparison/reports/:id/export-csv", auth.requireAuth(), (req, res) => {
+app.get("/api/comparison/reports/:id/export-csv", auth.requireAuth(), (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     const csvData = competitorComparison.generateReportCsv(id);
@@ -1643,7 +1732,7 @@ app.get("/api/comparison/reports/:id/export-csv", auth.requireAuth(), (req, res)
     res.setHeader("Content-Disposition", `attachment; filename="competitor-comparison-report-${id}.csv"`);
     res.send(csvData);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
   }
 });
 
@@ -1660,6 +1749,23 @@ app.get("*", auth.requireAuth({ redirectToLogin: true }), (req, res, next) => {
   const indexPath = path.join(PUBLIC_DIR, "index.html");
   res.sendFile(indexPath, (err) => {
     if (err) next();
+  });
+});
+
+app.use("/api/*", (req, res) => {
+  res.status(404).json({ error: "Endpoint not found" });
+});
+
+// Centralized Express error handler
+app.use((err, req, res, next) => {
+  const correlationId = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex");
+  console.error(`[Error ${correlationId}] ${req.method} ${req.originalUrl}:`, err);
+  if (res.headersSent) {
+    return next(err);
+  }
+  res.status(500).json({
+    error: "An internal server error occurred.",
+    correlationId,
   });
 });
 

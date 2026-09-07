@@ -26,6 +26,34 @@ function destroySession(token) {
   db.prepare("DELETE FROM sessions WHERE token = ?").run(token);
 }
 
+function setSessionOAuthState(token, state) {
+  if (!token) return;
+  db.prepare("UPDATE sessions SET oauth_state = ? WHERE token = ?").run(state, token);
+}
+
+function getSessionOAuthState(token) {
+  if (!token) return null;
+  const row = db.prepare("SELECT oauth_state FROM sessions WHERE token = ?").get(token);
+  return row ? row.oauth_state : null;
+}
+
+function clearSessionOAuthState(token) {
+  if (!token) return;
+  db.prepare("UPDATE sessions SET oauth_state = NULL WHERE token = ?").run(token);
+}
+
+function cleanExpiredSessions() {
+  try {
+    const info = db.prepare("DELETE FROM sessions WHERE expires_at <= datetime('now')").run();
+    if (info.changes > 0) {
+      console.log(`[Auth] Purged ${info.changes} expired session(s) on startup.`);
+    }
+  } catch (e) {
+    console.warn("[Auth] Failed to purge expired sessions:", e.message);
+  }
+}
+cleanExpiredSessions();
+
 function getUserFromToken(token) {
   if (!token) return null;
   const row = db.prepare(
@@ -44,9 +72,40 @@ function requireAuth({ redirectToLogin } = {}) {
       if (redirectToLogin) return res.redirect("/login.html");
       return res.status(401).json({ error: "not_authenticated" });
     }
-    req.user = { id: user.id, name: user.name, username: user.username };
+    req.user = {
+      id: user.id,
+      name: user.name,
+      username: user.username,
+      is_admin: Boolean(user.is_admin),
+    };
     next();
   };
+}
+
+// Express middleware: requires authenticated user with is_admin = 1
+function requireAdmin() {
+  return (req, res, next) => {
+    const token = req.cookies ? req.cookies[SESSION_COOKIE] : null;
+    const user = getUserFromToken(token);
+    if (!user) {
+      return res.status(401).json({ error: "not_authenticated" });
+    }
+    req.user = {
+      id: user.id,
+      name: user.name,
+      username: user.username,
+      is_admin: Boolean(user.is_admin),
+    };
+    if (!req.user.is_admin) {
+      return res.status(403).json({ error: "Forbidden: Administrator access required" });
+    }
+    next();
+  };
+}
+
+function destroyUserSessions(userId) {
+  if (!userId) return;
+  db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
 }
 
 module.exports = {
@@ -55,6 +114,13 @@ module.exports = {
   verifyPassword,
   createSession,
   destroySession,
+  destroyUserSessions,
   getUserFromToken,
-  requireAuth
+  requireAuth,
+  requireAdmin,
+  setSessionOAuthState,
+  getSessionOAuthState,
+  clearSessionOAuthState,
+  cleanExpiredSessions,
 };
+

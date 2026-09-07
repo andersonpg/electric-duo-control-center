@@ -242,6 +242,10 @@ export default function Transcripts({ currentUser, initialVideoId, onClearInitia
       });
       const data = await res.json();
       if (!res.ok) {
+        if (data.isScopeError) {
+          showToast(data.error || "The YouTube connection is missing the youtube.force-ssl permission and must be reconnected in Admin Settings.", "error");
+          return;
+        }
         if (data.canQuickPaste) {
           setIsUploadingNew(true);
         }

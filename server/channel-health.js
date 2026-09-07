@@ -3,7 +3,7 @@
 const { GoogleGenAI } = require("@google/genai");
 const { google } = require("googleapis");
 const db = require("./db").articleDb;
-const { getGeminiApiKey } = require("./gemini");
+const { getGeminiApiKey, DEFAULT_GEMINI_MODEL } = require("./gemini");
 const { isOAuthConnected, getAuthenticatedClient } = require("./youtube-analytics");
 
 // Helper to parse ISO duration "PT18M6S" into seconds
@@ -184,11 +184,13 @@ async function bulkReclassifyLibrary() {
   const apiKey = getGeminiApiKey();
   const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
 
-  let modelName = "gemini-3.7-flash";
+  let modelName = DEFAULT_GEMINI_MODEL;
   try {
     const row = db.prepare("SELECT value FROM app_settings WHERE key = 'default_model'").get();
     if (row && row.value) modelName = row.value;
-  } catch (e) {}
+  } catch (e) {
+    console.warn("Could not read default_model in channel-health:", e.message);
+  }
 
   const updateStmt = db.prepare("UPDATE videos SET content_type = ?, category_source = 'ai_inferred' WHERE youtube_id = ?");
   let reclassifiedCount = 0;
@@ -331,7 +333,9 @@ async function getChannelHealthReport(periodDays = 28) {
         if (chRes.data?.items?.[0]?.statistics?.subscriberCount) {
           totalSubscribers = parseInt(chRes.data.items[0].statistics.subscriberCount, 10);
         }
-      } catch (e) {}
+      } catch (e) {
+        console.warn("Could not fetch channel subscriber count:", e.message);
+      }
 
       // Current Period Live Channel Query
       const currRes = await ytAnalytics.reports.query({

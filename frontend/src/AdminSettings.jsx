@@ -54,6 +54,7 @@ export default function AdminSettings({ currentUser }) {
     youtube_channel_id: "UCuhhyTS-Q66qq-gWrCcTOzg",
     google_client_id: "",
     google_client_secret: "",
+    google_client_secret_configured: false,
     gemini_api_key: "",
     wp_site_url: "https://theelectricduo.com",
     wp_username: "patricka",
@@ -175,7 +176,7 @@ export default function AdminSettings({ currentUser }) {
       const res = await fetch("/api/admin/integrations", { credentials: "same-origin" });
       if (res.ok) {
         const data = await res.json();
-        setIntegrations((prev) => ({ ...prev, ...data }));
+        setIntegrations((prev) => ({ ...prev, ...data, google_client_secret: "" }));
       }
     } catch (e) {}
   };
@@ -813,14 +814,40 @@ export default function AdminSettings({ currentUser }) {
                   <h3 className="text-base font-bold text-white flex items-center gap-2">
                     YouTube Analytics API (Google OAuth 2.0)
                     {oauthStatus.isConnected && (
-                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/40 text-[10px] font-bold text-emerald-400 uppercase tracking-wider">
-                        <CheckCircle className="w-3 h-3" /> Live Studio Connected
-                      </span>
+                      oauthStatus.hasCaptionScope === false ? (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/40 text-[10px] font-bold text-amber-400 uppercase tracking-wider">
+                          <AlertTriangle className="w-3 h-3" /> Missing Caption Scope
+                        </span>
+                      ) : oauthStatus.hasCaptionScope === null ? (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-[10px] font-bold text-slate-300 uppercase tracking-wider">
+                          <CheckCircle className="w-3 h-3 text-slate-400" /> Connected (Scope Unknown)
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/40 text-[10px] font-bold text-emerald-400 uppercase tracking-wider">
+                          <CheckCircle className="w-3 h-3" /> Live Studio Connected
+                        </span>
+                      )
                     )}
                   </h3>
                   <div className="text-xs text-slate-400 mt-0.5">
                     Pulls ground-truth retention curves, live impressions, true CTR, and traffic sources directly from YouTube Studio.
                   </div>
+                  {oauthStatus.isConnected && oauthStatus.hasCaptionScope === false && (
+                    <div className="mt-2.5 p-2.5 rounded-xl bg-amber-950/50 border border-amber-500/40 text-amber-200 text-xs flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                      <div className="leading-relaxed">
+                        <strong>Warning:</strong> Caption upload and download will fail because the current Google connection lacks the <code className="px-1 py-0.5 rounded bg-slate-900 font-mono text-[11px] text-amber-300">youtube.force-ssl</code> permission. Please disconnect and reconnect your channel to grant the missing permission.
+                      </div>
+                    </div>
+                  )}
+                  {oauthStatus.isConnected && oauthStatus.hasCaptionScope === null && (
+                    <div className="mt-2.5 p-2.5 rounded-xl bg-slate-900/60 border border-slate-700/60 text-slate-300 text-xs flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
+                      <div className="leading-relaxed">
+                        <strong>Scope Unknown:</strong> Stored OAuth token does not include a scope list. If caption operations fail with permission errors, disconnect and reconnect to refresh scopes.
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -866,7 +893,7 @@ export default function AdminSettings({ currentUser }) {
                 </label>
                 <input
                   type="password"
-                  placeholder="e.g. GOCSPX-••••••••••••••••"
+                  placeholder={integrations.google_client_secret_configured ? "••••••••••••••••••••••• (Configured)" : "Enter Client Secret (e.g. GOCSPX-...)"}
                   value={integrations.google_client_secret || ""}
                   onChange={(e) => setIntegrations({ ...integrations, google_client_secret: e.target.value })}
                   className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700/80 text-xs text-slate-100 font-mono focus:outline-none focus:border-cyan-500"

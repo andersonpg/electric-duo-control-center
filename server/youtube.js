@@ -30,7 +30,9 @@ function getYoutubeApiKey() {
   try {
     const row = db.prepare("SELECT value FROM app_settings WHERE key = 'youtube_api_key'").get();
     if (row && row.value && row.value.trim().length > 10) return row.value.trim();
-  } catch (e) {}
+  } catch (e) {
+    console.warn("Could not read youtube_api_key from app_settings:", e.message);
+  }
   return process.env.YOUTUBE_API_KEY;
 }
 
@@ -38,7 +40,9 @@ function getYoutubeChannelId() {
   try {
     const row = db.prepare("SELECT value FROM app_settings WHERE key = 'youtube_channel_id'").get();
     if (row && row.value && row.value.trim().length > 5) return row.value.trim();
-  } catch (e) {}
+  } catch (e) {
+    console.warn("Could not read youtube_channel_id from app_settings:", e.message);
+  }
   return process.env.YOUTUBE_CHANNEL_ID || "UCuhhyTS-Q66qq-gWrCcTOzg";
 }
 
@@ -245,10 +249,14 @@ async function syncAllVideoDurations() {
 function deleteVideoAndRelated(youtubeId) {
   try {
     db.prepare("DELETE FROM video_audits WHERE youtube_id = ?").run(youtubeId);
-  } catch (e) {}
+  } catch (e) {
+    console.warn(`Could not delete video_audits for ${youtubeId}:`, e.message);
+  }
   try {
     db.prepare("DELETE FROM video_snapshots WHERE youtube_id = ?").run(youtubeId);
-  } catch (e) {}
+  } catch (e) {
+    console.warn(`Could not delete video_snapshots for ${youtubeId}:`, e.message);
+  }
   return db.prepare("DELETE FROM videos WHERE youtube_id = ?").run(youtubeId);
 }
 
@@ -308,7 +316,9 @@ async function syncCatalogViaYouTubeApi(mode = "delta") {
           realPublishDateMap[v.id] = v.snippet.publishedAt;
         }
       });
-    } catch (e) {}
+    } catch (e) {
+      console.warn("Could not fetch detailed video batch in syncCatalogViaYouTubeApi:", e.message);
+    }
 
     let hitExistingInDelta = false;
 
@@ -773,17 +783,23 @@ async function addManualVideo(urlOrId, forcedPrivacy = "unlisted") {
       if (oembedRes.data?.title) {
         title = oembedRes.data.title;
       }
-    } catch (e) {}
+    } catch (e) {
+      console.warn("Could not fetch oEmbed metadata for manual video:", e.message);
+    }
 
     try {
       const exactDuration = await fetchVideoDurationDirect(vId);
       if (exactDuration) duration = exactDuration;
-    } catch (e) {}
+    } catch (e) {
+      console.warn("Could not fetch fallback duration for manual video:", e.message);
+    }
 
     try {
       const exactDate = await fetchExactPublishDate(vId);
       if (exactDate) publishedAt = exactDate;
-    } catch (e) {}
+    } catch (e) {
+      console.warn("Could not fetch fallback publish date for manual video:", e.message);
+    }
   }
 
   // Insert or update video

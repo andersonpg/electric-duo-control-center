@@ -3,6 +3,8 @@
 const express = require("express");
 const axios = require("axios");
 const cheerio = require("cheerio");
+const dns = require("dns").promises;
+const net = require("net");
 const db = require("./db");
 const articleDb = db.articleDb;
 const { getYoutubeClient } = require("./youtube");
@@ -87,7 +89,9 @@ function getWpConfig() {
       if (r.key === "wp_username" && r.value) username = r.value;
       if (r.key === "wp_application_password" && r.value) password = r.value;
     });
-  } catch (e) {}
+  } catch (e) {
+    console.warn("Could not read WP settings for fathom-news:", e.message);
+  }
 
   siteUrl = siteUrl.replace(/\/$/, "");
   const authStr = `${username}:${password}`;
@@ -118,7 +122,9 @@ function extractYoutubeVideoId(rawUrl) {
       const match = parsed.pathname.match(/\/(embed|v|shorts|live)\/([a-zA-Z0-9_-]{11})/i);
       if (match && match[2]) return match[2];
     }
-  } catch (e) {}
+  } catch (e) {
+    console.warn("Could not parse URL in extractYoutubeVideoId:", e.message);
+  }
 
   // Fallback regex
   const regexMatch = str.match(
@@ -295,8 +301,72 @@ async function fetchYouTubeMetadata(videoId) {
   };
 }
 
+function isPrivateIp(ip) {
+  if (!ip) return true;
+  if (ip === "169.254.169.254") return true;
+
+  if (net.isIPv4(ip)) {
+    const parts = ip.split(".").map(Number);
+    if (parts[0] === 0) return true;
+    if (parts[0] === 10) return true;
+    if (parts[0] === 127) return true;
+    if (parts[0] === 169 && parts[1] === 254) return true;
+    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+    if (parts[0] === 192 && parts[1] === 168) return true;
+    if (parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127) return true;
+    return false;
+  }
+
+  if (net.isIPv6(ip)) {
+    const lower = ip.toLowerCase();
+    if (lower === "::1") return true;
+    if (lower.startsWith("fc") || lower.startsWith("fd")) return true;
+    if (lower.startsWith("fe80") || lower.startsWith("fe9") || lower.startsWith("fea") || lower.startsWith("feb")) return true;
+    if (lower.startsWith("::ffff:")) {
+      const v4part = lower.substring(7);
+      return isPrivateIp(v4part);
+    }
+    return false;
+  }
+
+  return true;
+}
+
+async function validateArticleUrl(rawUrl) {
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch (e) {
+    throw new Error(`Invalid article URL: ${e.message}`);
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`Invalid URL scheme "${parsed.protocol}". Only HTTP and HTTPS are permitted.`);
+  }
+
+  const hostname = parsed.hostname;
+  if (!hostname) throw new Error("Missing hostname in article URL.");
+
+  if (hostname === "localhost" || hostname === "169.254.169.254") {
+    throw new Error(`Access to hostname "${hostname}" is restricted.`);
+  }
+
+  const addresses = await dns.lookup(hostname, { all: true });
+  if (!addresses || addresses.length === 0) {
+    throw new Error(`Could not resolve hostname "${hostname}".`);
+  }
+
+  for (const addr of addresses) {
+    if (isPrivateIp(addr.address)) {
+      throw new Error(`Access to private or link-local IP "${addr.address}" is restricted.`);
+    }
+  }
+}
+
 // Helper: Fetch Article metadata with axios + cheerio
 async function fetchArticleMetadata(articleUrl) {
+  await validateArticleUrl(articleUrl);
+
   const response = await axios.get(articleUrl, {
     headers: {
       "User-Agent":
@@ -305,7 +375,8 @@ async function fetchArticleMetadata(articleUrl) {
       "Accept-Language": "en-US,en;q=0.9",
     },
     timeout: 10000,
-    maxRedirects: 5,
+    maxRedirects: 3,
+    maxContentLength: 5 * 1024 * 1024,
   });
 
   const html = response.data;
@@ -367,7 +438,9 @@ async function fetchArticleMetadata(articleUrl) {
   if (imageUrl) {
     try {
       imageUrl = new URL(imageUrl, articleUrl).href;
-    } catch (e) {}
+    } catch (e) {
+      console.warn("Could not resolve relative image URL in fathom-news:", e.message);
+    }
   }
 
   // Extract Site Name / Publication Name
@@ -594,7 +667,9 @@ async function syncWpPostStatuses(items) {
             updateStmt.run(normalizedStatus, liveUrl, item.id);
             item.status = normalizedStatus;
             item.wp_live_url = liveUrl;
-          } catch (dbErr) {}
+          } catch (dbErr) {
+            console.warn("Could not update item status in SQLite during WP sync:", dbErr.message);
+          }
         }
       }
     });
@@ -630,7 +705,9 @@ router.post("/preview", async (req, res) => {
       alreadyExists = true;
       existingRecord = row;
     }
-  } catch (e) {}
+  } catch (e) {
+    console.warn("Could not check duplicate in fathom_news_history:", e.message);
+  }
 
   // 2. Detect if URL is YouTube vs generic article
   const youtubeVideoId = extractYoutubeVideoId(trimmedUrl);
@@ -807,7 +884,9 @@ router.post("/publish", async (req, res) => {
           timeout: 6000,
         }
       );
-    } catch (rmErr) {}
+    } catch (rmErr) {
+      console.warn("Could not remove default featured media from WP post:", rmErr.message);
+    }
 
     // 7. Insert successful record into SQLite fathom_news_history
     const insertStmt = db.prepare(`

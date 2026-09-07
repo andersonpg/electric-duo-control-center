@@ -2,7 +2,6 @@
 
 require("dotenv").config();
 const { GoogleGenAI } = require("@google/genai");
-const { YoutubeTranscript } = require("youtube-transcript");
 const db = require("./db").articleDb;
 
 // Helper to fetch & cache video transcript in SQLite with resilient fallback
@@ -13,19 +12,29 @@ async function getTranscript(youtubeId, title = "") {
     if (cached && cached.transcript && cached.transcript.trim().length > 20) {
       return cached.transcript;
     }
-  } catch (e) {}
+    const tRow = db.prepare("SELECT plain_text FROM transcripts WHERE video_id = ?").get(youtubeId);
+    if (tRow && tRow.plain_text && tRow.plain_text.trim().length > 20) {
+      return tRow.plain_text;
+    }
+  } catch (e) {
+    console.warn(`Error reading cached transcript for ${youtubeId}:`, e.message);
+  }
 
-  // 2. Fetch from YouTube Captions API
+  // 2. Fetch from official captions engine
   try {
-    const transcriptItems = await YoutubeTranscript.fetchTranscript(youtubeId);
-    if (transcriptItems && transcriptItems.length > 0) {
-      const fullText = transcriptItems.map((item) => item.text).join(" ").trim();
+    const { fetchRawCaptionsAsSrt } = require("./captions");
+    const res = await fetchRawCaptionsAsSrt(youtubeId);
+    if (res && res.srt) {
+      const { srtToPlainText } = require("../fixTranscript");
+      const fullText = srtToPlainText(res.srt);
 
       // Cache into SQLite videos table
       if (fullText.length > 20) {
         try {
           db.prepare("UPDATE videos SET transcript = ? WHERE youtube_id = ?").run(fullText, youtubeId);
-        } catch (e) {}
+        } catch (e) {
+          console.warn(`Error caching transcript for ${youtubeId}:`, e.message);
+        }
       }
 
       return fullText;
@@ -46,7 +55,9 @@ async function getTranscript(youtubeId, title = "") {
         fallbackContext += `Creator Notes & Context:\n${v.custom_notes}\n\n`;
       }
     }
-  } catch (e) {}
+  } catch (e) {
+    console.warn(`Could not read metadata for video ${youtubeId}:`, e.message);
+  }
 
   if (!fallbackContext) {
     fallbackContext = `Video Title: "${title || youtubeId}"\nYouTube ID: ${youtubeId}`;
@@ -55,6 +66,8 @@ async function getTranscript(youtubeId, title = "") {
   return `[Note: Auto-generated YouTube closed captions were not published for this video by YouTube. Synthesize a comprehensive article based on the video title, topic, outline, and custom context below]\n\n${fallbackContext}`;
 }
 
+const DEFAULT_GEMINI_MODEL = "gemini-3.8-flash";
+
 // Helper to get active Gemini API key from SQLite settings or .env
 function getGeminiApiKey() {
   try {
@@ -62,15 +75,17 @@ function getGeminiApiKey() {
     if (row && row.value && row.value.trim().length > 10) {
       return row.value.trim();
     }
-  } catch (e) {}
+  } catch (e) {
+    console.warn("Error reading gemini_api_key from app_settings:", e.message);
+  }
   return process.env.GEMINI_API_KEY;
 }
 
 // Helper to call Gemini API with candidate models and clean error reporting
 async function callGeminiWithRetry(ai, requestOptions, maxRetries = 2) {
-  let primaryModel = requestOptions.model || "gemini-3.8-flash";
+  let primaryModel = requestOptions.model || DEFAULT_GEMINI_MODEL;
   if (primaryModel === "gemini-flash-latest" || primaryModel.includes("1.5")) {
-    primaryModel = "gemini-3.8-flash";
+    primaryModel = DEFAULT_GEMINI_MODEL;
   }
 
   const candidateModels = [
@@ -187,7 +202,9 @@ async function fetchAvailableGeminiModels(customApiKey = null) {
       db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('cached_gemini_models', ?)").run(
         JSON.stringify(models)
       );
-    } catch (e) {}
+    } catch (e) {
+      console.warn("Could not cache available Gemini models to app_settings:", e.message);
+    }
   }
 
   return models;
@@ -272,4 +289,11 @@ CRITICAL MANDATES:
   return htmlContent;
 }
 
-module.exports = { getTranscript, generateArticle, getGeminiApiKey, callGeminiWithRetry, fetchAvailableGeminiModels };
+module.exports = {
+  DEFAULT_GEMINI_MODEL,
+  getTranscript,
+  generateArticle,
+  getGeminiApiKey,
+  callGeminiWithRetry,
+  fetchAvailableGeminiModels,
+};

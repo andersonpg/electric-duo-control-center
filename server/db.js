@@ -18,12 +18,14 @@ controlDb.exec(`
     name TEXT NOT NULL,
     username TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
+    is_admin INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
   CREATE TABLE IF NOT EXISTS sessions (
     token TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id),
+    oauth_state TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     expires_at TEXT NOT NULL
   );
@@ -263,46 +265,37 @@ articleDb.exec(`
   );
 `);
 
-// Add transcript, category_source & view_count columns to videos table if not present
-try {
-  articleDb.exec("ALTER TABLE videos ADD COLUMN transcript TEXT;");
-} catch (e) {}
+function addColumnIfNotExists(targetDb, table, column, definition) {
+  const columns = targetDb.prepare(`PRAGMA table_info(${table})`).all();
+  if (!columns.some((c) => c.name === column)) {
+    targetDb.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
+    return true;
+  }
+  return false;
+}
 
-try {
-  articleDb.exec("ALTER TABLE videos ADD COLUMN category_source TEXT DEFAULT 'ai_inferred';");
-} catch (e) {}
+// User authorization & session state migrations
+const addedAdmin = addColumnIfNotExists(controlDb, "users", "is_admin", "INTEGER NOT NULL DEFAULT 0");
+if (addedAdmin) {
+  controlDb.exec("UPDATE users SET is_admin = 1;");
+}
+// Also ensure any preexisting users are marked admin
+controlDb.exec("UPDATE users SET is_admin = 1 WHERE is_admin = 0 AND datetime(created_at) <= datetime('now');");
+addColumnIfNotExists(controlDb, "sessions", "oauth_state", "TEXT");
 
-try {
-  articleDb.exec("ALTER TABLE videos ADD COLUMN view_count INTEGER DEFAULT 0;");
-} catch (e) {}
+// Video and transcript column migrations
+addColumnIfNotExists(articleDb, "videos", "transcript", "TEXT");
+addColumnIfNotExists(articleDb, "videos", "category_source", "TEXT DEFAULT 'ai_inferred'");
+addColumnIfNotExists(articleDb, "videos", "view_count", "INTEGER DEFAULT 0");
+addColumnIfNotExists(articleDb, "videos", "privacy_status", "TEXT DEFAULT 'public'");
+addColumnIfNotExists(articleDb, "videos", "working_title", "TEXT");
+addColumnIfNotExists(articleDb, "videos", "caption_status", "TEXT DEFAULT 'none'");
 
-try {
-  articleDb.exec("ALTER TABLE videos ADD COLUMN privacy_status TEXT DEFAULT 'public';");
-} catch (e) {}
+addColumnIfNotExists(articleDb, "transcripts", "status", "TEXT DEFAULT 'unfixed'");
+addColumnIfNotExists(articleDb, "transcripts", "youtube_caption_id", "TEXT");
+addColumnIfNotExists(articleDb, "transcripts", "uploaded_at", "DATETIME");
 
-try {
-  articleDb.exec("ALTER TABLE videos ADD COLUMN working_title TEXT;");
-} catch (e) {}
-
-try {
-  articleDb.exec("ALTER TABLE videos ADD COLUMN caption_status TEXT DEFAULT 'none';");
-} catch (e) {}
-
-try {
-  articleDb.exec("ALTER TABLE transcripts ADD COLUMN status TEXT DEFAULT 'unfixed';");
-} catch (e) {}
-
-try {
-  articleDb.exec("ALTER TABLE transcripts ADD COLUMN youtube_caption_id TEXT;");
-} catch (e) {}
-
-try {
-  articleDb.exec("ALTER TABLE transcripts ADD COLUMN uploaded_at DATETIME;");
-} catch (e) {}
-
-try {
-  articleDb.exec("UPDATE videos SET privacy_status = 'public' WHERE privacy_status IS NULL;");
-} catch (e) {}
+articleDb.exec("UPDATE videos SET privacy_status = 'public' WHERE privacy_status IS NULL;");
 
 try {
   articleDb.exec(`
@@ -326,7 +319,9 @@ try {
 
     UPDATE videos SET caption_status = 'none' WHERE caption_status IS NULL;
   `);
-} catch (e) {}
+} catch (e) {
+  console.warn("Could not backfill caption_status defaults:", e.message);
+}
 
 // Seed default title prompt settings if not present
 const DEFAULT_TITLE_PROMPT_INSTRUCTIONS = `You are a YouTube title strategist for The Electric Duo, a channel that

@@ -74,6 +74,15 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
       });
       const data = await res.json();
       if (!res.ok) {
+        if (data.isScopeError) {
+          setCaptionToast({
+            type: "error",
+            text: data.error || "The YouTube connection is missing the youtube.force-ssl permission and must be reconnected in Admin Settings.",
+            actionText: "Reconnect in Admin Settings",
+            actionUrl: "/?module=admin",
+          });
+          return;
+        }
         if (data.canQuickPaste) {
           setQuickPasteOpen(true);
         }
@@ -360,13 +369,21 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                 : "bg-rose-950/90 text-rose-200 border-b border-rose-500/40"
             }`}
           >
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               {captionToast.type === "success" ? (
                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
               ) : (
                 <AlertCircle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
               )}
               <span>{captionToast.text}</span>
+              {captionToast.actionUrl && (
+                <a
+                  href={captionToast.actionUrl}
+                  className="px-2 py-0.5 rounded-lg bg-red-500/30 hover:bg-red-500/40 text-white border border-red-500/50 text-[11px] font-bold underline shrink-0 transition-colors ml-1"
+                >
+                  {captionToast.actionText || "Action"}
+                </a>
+              )}
             </div>
             <button
               onClick={() => setCaptionToast(null)}

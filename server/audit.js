@@ -2,7 +2,7 @@
 
 const { GoogleGenAI } = require("@google/genai");
 const db = require("./db").articleDb;
-const { getTranscript, getGeminiApiKey, callGeminiWithRetry } = require("./gemini");
+const { getTranscript, getGeminiApiKey, callGeminiWithRetry, DEFAULT_GEMINI_MODEL } = require("./gemini");
 const { isOAuthConnected, fetchLiveVideoAnalytics } = require("./youtube-analytics");
 
 // Category benchmark definitions for The Electric Duo
@@ -350,14 +350,16 @@ You MUST reply ONLY with a valid JSON object with this EXACT structure (no markd
 
   const ai = new GoogleGenAI({ apiKey });
 
-  let configuredModel = "gemini-3.8-flash";
+  let configuredModel = DEFAULT_GEMINI_MODEL;
   try {
     const row = db.prepare("SELECT value FROM app_settings WHERE key = 'default_model'").get();
     if (row && row.value) configuredModel = row.value;
-  } catch (e) {}
+  } catch (e) {
+    console.warn("Could not read default_model for audit:", e.message);
+  }
 
   if (configuredModel.includes("2.5") || configuredModel.includes("2.0") || configuredModel.includes("1.5") || configuredModel.includes("3.5-pro") || configuredModel === "gemini-flash-latest") {
-    configuredModel = "gemini-3.8-flash";
+    configuredModel = DEFAULT_GEMINI_MODEL;
   }
 
   const response = await callGeminiWithRetry(

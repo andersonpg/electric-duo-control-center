@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.2.3] - 2026-09-07
+
+### Security
+- **Admin Role-Based Access Control**:
+  - Added `is_admin` column to `users` table and `requireAdmin` middleware.
+  - Protected all `/api/admin/*` endpoints and OAuth connect/disconnect routes with administrator access requirements.
+  - Restricted password changes (`POST /api/admin/users/password`) to self-service unless authenticated as an administrator.
+  - Added immediate invalidation of all existing sessions for a user upon password change (`destroyUserSessions`).
+- **Google Client Secret Masking**:
+  - `GET /api/admin/integrations` masks `google_client_secret` into `google_client_secret_configured: boolean`, omitting raw secret string.
+  - Admin UI renders a write-only masked placeholder (`••••••••••••`), only overwriting if a new value is explicitly supplied.
+- **OAuth CSRF Protection**:
+  - Added cryptographically random 24-byte state token generation on `GET /api/auth/google`, linked to active user session in SQLite.
+  - Callback strictly verifies state match and clears token upon inspection, rejecting mismatched or expired attempts with `400 Bad Request`.
+- **SSRF & Stored XSS Hardening**:
+  - Implemented private IP, link-local, loopback, and cloud metadata rejection in `server/fathom-news.js` with timeout and payload size bounds.
+  - Escaped HTML entities (`&`, `<`, `>`, `"`, `'`) in Competitor Comparison markdown renderer prior to formatting.
+- **Rate Limiting & Security Headers**:
+  - Configured `express-rate-limit` for `POST /login` (5 attempts / 15 minutes with IP and username failure logging).
+  - Added global API rate limiter (100 req / minute) and AI endpoint limiter (10 req / minute).
+  - Integrated `helmet` with Content Security Policy and frame protection.
+- **Centralized Error Handling**:
+  - Routed server exceptions to centralized error middleware with unique correlation IDs (`crypto.randomUUID()`), preventing raw stack trace leaks to clients.
+
+### Fixed
+- **Caption API Download Decoding**:
+  - Fixed gaxios binary decoding issue in `fetchViaOfficialApi` by explicitly setting `{ responseType: "text" }` and normalizing Buffer/Blob/ArrayBuffer payload formats.
+  - Removed all unofficial caption scraping code and uninstalled `youtube-transcript` and `youtube-caption-extractor` dependencies.
+- **OAuth Scope Verification**:
+  - Added `youtube.force-ssl` scope audit to `getOAuthStatus()` and surfaced actionable reconnect banner in Admin Settings if missing.
+
+### Housekeeping
+- **Stale Asset Purge**:
+  - Updated `scripts/build.js` and `npm run build:frontend` to wipe `public/assets` before copying fresh Vite bundles.
+- **Dynamic Updates & Code Hygiene**:
+  - Replaced `COALESCE` in `PATCH /api/videos/:id` with dynamic SQL only updating supplied fields.
+  - Exported shared `DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"` from `server/gemini.js`.
+  - Audited and added contextual warning logging to all 27 catch blocks across server modules.
+  - Corrected database file descriptions in `TECH_STACK.md` and removed `pm2` from runtime dependencies.
+
+---
+
 ## [2.2.2] - 2026-09-07
 
 ### Added
@@ -28,12 +70,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.2.1] - 2026-09-07
 
 ### Fixed
-- **Cloud Host Caption Retrieval & OAuth Bearer Token Forwarding**:
-  - Implemented an OAuth-aware multi-client InnerTube subtitle extractor in `server/captions.js` to resolve YouTube's datacenter IP block (`LOGIN_REQUIRED: You need to be logged in to do that`).
-  - Added dynamic Google OAuth 2.0 Bearer token retrieval via `getAuthenticatedClient().getAccessToken()` to authenticate InnerTube player requests as the verified channel owner.
-  - Added high-resilience multi-client ladder (`ANDROID` v20.10.38 $\rightarrow$ `IOS` v20.10.4 $\rightarrow$ `ANDROID_VR` $\rightarrow$ `MWEB`) with dual-endpoint routing (`www.youtube.com` and `youtubei.googleapis.com`).
-  - Added dual-format subtitle stream parser supporting both structured `json3` (`events[].segs`) and `srv3` / classic XML (`<p t="..." d="...">` / `<text start="..." dur="...">`).
-  - Improved error messaging with actionable guidance when YouTube returns `LOGIN_REQUIRED`.
+- **Caption Retrieval Diagnostics & Cloud Host Error Handling**:
+  - Diagnosed cloud VPS datacenter IP restrictions (`LOGIN_REQUIRED`) encountered during unauthenticated caption scraping.
+  - Added actionable error handling and diagnostic reporting guiding users to official authenticated paths or Quick Paste when automated scraping is restricted.
+  - Prepared architecture for transition to official YouTube Data API v3 caption management.
 
 ---
 

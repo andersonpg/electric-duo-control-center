@@ -25,10 +25,14 @@
 * **Database & Persistence**:
   * **better-sqlite3** (`better-sqlite3`) — Embedded, synchronous, high-throughput SQLite engine.
   * **Dual Database Architecture**:
-    * `database.sqlite` — User accounts, password hashes, KPI metrics, period run-rates, and session tracking.
-    * `control-center.sqlite` (via `DATA_DIR=/home/cc/data`) — 500+ video back-catalog, YouTube Studio snapshots, content categories, content templates, video audit diagnostics, and competitor comparison reports.
+    * `control-center.sqlite` — User accounts, password hashes, admin flags, session tracking, checklist tasks, KPI metrics, period run-rates, and Ford Fathom news cache.
+    * `database.sqlite` (via `DATA_DIR=/home/cc/data`) — 500+ video back-catalog, YouTube Studio snapshots, content categories, content templates, video audit diagnostics, transcripts/captions, and competitor comparison reports.
 * **Authentication & Security**:
   * Cookie-based HTTP-only session tokens (`sid` cookie).
+  * Role-based access control with `is_admin` column and admin-protected endpoints.
+  * CSRF protection on Google OAuth via cryptographically random state tokens.
+  * Express rate limiting (`express-rate-limit`) on login and AI endpoints.
+  * Security headers via **Helmet** with strict Content Security Policy.
   * **bcryptjs** for salted password hashing and secure account management.
 
 ---
@@ -37,8 +41,8 @@
 
 * **SDK & Client**: **Google Gen AI SDK** (`@google/genai`)
 * **Active LLM Fallback Chain**:
-  * `gemini-3.7-flash` *(Primary multimodal & fast generation model)*
-  * Failover ladder: `gemini-3.6-flash` $\rightarrow$ `gemini-3.5-flash` $\rightarrow$ `gemini-3.5-flash-lite` $\rightarrow$ `gemini-3.1-flash-lite` $\rightarrow$ `gemini-flash-latest` $\rightarrow$ Local Heuristic Engine.
+  * `gemini-3.8-flash` *(Primary multimodal & fast generation model)*
+  * Failover ladder: `gemini-3.7-flash` $\rightarrow$ `gemini-3.6-flash` $\rightarrow$ `gemini-3.5-flash` $\rightarrow$ `gemini-3.5-flash-lite` $\rightarrow$ `gemini-3.1-pro-preview`.
 * **AI Modules & Capabilities**:
   1. **Article Generator**: Converts YouTube captions, video descriptions, and custom notes into fully formatted, SEO-optimized WordPress articles with embedded media.
   2. **Video Diagnostic Audits**: Generates 30-second hook drop-off analysis, 2x2 discovery matrix (packaging vs. algorithm bottlenecks), thumbnail visual contrast reviews, and 3–5 alternative title concepts.
@@ -51,8 +55,8 @@
 
 * **YouTube Data API v3 & YouTube Analytics API** (`googleapis`):
   * Google OAuth 2.0 integration for live YouTube Studio analytics (real view counts, watch time, subscribers gained/lost, traffic source breakdown).
-  * Zero-quota fallback web scraper to maintain uptime during API quota exhaustions.
-* **Captions Extraction**: `youtube-transcript` with automatic SQLite caption caching and metadata fallback.
+  * Official YouTube Data API v3 `captions` endpoint for secure automated caption track download and upload.
+  * EV Vocabulary deterministic correction engine with SQLite caching.
 * **WordPress REST API** (`axios`):
   * Application password authentication directly creating and formatting draft posts on `https://theelectricduo.com`.
 
