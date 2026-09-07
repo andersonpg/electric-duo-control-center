@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.2.1] - 2026-09-07
+
+### Fixed
+- **Cloud Host Caption Retrieval & OAuth Bearer Token Forwarding**:
+  - Implemented an OAuth-aware multi-client InnerTube subtitle extractor in `server/captions.js` to resolve YouTube's datacenter IP block (`LOGIN_REQUIRED: You need to be logged in to do that`).
+  - Added dynamic Google OAuth 2.0 Bearer token retrieval via `getAuthenticatedClient().getAccessToken()` to authenticate InnerTube player requests as the verified channel owner.
+  - Added high-resilience multi-client ladder (`ANDROID` v20.10.38 $\rightarrow$ `IOS` v20.10.4 $\rightarrow$ `ANDROID_VR` $\rightarrow$ `MWEB`) with dual-endpoint routing (`www.youtube.com` and `youtubei.googleapis.com`).
+  - Added dual-format subtitle stream parser supporting both structured `json3` (`events[].segs`) and `srv3` / classic XML (`<p t="..." d="...">` / `<text start="..." dur="...">`).
+  - Improved error messaging with actionable guidance when YouTube returns `LOGIN_REQUIRED`.
+
+---
+
 ## [2.2.0] - 2026-09-07
 
 ### Added

@@ -1,6 +1,8 @@
 "use strict";
 
 const { Readable } = require("stream");
+const path = require("path");
+const axios = require("axios");
 const { google } = require("googleapis");
 const { YoutubeTranscript } = require("youtube-transcript");
 let getSubtitlesFallback = null;
@@ -8,7 +10,6 @@ try {
   getSubtitlesFallback = require("youtube-caption-extractor").getSubtitles;
 } catch (e) {}
 
-const path = require("path");
 const db = require("./db").articleDb;
 const { getAuthenticatedClient, isOAuthConnected } = require("./youtube-analytics");
 const { fixSrt, loadRules, srtToPlainText } = require("../fixTranscript");
@@ -55,6 +56,68 @@ function formatSrtTimestamp(ms) {
 }
 
 /**
+ * Parse JSON3 formatted YouTube subtitle event data into chunks.
+ */
+function parseJson3Subtitles(jsonText) {
+  const data = typeof jsonText === "string" ? JSON.parse(jsonText) : jsonText;
+  const events = data?.events || [];
+  const chunks = [];
+  for (const ev of events) {
+    if (!ev.segs || ev.aAppend === 1) continue;
+    const raw = ev.segs.map((s) => s.utf8 || "").join("");
+    const text = decodeHtmlEntities(raw.replace(/<[^>]+>/g, "")).trim();
+    if (!text || text === "\n") continue;
+    const startMs = ev.tStartMs || 0;
+    const durMs = ev.dDurationMs || 0;
+    chunks.push({
+      offset: startMs,
+      duration: Math.max(durMs, 500),
+      text,
+    });
+  }
+  return chunks;
+}
+
+/**
+ * Parse XML formatted YouTube subtitle data (srv3 or classic) into chunks.
+ */
+function parseXmlSubtitles(xmlText) {
+  const chunks = [];
+  if (typeof xmlText !== "string") return chunks;
+
+  // srv3 format: <p t="ms" d="ms">...<s>text</s>...</p>
+  const pRegex = /<p\s+t="(\d+)"\s+d="(\d+)"[^>]*>([\s\S]*?)<\/p>/g;
+  let pMatch;
+  while ((pMatch = pRegex.exec(xmlText)) !== null) {
+    const rawText = pMatch[3].replace(/<[^>]+>/g, "");
+    const text = decodeHtmlEntities(rawText).trim();
+    if (text) {
+      chunks.push({
+        offset: parseInt(pMatch[1], 10),
+        duration: Math.max(parseInt(pMatch[2], 10), 500),
+        text,
+      });
+    }
+  }
+  if (chunks.length > 0) return chunks;
+
+  // Classic format: <text start="sec" dur="sec">text</text>
+  const textRegex = /<text\s+start="([\d.]+)"\s+dur="([\d.]+)"[^>]*>([\s\S]*?)<\/text>/g;
+  let tMatch;
+  while ((tMatch = textRegex.exec(xmlText)) !== null) {
+    const text = decodeHtmlEntities(tMatch[3].replace(/<[^>]+>/g, "")).trim();
+    if (text) {
+      chunks.push({
+        offset: Math.round(parseFloat(tMatch[1]) * 1000),
+        duration: Math.round(parseFloat(tMatch[2]) * 1000),
+        text,
+      });
+    }
+  }
+  return chunks;
+}
+
+/**
  * Convert transcript chunks into compliant SRT format with sequential numbering
  * and valid timestamps.
  */
@@ -82,6 +145,177 @@ function chunksToSrt(chunks) {
 }
 
 /**
+ * Fetch OAuth access token if Google OAuth is connected.
+ * Handles automatic token refresh if token is expired.
+ */
+async function getOAuthAccessToken() {
+  try {
+    const authClient = getAuthenticatedClient();
+    if (!authClient) return null;
+    const tokenRes = await authClient.getAccessToken();
+    return tokenRes?.token || (typeof tokenRes === "string" ? tokenRes : null);
+  } catch (err) {
+    console.warn("[Captions] Could not obtain OAuth access token:", err.message);
+    return null;
+  }
+}
+
+const CLIENT_PROFILES = [
+  {
+    name: "android",
+    clientName: "ANDROID",
+    clientVersion: "20.10.38",
+    clientNameHeader: "3",
+    userAgent: "com.google.android.youtube/20.10.38 (Linux; U; Android 14)",
+  },
+  {
+    name: "ios",
+    clientName: "IOS",
+    clientVersion: "20.10.4",
+    clientNameHeader: "5",
+    userAgent: "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)",
+    context: {
+      deviceMake: "Apple",
+      deviceModel: "iPhone16,2",
+      platform: "MOBILE",
+      osName: "iOS",
+      osVersion: "18.3.2.22D82",
+    },
+  },
+  {
+    name: "android_vr",
+    clientName: "ANDROID_VR",
+    clientVersion: "1.62.20",
+    clientNameHeader: "28",
+    userAgent: "com.google.android.apps.youtube.vr.oculus/1.62.20 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
+    context: {
+      deviceMake: "Oculus",
+      deviceModel: "Quest 3",
+      platform: "MOBILE",
+      osName: "Android",
+      osVersion: "12L",
+      androidSdkVersion: 32,
+    },
+  },
+  {
+    name: "mweb",
+    clientName: "MWEB",
+    clientVersion: "2.20251209.01.00",
+    clientNameHeader: "2",
+    userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+    context: {
+      platform: "MOBILE",
+      osName: "iOS",
+      osVersion: "17.5.1",
+    },
+  },
+];
+
+/**
+ * Fetch subtitle chunks directly from YouTube InnerTube player endpoint.
+ * Supports passing Google OAuth 2.0 Bearer token to bypass datacenter LOGIN_REQUIRED.
+ */
+async function fetchInnerTubeCaptions(videoId, authToken = null) {
+  const failures = [];
+
+  for (const client of CLIENT_PROFILES) {
+    const endpoints = [
+      "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
+      "https://youtubei.googleapis.com/youtubei/v1/player?prettyPrint=false",
+    ];
+
+    for (const endpoint of endpoints) {
+      try {
+        const body = {
+          context: {
+            client: {
+              clientName: client.clientName,
+              clientVersion: client.clientVersion,
+              hl: "en",
+              gl: "US",
+              ...(client.context || {}),
+            },
+            user: { lockedSafetyMode: false },
+            request: { useSsl: true },
+          },
+          videoId,
+          contentCheckOk: true,
+          racyCheckOk: true,
+        };
+
+        const headers = {
+          "Content-Type": "application/json",
+          "User-Agent": client.userAgent,
+          "X-YouTube-Client-Name": client.clientNameHeader,
+          "X-YouTube-Client-Version": client.clientVersion,
+          Origin: "https://www.youtube.com",
+        };
+        if (authToken) {
+          headers["Authorization"] = `Bearer ${authToken}`;
+        }
+
+        const res = await axios.post(endpoint, body, { headers, timeout: 10000 });
+        const playability = res.data?.playabilityStatus?.status;
+        if (playability && playability !== "OK") {
+          const reason = res.data?.playabilityStatus?.reason || "";
+          failures.push(`${client.name}: ${playability}${reason ? ` - ${reason}` : ""}`);
+          continue;
+        }
+
+        const tracks = res.data?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+        if (!tracks || tracks.length === 0) {
+          failures.push(`${client.name}: OK but no caption tracks`);
+          continue;
+        }
+
+        const track =
+          tracks.find((t) => t.vssId === ".en") ||
+          tracks.find((t) => t.vssId === "a.en") ||
+          tracks.find((t) => t.languageCode === "en") ||
+          tracks.find((t) => t.vssId?.includes("en")) ||
+          tracks.find((t) => t.languageCode?.startsWith("en")) ||
+          tracks[0];
+
+        // 1. Try json3
+        try {
+          const jsonUrl = track.baseUrl.replace(/&fmt=[^&]+/, "") + "&fmt=json3";
+          const jsonRes = await axios.get(jsonUrl, {
+            headers: { "User-Agent": client.userAgent },
+            timeout: 10000,
+          });
+          const chunks = parseJson3Subtitles(jsonRes.data);
+          if (chunks && chunks.length > 0) {
+            return { chunks, client: client.name };
+          }
+        } catch (jsonErr) {}
+
+        // 2. Fall back to XML (srv3 / classic)
+        try {
+          const xmlRes = await axios.get(track.baseUrl, {
+            headers: { "User-Agent": client.userAgent },
+            timeout: 10000,
+          });
+          const chunks = parseXmlSubtitles(xmlRes.data);
+          if (chunks && chunks.length > 0) {
+            return { chunks, client: client.name };
+          }
+        } catch (xmlErr) {
+          failures.push(`${client.name}: timedtext fetch error: ${xmlErr.message}`);
+        }
+      } catch (err) {
+        const status = err.response?.status;
+        const msg = err.response?.data?.error?.message || err.message;
+        failures.push(`${client.name}: ${status ? status + " " : ""}${msg}`);
+      }
+    }
+  }
+
+  const err = new Error(`InnerTube extraction failed: ${failures.join("; ")}`);
+  err.failures = failures;
+  throw err;
+}
+
+/**
  * 1. Caption Retrieval: Bypass official API restriction to fetch auto-generated/public captions.
  * Reconstructs chunks into compliant SRT.
  */
@@ -92,15 +326,49 @@ async function fetchRawCaptionsAsSrt(videoId) {
 
   let chunks = null;
   let lastError = null;
+  let sawLoginRequired = false;
 
-  // Primary: youtube-transcript with English preference
-  try {
-    chunks = await YoutubeTranscript.fetchTranscript(videoId, { lang: "en" });
-  } catch (err) {
-    lastError = err;
+  // Step 1: Attempt direct InnerTube with OAuth token (if available)
+  const authToken = await getOAuthAccessToken();
+  if (authToken) {
+    try {
+      const res = await fetchInnerTubeCaptions(videoId, authToken);
+      if (res && res.chunks && res.chunks.length > 0) {
+        chunks = res.chunks;
+      }
+    } catch (err) {
+      lastError = err;
+      if (err.message && err.message.includes("LOGIN_REQUIRED")) {
+        sawLoginRequired = true;
+      }
+    }
   }
 
-  // Fallback 1: youtube-transcript without language filter (e.g. autodetect)
+  // Step 2: Attempt InnerTube unauthenticated (or if OAuth was not connected or failed)
+  if (!chunks || chunks.length === 0) {
+    try {
+      const res = await fetchInnerTubeCaptions(videoId, null);
+      if (res && res.chunks && res.chunks.length > 0) {
+        chunks = res.chunks;
+      }
+    } catch (err) {
+      lastError = err;
+      if (err.message && err.message.includes("LOGIN_REQUIRED")) {
+        sawLoginRequired = true;
+      }
+    }
+  }
+
+  // Fallback 1: youtube-transcript with English preference
+  if (!chunks || chunks.length === 0) {
+    try {
+      chunks = await YoutubeTranscript.fetchTranscript(videoId, { lang: "en" });
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  // Fallback 2: youtube-transcript without language filter
   if (!chunks || chunks.length === 0) {
     try {
       chunks = await YoutubeTranscript.fetchTranscript(videoId);
@@ -109,7 +377,7 @@ async function fetchRawCaptionsAsSrt(videoId) {
     }
   }
 
-  // Fallback 2: youtube-caption-extractor
+  // Fallback 3: youtube-caption-extractor
   if ((!chunks || chunks.length === 0) && getSubtitlesFallback) {
     try {
       const subs = await getSubtitlesFallback({ videoID: videoId, lang: "en" });
@@ -118,11 +386,27 @@ async function fetchRawCaptionsAsSrt(videoId) {
       }
     } catch (err) {
       lastError = err;
+      if (err.message && err.message.includes("LOGIN_REQUIRED")) {
+        sawLoginRequired = true;
+      }
     }
   }
 
   if (!chunks || chunks.length === 0) {
     const errorMsg = lastError ? lastError.message : "No captions found";
+
+    if (sawLoginRequired || errorMsg.includes("LOGIN_REQUIRED")) {
+      if (isOAuthConnected()) {
+        throw new Error(
+          "YouTube returned LOGIN_REQUIRED for this video. Please reconnect Google OAuth in Admin Settings with an account that has manager/owner access to the channel."
+        );
+      } else {
+        throw new Error(
+          "YouTube requires authentication to retrieve captions on this server (LOGIN_REQUIRED). Please connect Google OAuth in Admin Settings."
+        );
+      }
+    }
+
     if (
       errorMsg.includes("Could not find transcript") ||
       errorMsg.includes("Transcript is disabled") ||
