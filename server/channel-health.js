@@ -138,7 +138,7 @@ function batchOverrideVideoCategories(updates) {
 
 // 4. Video Catalog Query for Easy Search & Re-categorization (50 items/page, Long-Form Only)
 function getVideoCatalog({ page = 1, limit = 50, search = "", category = "" }) {
-  let where = "WHERE 1=1";
+  let where = "WHERE (privacy_status IS NULL OR privacy_status = 'public')";
   const params = [];
 
   if (search && search.trim()) {
@@ -176,7 +176,7 @@ async function bulkReclassifyLibrary() {
   const categoryNames = categories.map((c) => c.name);
   const categoryDescriptions = categories.map((c) => `- "${c.name}": ${c.description || ""}`).join("\n");
 
-  const videos = db.prepare("SELECT youtube_id, title, description, duration, content_type, category_source FROM videos WHERE category_source != 'manual'").all();
+  const videos = db.prepare("SELECT youtube_id, title, description, duration, content_type, category_source FROM videos WHERE (privacy_status IS NULL OR privacy_status = 'public') AND category_source != 'manual'").all();
   if (!videos || videos.length === 0) {
     return { reclassified: 0, total: 0, message: "No non-manual videos to reclassify." };
   }
@@ -302,7 +302,7 @@ function calcPctChange(curr, prev) {
 // 7. Get Channel Health Report using Live YouTube Studio Analytics API (Excluding < 4 min Shorts)
 async function getChannelHealthReport(periodDays = 28) {
   const categories = getCategories();
-  const allVideos = db.prepare("SELECT * FROM videos ORDER BY view_count DESC, published_at DESC").all();
+  const allVideos = db.prepare("SELECT * FROM videos WHERE (privacy_status IS NULL OR privacy_status = 'public') ORDER BY view_count DESC, published_at DESC").all();
   
   // EXCLUDE SHORTS (< 4 minutes / 240 seconds)
   const longFormVideos = allVideos.filter((v) => parseDurationSec(v.duration) >= 240);

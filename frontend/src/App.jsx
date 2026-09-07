@@ -14,11 +14,13 @@ import {
   Menu,
   X,
   Layers,
+  FileText,
 } from "lucide-react";
 import PlanChecklist from "./PlanChecklist";
 import ArticleGenerator from "./ArticleGenerator";
 import FathomNews from "./FathomNews";
 import VideoAudit from "./VideoAudit";
+import Transcripts from "./Transcripts";
 import ChannelHealth from "./ChannelHealth";
 import CompetitorComparison from "./CompetitorComparison";
 import AdminSettings from "./AdminSettings";
@@ -30,6 +32,7 @@ export default function App() {
   });
   const [isLoadingUser, setIsLoadingUser] = useState(true);
   const [selectedAuditId, setSelectedAuditId] = useState(null);
+  const [selectedTranscriptVideoId, setSelectedTranscriptVideoId] = useState(null);
 
   // Navigation dropdown states for responsive/grouped layout
   const [openDropdown, setOpenDropdown] = useState(null); // 'content' | 'analytics' | null
@@ -80,6 +83,11 @@ export default function App() {
     handleModuleSwitch("audit");
   };
 
+  const handleSelectVideoForTranscript = (youtubeId) => {
+    setSelectedTranscriptVideoId(youtubeId);
+    handleModuleSwitch("transcripts");
+  };
+
   const handleLogout = async () => {
     try {
       await fetch("/logout", { method: "POST", credentials: "same-origin" });
@@ -99,7 +107,8 @@ export default function App() {
   }
 
   const isContentActive = activeModule === "article" || activeModule === "fathom";
-  const isAnalyticsActive = activeModule === "channel" || activeModule === "audit" || activeModule === "comparison";
+  const isVideoAuditActive = activeModule === "audit" || activeModule === "transcripts";
+  const isAnalyticsActive = activeModule === "channel" || activeModule === "comparison";
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-cyan-500 selection:text-slate-950">
@@ -116,6 +125,9 @@ export default function App() {
             </span>
             <span className="hidden lg:inline-block text-[10px] uppercase font-bold tracking-widest px-2 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-slate-300">
               Command Center
+            </span>
+            <span className="hidden sm:inline-block text-[10px] font-mono font-bold tracking-wider px-2 py-0.5 rounded-full bg-cyan-950/70 border border-cyan-500/30 text-cyan-400">
+              v2.1.0
             </span>
           </div>
         </div>
@@ -201,7 +213,70 @@ export default function App() {
           {/* Divider */}
           <div className="h-4 w-px bg-slate-800 mx-0.5" />
 
-          {/* 3. Analytics & Intelligence Group */}
+          {/* 3. Video Audits Dropdown / Group */}
+          <div className="relative">
+            <button
+              onClick={() => setOpenDropdown(openDropdown === "videoAudits" ? null : "videoAudits")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                isVideoAuditActive
+                  ? "bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 shadow-md shadow-cyan-500/20"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+              }`}
+            >
+              {activeModule === "transcripts" ? (
+                <FileText className="w-3.5 h-3.5" />
+              ) : (
+                <BarChart3 className="w-3.5 h-3.5" />
+              )}
+              <span>
+                {activeModule === "transcripts"
+                  ? "Transcripts"
+                  : activeModule === "audit"
+                  ? "Video Audit"
+                  : "Video Audits"}
+              </span>
+              <ChevronDown className={`w-3 h-3 transition-transform ${openDropdown === "videoAudits" ? "rotate-180" : ""}`} />
+            </button>
+
+            {openDropdown === "videoAudits" && (
+              <div className="absolute left-0 mt-2 w-64 rounded-2xl bg-slate-900 border border-slate-700/80 shadow-2xl p-2 z-50 flex flex-col gap-1 backdrop-blur-xl">
+                <button
+                  onClick={() => handleModuleSwitch("audit")}
+                  className={`flex items-center gap-2.5 w-full text-left px-3 py-2.5 rounded-xl text-xs font-bold transition-all ${
+                    activeModule === "audit"
+                      ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/30"
+                      : "text-slate-300 hover:bg-slate-800/80 hover:text-white"
+                  }`}
+                >
+                  <BarChart3 className="w-4 h-4 text-cyan-400 shrink-0" />
+                  <div>
+                    <div>Video Audit</div>
+                    <div className="text-[10px] font-normal text-slate-400">Deep-dive video scores & checks</div>
+                  </div>
+                </button>
+
+                <button
+                  onClick={() => handleModuleSwitch("transcripts")}
+                  className={`flex items-center gap-2.5 w-full text-left px-3 py-2.5 rounded-xl text-xs font-bold transition-all ${
+                    activeModule === "transcripts"
+                      ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/30"
+                      : "text-slate-300 hover:bg-slate-800/80 hover:text-white"
+                  }`}
+                >
+                  <FileText className="w-4 h-4 text-cyan-400 shrink-0" />
+                  <div>
+                    <div>Transcripts</div>
+                    <div className="text-[10px] font-normal text-slate-400">EV vocabulary cleaner & title generator</div>
+                  </div>
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Divider */}
+          <div className="h-4 w-px bg-slate-800 mx-0.5" />
+
+          {/* 4. Analytics & Intelligence Group */}
           <div className="relative">
             <button
               onClick={() => setOpenDropdown(openDropdown === "analytics" ? null : "analytics")}
@@ -211,9 +286,7 @@ export default function App() {
                   : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
               }`}
             >
-              {activeModule === "audit" ? (
-                <BarChart3 className="w-3.5 h-3.5" />
-              ) : activeModule === "comparison" ? (
+              {activeModule === "comparison" ? (
                 <Users className="w-3.5 h-3.5" />
               ) : (
                 <Activity className="w-3.5 h-3.5" />
@@ -221,8 +294,6 @@ export default function App() {
               <span>
                 {activeModule === "channel"
                   ? "Channel Health"
-                  : activeModule === "audit"
-                  ? "Video Audit"
                   : activeModule === "comparison"
                   ? "Competitors"
                   : "Analytics"}
@@ -248,21 +319,6 @@ export default function App() {
                 </button>
 
                 <button
-                  onClick={() => handleModuleSwitch("audit")}
-                  className={`flex items-center gap-2.5 w-full text-left px-3 py-2.5 rounded-xl text-xs font-bold transition-all ${
-                    activeModule === "audit"
-                      ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/30"
-                      : "text-slate-300 hover:bg-slate-800/80 hover:text-white"
-                  }`}
-                >
-                  <BarChart3 className="w-4 h-4 text-cyan-400 shrink-0" />
-                  <div>
-                    <div>Video Audit</div>
-                    <div className="text-[10px] font-normal text-slate-400">Deep-dive video scores</div>
-                  </div>
-                </button>
-
-                <button
                   onClick={() => handleModuleSwitch("comparison")}
                   className={`flex items-center gap-2.5 w-full text-left px-3 py-2.5 rounded-xl text-xs font-bold transition-all ${
                     activeModule === "comparison"
@@ -283,7 +339,7 @@ export default function App() {
           {/* Divider */}
           <div className="h-4 w-px bg-slate-800 mx-0.5" />
 
-          {/* 4. Admin */}
+          {/* 5. Admin */}
           <button
             onClick={() => handleModuleSwitch("admin")}
             className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
@@ -369,6 +425,34 @@ export default function App() {
           </button>
 
           <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 px-2 pt-2">
+            Video Audits & Transcripts
+          </div>
+
+          <button
+            onClick={() => handleModuleSwitch("audit")}
+            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-bold text-left ${
+              activeModule === "audit"
+                ? "bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950"
+                : "text-slate-300 hover:bg-slate-800"
+            }`}
+          >
+            <BarChart3 className="w-4 h-4" />
+            <span>Video Audit</span>
+          </button>
+
+          <button
+            onClick={() => handleModuleSwitch("transcripts")}
+            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-bold text-left ${
+              activeModule === "transcripts"
+                ? "bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950"
+                : "text-slate-300 hover:bg-slate-800"
+            }`}
+          >
+            <FileText className="w-4 h-4" />
+            <span>Transcripts</span>
+          </button>
+
+          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 px-2 pt-2">
             Analytics & Management
           </div>
 
@@ -382,18 +466,6 @@ export default function App() {
           >
             <Activity className="w-4 h-4" />
             <span>Channel Health</span>
-          </button>
-
-          <button
-            onClick={() => handleModuleSwitch("audit")}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-bold text-left ${
-              activeModule === "audit"
-                ? "bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950"
-                : "text-slate-300 hover:bg-slate-800"
-            }`}
-          >
-            <BarChart3 className="w-4 h-4" />
-            <span>Video Audit</span>
           </button>
 
           <button
@@ -445,6 +517,14 @@ export default function App() {
             currentUser={currentUser}
             initialVideoId={selectedAuditId}
             onClearInitialVideoId={() => setSelectedAuditId(null)}
+            onSelectVideoForTranscript={handleSelectVideoForTranscript}
+          />
+        )}
+        {activeModule === "transcripts" && (
+          <Transcripts
+            currentUser={currentUser}
+            initialVideoId={selectedTranscriptVideoId}
+            onClearInitialVideoId={() => setSelectedTranscriptVideoId(null)}
           />
         )}
         {activeModule === "channel" && (

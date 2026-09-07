@@ -20,9 +20,10 @@ import {
   DollarSign,
   Layers,
   ChevronRight,
+  FileText,
 } from "lucide-react";
 
-export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitle, initialAudit, onAuditUpdated }) {
+export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitle, initialAudit, onAuditUpdated, onSelectVideoForTranscript }) {
   const [audit, setAudit] = useState(initialAudit || null);
   const [loading, setLoading] = useState(!initialAudit);
   const [refreshing, setRefreshing] = useState(false);
@@ -131,6 +132,20 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
               <RefreshCw className={`w-3.5 h-3.5 text-cyan-400 ${refreshing ? "animate-spin" : ""}`} />
               <span>{refreshing ? "Re-evaluating…" : "Refresh Report"}</span>
             </button>
+
+            {onSelectVideoForTranscript && (
+              <button
+                onClick={() => {
+                  onClose();
+                  onSelectVideoForTranscript(youtubeId);
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 text-xs font-semibold border border-cyan-500/30 transition-all shadow-sm"
+                title="Upload and clean subtitles with EV terminology"
+              >
+                <FileText className="w-3.5 h-3.5 text-cyan-400" />
+                <span>Upload Transcript</span>
+              </button>
+            )}
 
             <a
               href={`https://www.youtube.com/watch?v=${youtubeId}`}

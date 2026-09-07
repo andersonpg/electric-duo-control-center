@@ -15,6 +15,7 @@ export default function ArticleGenerator({ currentUser }) {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
+  const [privacyTab, setPrivacyTab] = useState("public"); // 'public' | 'unlisted'
 
   const [isSyncing, setIsSyncing] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -31,7 +32,7 @@ export default function ArticleGenerator({ currentUser }) {
     fetchVideos();
     fetchTemplates();
     fetchSettings();
-  }, [searchQuery, statusFilter, categoryFilter]);
+  }, [searchQuery, statusFilter, categoryFilter, privacyTab]);
 
   const fetchVideos = async () => {
     try {
@@ -39,6 +40,7 @@ export default function ArticleGenerator({ currentUser }) {
       if (searchQuery) params.append("search", searchQuery);
       if (statusFilter !== "all") params.append("status", statusFilter);
       if (categoryFilter !== "all") params.append("contentType", categoryFilter);
+      params.append("privacy", privacyTab);
 
       const res = await fetch(`/api/videos?${params.toString()}`, { credentials: "same-origin" });
       if (res.status === 401) {
@@ -257,6 +259,8 @@ export default function ArticleGenerator({ currentUser }) {
           setStatusFilter={setStatusFilter}
           categoryFilter={categoryFilter}
           setCategoryFilter={setCategoryFilter}
+          privacyTab={privacyTab}
+          setPrivacyTab={setPrivacyTab}
           onUpdateVideo={handleUpdateVideo}
           onProcessSelected={handleProcessSelected}
           onResetSelected={handleResetSelected}

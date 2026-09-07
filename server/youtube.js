@@ -239,14 +239,15 @@ async function syncCatalogViaYouTubeApi(mode = "delta") {
   const uploadsPlaylistId = await getUploadsPlaylistId(channelId);
 
   const insertVideoStmt = db.prepare(`
-    INSERT INTO videos (youtube_id, title, description, published_at, thumbnail_url, duration)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO videos (youtube_id, title, description, published_at, thumbnail_url, duration, privacy_status)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(youtube_id) DO UPDATE SET
       title = excluded.title,
       description = excluded.description,
       thumbnail_url = excluded.thumbnail_url,
       published_at = excluded.published_at,
       duration = excluded.duration,
+      privacy_status = excluded.privacy_status,
       last_synced_at = CURRENT_TIMESTAMP
   `);
 
@@ -295,8 +296,8 @@ async function syncCatalogViaYouTubeApi(mode = "delta") {
       const vId = item.contentDetails.videoId;
       const privacy = privacyMap[vId] || item.status?.privacyStatus || "public";
 
-      // If video is unlisted or private, DO NOT insert it into the public catalog
-      if (privacy !== "public") {
+      // If video is strictly private, do not insert or keep in catalog
+      if (privacy === "private") {
         const existed = checkExistsStmt.get(vId);
         if (existed) {
           deleteVideoAndRelated(vId);
@@ -304,6 +305,8 @@ async function syncCatalogViaYouTubeApi(mode = "delta") {
         }
         continue;
       }
+
+      const privacyStatus = privacy === "unlisted" ? "unlisted" : "public";
 
       const snippet = item.snippet;
       const title = snippet.title;
@@ -314,7 +317,7 @@ async function syncCatalogViaYouTubeApi(mode = "delta") {
 
       const exists = checkExistsStmt.get(vId);
 
-      insertVideoStmt.run(vId, title, description, publishedAt, thumbnailUrl, duration);
+      insertVideoStmt.run(vId, title, description, publishedAt, thumbnailUrl, duration, privacyStatus);
 
       if (!exists) {
         newCount++;
@@ -492,13 +495,14 @@ async function syncRealChannelVideosScraper(mode = "delta") {
   const allVideoIds = Array.from(videoIds);
 
   const insertVideoStmt = db.prepare(`
-    INSERT INTO videos (youtube_id, title, description, published_at, thumbnail_url, duration, content_type)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO videos (youtube_id, title, description, published_at, thumbnail_url, duration, content_type, privacy_status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'public')
     ON CONFLICT(youtube_id) DO UPDATE SET
       title = excluded.title,
       description = excluded.description,
       thumbnail_url = excluded.thumbnail_url,
       published_at = COALESCE(excluded.published_at, videos.published_at),
+      privacy_status = COALESCE(videos.privacy_status, 'public'),
       last_synced_at = CURRENT_TIMESTAMP
   `);
 
@@ -597,12 +601,16 @@ async function purgeNonPublicVideos() {
       (res.data.items || []).forEach((item) => {
         foundMap[item.id] = item;
         const privacy = item.status?.privacyStatus;
-        if (privacy !== "public") {
+        if (privacy === "private") {
           removedVideos.push({
             id: item.id,
             title: item.snippet?.title || "Unknown Title",
-            reason: `Unlisted or Private (${privacy})`,
+            reason: `Private (${privacy})`,
           });
+        } else if (privacy === "unlisted") {
+          db.prepare("UPDATE videos SET privacy_status = 'unlisted' WHERE youtube_id = ?").run(item.id);
+        } else {
+          db.prepare("UPDATE videos SET privacy_status = 'public' WHERE youtube_id = ?").run(item.id);
         }
       });
 
@@ -633,22 +641,24 @@ async function purgeNonPublicVideos() {
       for (const video of allVideos) {
         if (!publicSet.has(video.youtube_id)) {
           // Verify with oEmbed to confirm if accessible or not
-          let isPublic = false;
+          let isAccessible = false;
           try {
             const oRes = await axios.get(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${video.youtube_id}&format=json`, { timeout: 4000 });
             if (oRes.status === 200) {
-              // Note: Unlisted videos can occasionally respond to oembed if knowing exact link, but they are absent from public channel
-              // The user specified: "This Command Center should only be considering published videos."
+              isAccessible = true;
+              db.prepare("UPDATE videos SET privacy_status = 'unlisted' WHERE youtube_id = ?").run(video.youtube_id);
             }
           } catch (oeErr) {
             // Not accessible publicly
           }
 
-          removedVideos.push({
-            id: video.youtube_id,
-            title: video.title,
-            reason: "Not found on public channel (Unlisted, Private, or Deleted)",
-          });
+          if (!isAccessible) {
+            removedVideos.push({
+              id: video.youtube_id,
+              title: video.title,
+              reason: "Not accessible on YouTube (Private or Deleted)",
+            });
+          }
         }
       }
     } catch (scrapeErr) {
@@ -676,10 +686,96 @@ async function purgeNonPublicVideos() {
   };
 }
 
+function extractYoutubeId(input) {
+  if (!input) return null;
+  const str = input.trim();
+  const match = str.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=|shorts\/))([\w-]{11})/);
+  if (match && match[1]) return match[1];
+  if (/^[\w-]{11}$/.test(str)) return str;
+  return null;
+}
+
+async function addManualVideo(urlOrId, forcedPrivacy = "unlisted") {
+  const vId = extractYoutubeId(urlOrId);
+  if (!vId) {
+    throw new Error("Invalid YouTube URL or Video ID provided.");
+  }
+
+  let title = "Unlisted Video (" + vId + ")";
+  let description = "";
+  let publishedAt = new Date().toISOString();
+  let thumbnailUrl = `https://img.youtube.com/vi/${vId}/maxresdefault.jpg`;
+  let duration = "PT15M00S";
+  let privacyStatus = forcedPrivacy;
+
+  // 1. Try YouTube Data API if client is available
+  try {
+    const youtube = getYoutubeClient();
+    const res = await youtube.videos.list({
+      part: "snippet,contentDetails,status",
+      id: vId,
+    });
+    const item = res.data?.items?.[0];
+    if (item) {
+      title = item.snippet?.title || title;
+      description = item.snippet?.description || "";
+      publishedAt = item.snippet?.publishedAt || publishedAt;
+      duration = item.contentDetails?.duration || duration;
+      const privacy = item.status?.privacyStatus;
+      if (privacy) {
+        privacyStatus = privacy;
+      }
+      if (item.snippet?.thumbnails?.maxres?.url) {
+        thumbnailUrl = item.snippet.thumbnails.maxres.url;
+      } else if (item.snippet?.thumbnails?.high?.url) {
+        thumbnailUrl = item.snippet.thumbnails.high.url;
+      }
+    }
+  } catch (apiErr) {
+    console.warn("YouTube API details fetch failed for manual add, trying fallback:", apiErr.message);
+    // 2. Fallback to oEmbed + scrape
+    try {
+      const oembedRes = await axios.get(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${vId}&format=json`, { timeout: 6000 });
+      if (oembedRes.data?.title) {
+        title = oembedRes.data.title;
+      }
+    } catch (e) {}
+
+    try {
+      const exactDuration = await fetchVideoDurationDirect(vId);
+      if (exactDuration) duration = exactDuration;
+    } catch (e) {}
+
+    try {
+      const exactDate = await fetchExactPublishDate(vId);
+      if (exactDate) publishedAt = exactDate;
+    } catch (e) {}
+  }
+
+  // Insert or update video
+  db.prepare(`
+    INSERT INTO videos (youtube_id, title, description, published_at, thumbnail_url, duration, privacy_status)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(youtube_id) DO UPDATE SET
+      title = excluded.title,
+      description = excluded.description,
+      thumbnail_url = excluded.thumbnail_url,
+      published_at = excluded.published_at,
+      duration = excluded.duration,
+      privacy_status = excluded.privacy_status,
+      last_synced_at = CURRENT_TIMESTAMP
+  `).run(vId, title, description, publishedAt, thumbnailUrl, duration, privacyStatus);
+
+  const saved = db.prepare("SELECT * FROM videos WHERE youtube_id = ?").get(vId);
+  return saved;
+}
+
 module.exports = {
   syncCatalog,
   purgeNonPublicVideos,
   syncAllVideoDurations,
+  addManualVideo,
+  extractYoutubeId,
   getYoutubeApiKey,
   getYoutubeChannelId,
   getYoutubeClient,

@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import AuditReportModal from "./AuditReportModal";
 
-export default function VideoAudit({ currentUser, initialVideoId, onClearInitialVideoId }) {
+export default function VideoAudit({ currentUser, initialVideoId, onClearInitialVideoId, onSelectVideoForTranscript }) {
   const [videos, setVideos] = useState([]);
   const [auditsSummary, setAuditsSummary] = useState({});
   const [searchQuery, setSearchQuery] = useState("");
@@ -58,7 +58,7 @@ export default function VideoAudit({ currentUser, initialVideoId, onClearInitial
     setLoading(true);
     try {
       const [videosRes, auditsRes] = await Promise.all([
-        fetch("/api/videos?status=all", { credentials: "same-origin" }),
+        fetch("/api/videos?status=all&privacy=public&excludeShorts=true", { credentials: "same-origin" }),
         fetch("/api/audits/summary", { credentials: "same-origin" }),
       ]);
 
@@ -94,8 +94,27 @@ export default function VideoAudit({ currentUser, initialVideoId, onClearInitial
     }));
   };
 
+  const isShortVideo = (v) => {
+    const titleLower = (v.title || "").toLowerCase();
+    if (titleLower.includes("#shorts") || titleLower.includes("shorts")) return true;
+    if (!v.duration) return false;
+    const match = v.duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+    if (match) {
+      const h = parseInt(match[1] || "0", 10);
+      const m = parseInt(match[2] || "0", 10);
+      const s = parseInt(match[3] || "0", 10);
+      const sec = h * 3600 + m * 60 + s;
+      if (sec < 240) return true;
+    }
+    return false;
+  };
+
   // Filtered list of videos
   const filteredVideos = videos.filter((v) => {
+    // Strictly exclude unlisted videos and Shorts (< 4 minutes)
+    if (v.privacy_status && v.privacy_status !== "public") return false;
+    if (isShortVideo(v)) return false;
+
     const matchesSearch =
       !searchQuery ||
       v.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -306,6 +325,7 @@ export default function VideoAudit({ currentUser, initialVideoId, onClearInitial
           youtubeId={selectedVideo.youtube_id}
           videoTitle={selectedVideo.title}
           onAuditUpdated={handleAuditUpdated}
+          onSelectVideoForTranscript={onSelectVideoForTranscript}
         />
       )}
     </div>

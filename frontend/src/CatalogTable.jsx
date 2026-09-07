@@ -11,6 +11,8 @@ export default function CatalogTable({
   setStatusFilter,
   categoryFilter,
   setCategoryFilter,
+  privacyTab = "public",
+  setPrivacyTab,
   onUpdateVideo,
   onResetVideo,
 }) {
@@ -34,6 +36,45 @@ export default function CatalogTable({
 
   return (
     <div className="flex flex-col gap-4">
+      {/* Privacy Status Scope Tabs */}
+      {setPrivacyTab && (
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <div className="flex items-center bg-slate-900/90 p-1 rounded-2xl border border-slate-800 shadow-inner gap-1">
+            <button
+              type="button"
+              onClick={() => setPrivacyTab("public")}
+              className={`px-4 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                privacyTab === "public"
+                  ? "bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 shadow-md shadow-cyan-500/20"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+              }`}
+            >
+              Public Catalog
+            </button>
+            <button
+              type="button"
+              onClick={() => setPrivacyTab("unlisted")}
+              className={`px-4 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                privacyTab === "unlisted"
+                  ? "bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 shadow-md shadow-cyan-500/20"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+              }`}
+            >
+              <span>Unlisted Videos</span>
+              <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-slate-800 text-slate-300 font-mono">
+                Separate
+              </span>
+            </button>
+          </div>
+
+          {privacyTab === "unlisted" && (
+            <div className="text-xs text-amber-400/90 bg-amber-950/40 border border-amber-500/30 px-3 py-1 rounded-xl">
+              Unlisted videos are kept separate and excluded from channel metrics & analytics.
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Search & Filter Header Bar */}
       <div className="bg-slate-900/80 p-4 rounded-2xl flex items-center justify-between flex-wrap gap-4 border border-slate-800">
         {/* Search Bar */}
@@ -142,7 +183,12 @@ export default function CatalogTable({
                           >
                             {video.title}
                           </a>
-                          <div className="flex items-center gap-2 text-[11px] text-slate-400 font-mono">
+                          <div className="flex items-center gap-2 text-[11px] text-slate-400 font-mono flex-wrap">
+                            {video.privacy_status === "unlisted" && (
+                              <span className="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 text-[9px] font-bold uppercase tracking-wider">
+                                Unlisted
+                              </span>
+                            )}
                             <span className="flex items-center gap-1">
                               <Calendar className="w-3 h-3 text-slate-500" />
                               {formatDate(video.published_at)}

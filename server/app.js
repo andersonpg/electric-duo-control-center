@@ -3,6 +3,7 @@
 require("dotenv").config();
 const path = require("path");
 const express = require("express");
+const fs = require("fs");
 const cookieParser = require("cookie-parser");
 const cors = require("cors");
 const axios = require("axios");
@@ -12,12 +13,17 @@ const content = require("./content");
 const periods = require("./periods");
 const auth = require("./auth");
 
-const { syncCatalog, purgeNonPublicVideos, syncAllVideoDurations } = require("./youtube");
-const { generateArticle } = require("./gemini");
+const { syncCatalog, purgeNonPublicVideos, syncAllVideoDurations, addManualVideo } = require("./youtube");
+const { generateArticle, getGeminiApiKey, callGeminiWithRetry } = require("./gemini");
 const { createWordPressDraft } = require("./wordpress");
 const { getOrRunAudit, getAuditsSummary } = require("./audit");
+const { GoogleGenAI } = require("@google/genai");
 const competitorComparison = require("./competitor-comparison");
 const fathomNewsRouter = require("./fathom-news");
+
+const { loadRules, fixSrt, srtToPlainText } = require("../fixTranscript");
+const { addTerm, listTerms, removeVariant } = require("../termList");
+const termsPath = path.join(__dirname, "..", "ev_terms.json");
 
 const app = express();
 app.use(cors());
@@ -131,6 +137,29 @@ function computeStreak(periodKeys) {
   return n;
 }
 
+app.get("/api/version", (req, res) => {
+  const pkg = require("../package.json");
+  res.json({
+    version: pkg.version || "2.1.0",
+    name: pkg.name,
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.get("/api/changelog", (req, res) => {
+  try {
+    const changelogPath = path.join(__dirname, "..", "CHANGELOG.md");
+    if (fs.existsSync(changelogPath)) {
+      const content = fs.readFileSync(changelogPath, "utf8");
+      res.type("text/markdown").send(content);
+    } else {
+      res.status(404).send("CHANGELOG.md not found");
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get("/api/state", auth.requireAuth(), (req, res) => {
   const periodKeys = periods.currentKeys();
   res.json({
@@ -213,10 +242,20 @@ app.post("/api/runrate", auth.requireAuth(), (req, res) => {
 // Videos Catalog
 app.get("/api/videos", auth.requireAuth(), (req, res) => {
   try {
-    const { search, status, contentType } = req.query;
+    const { search, status, contentType, privacy, excludeShorts } = req.query;
 
     let query = "SELECT * FROM videos WHERE 1=1";
     const params = [];
+
+    // Privacy filter
+    if (privacy === "unlisted") {
+      query += " AND privacy_status = 'unlisted'";
+    } else if (privacy === "all") {
+      // Include all videos (public and unlisted)
+    } else {
+      // Default: only public videos
+      query += " AND (privacy_status IS NULL OR privacy_status = 'public')";
+    }
 
     if (status && status !== "all") {
       query += " AND status = ?";
@@ -235,7 +274,25 @@ app.get("/api/videos", auth.requireAuth(), (req, res) => {
 
     query += " ORDER BY published_at DESC";
 
-    const videos = articleDb.prepare(query).all(...params);
+    let videos = articleDb.prepare(query).all(...params);
+
+    if (excludeShorts === "true" || excludeShorts === true) {
+      videos = videos.filter((v) => {
+        const titleLower = (v.title || "").toLowerCase();
+        if (titleLower.includes("#shorts") || titleLower.includes("shorts")) return false;
+        if (!v.duration) return true;
+        const match = v.duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+        if (match) {
+          const h = parseInt(match[1] || "0", 10);
+          const m = parseInt(match[2] || "0", 10);
+          const s = parseInt(match[3] || "0", 10);
+          const sec = h * 3600 + m * 60 + s;
+          if (sec < 240) return false;
+        }
+        return true;
+      });
+    }
+
     res.json(videos);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -313,6 +370,23 @@ const handlePurgeNonPublic = async (req, res) => {
 
 app.post("/api/catalog/purge-non-public", auth.requireAuth(), handlePurgeNonPublic);
 app.post("/api/admin/purge-non-public", auth.requireAuth(), handlePurgeNonPublic);
+
+// Manually Add Unlisted Video
+const handleAddUnlisted = async (req, res) => {
+  try {
+    const { urlOrId } = req.body || {};
+    if (!urlOrId || !urlOrId.trim()) {
+      return res.status(400).json({ error: "YouTube URL or Video ID is required." });
+    }
+    const video = await addManualVideo(urlOrId.trim(), "unlisted");
+    res.json({ success: true, video });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+app.post("/api/catalog/add-unlisted", auth.requireAuth(), handleAddUnlisted);
+app.post("/api/admin/add-unlisted", auth.requireAuth(), handleAddUnlisted);
 
 // Content Templates
 app.get("/api/templates", auth.requireAuth(), (req, res) => {
@@ -580,6 +654,291 @@ app.post("/api/audit/:youtubeId", auth.requireAuth(), async (req, res) => {
     const { youtubeId } = req.params;
     const audit = await getOrRunAudit(youtubeId, true);
     res.json(audit);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/* ---------------- Transcripts & EV Vocabulary endpoints ---------------- */
+
+// 1. Preview cleaned transcript & corrections summary without saving
+app.post("/api/transcripts/preview", auth.requireAuth(), (req, res) => {
+  try {
+    const { srtText, isVtt } = req.body || {};
+    if (!srtText || typeof srtText !== "string") {
+      return res.status(400).json({ error: "srtText is required." });
+    }
+    const termsData = JSON.parse(fs.readFileSync(termsPath, "utf8"));
+    const rules = loadRules(termsData);
+    const { output, log, summary } = fixSrt(srtText, rules, { isVtt: !!isVtt });
+    const plainText = srtToPlainText(output);
+    res.json({
+      raw_srt: srtText,
+      cleaned_srt: output,
+      plain_text: plainText,
+      summary,
+      log,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 2. Save transcript linked 1:1 to video
+app.post("/api/transcripts/:videoId", auth.requireAuth(), (req, res) => {
+  try {
+    const { videoId } = req.params;
+    const { raw_srt, cleaned_srt, plain_text } = req.body || {};
+    if (!raw_srt || !cleaned_srt) {
+      return res.status(400).json({ error: "raw_srt and cleaned_srt are required." });
+    }
+    const plainText = plain_text || srtToPlainText(cleaned_srt);
+
+    const stmt = articleDb.prepare(`
+      INSERT INTO transcripts (video_id, raw_srt, cleaned_srt, plain_text, updated_at)
+      VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(video_id) DO UPDATE SET
+        raw_srt = excluded.raw_srt,
+        cleaned_srt = excluded.cleaned_srt,
+        plain_text = excluded.plain_text,
+        updated_at = CURRENT_TIMESTAMP
+    `);
+    stmt.run(videoId, raw_srt, cleaned_srt, plainText);
+
+    // Also update videos.transcript for compatibility with Article Generator
+    articleDb.prepare("UPDATE videos SET transcript = ? WHERE youtube_id = ?").run(plainText, videoId);
+
+    const saved = articleDb.prepare("SELECT * FROM transcripts WHERE video_id = ?").get(videoId);
+    res.json({ success: true, transcript: saved });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 3. Get transcript for a video
+app.get("/api/transcripts/:videoId", auth.requireAuth(), (req, res) => {
+  try {
+    const { videoId } = req.params;
+    const transcript = articleDb.prepare("SELECT * FROM transcripts WHERE video_id = ?").get(videoId);
+    const video = articleDb.prepare("SELECT youtube_id, title, duration, thumbnail_url, working_title, privacy_status FROM videos WHERE youtube_id = ?").get(videoId);
+    if (!transcript) {
+      return res.status(404).json({ error: "Transcript not found for this video.", video: video || null });
+    }
+    res.json({ ...transcript, video });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 4. Download Cleaned SRT file
+app.get("/api/transcripts/:videoId/download", auth.requireAuth(), (req, res) => {
+  try {
+    const { videoId } = req.params;
+    const transcript = articleDb.prepare("SELECT cleaned_srt FROM transcripts WHERE video_id = ?").get(videoId);
+    if (!transcript || !transcript.cleaned_srt) {
+      return res.status(404).send("Transcript not found for video.");
+    }
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${videoId}-cleaned.srt"`);
+    res.send(transcript.cleaned_srt);
+  } catch (error) {
+    res.status(500).send("Error downloading transcript: " + error.message);
+  }
+});
+
+// 5. EV Terms Registry: list all terms
+app.get("/api/terms", auth.requireAuth(), (req, res) => {
+  try {
+    const rows = listTerms(termsPath);
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 6. EV Terms Registry: add term mapping
+app.post("/api/terms", auth.requireAuth(), (req, res) => {
+  try {
+    const category = req.body?.category;
+    const correct = req.body?.correct || req.body?.term;
+    const wrong = req.body?.wrong || req.body?.variant;
+    if (!category || !correct || !wrong) {
+      return res.status(400).json({ error: "category, correct, and wrong are required." });
+    }
+    const result = addTerm(termsPath, category.trim(), correct.trim(), wrong.trim());
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 7. EV Terms Registry: remove variant
+app.delete("/api/terms", auth.requireAuth(), (req, res) => {
+  try {
+    const category = req.body?.category;
+    const correct = req.body?.correct || req.body?.term;
+    const wrong = req.body?.wrong || req.body?.variant;
+    if (!category || !correct || !wrong) {
+      return res.status(400).json({ error: "category, correct, and wrong are required." });
+    }
+    const result = removeVariant(termsPath, category.trim(), correct.trim(), wrong.trim());
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/* ---------------- Title Prompt Settings & Gemini Generation ---------------- */
+
+// 1. Get Title Prompt Instructions
+app.get("/api/title-prompt-settings", auth.requireAuth(), (req, res) => {
+  try {
+    const row = articleDb.prepare("SELECT instructions, updated_at FROM title_prompt_settings WHERE id = 1").get();
+    res.json(row || { instructions: "", updated_at: null });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 2. Update Title Prompt Instructions
+app.put("/api/title-prompt-settings", auth.requireAuth(), (req, res) => {
+  try {
+    const { instructions } = req.body || {};
+    if (!instructions || typeof instructions !== "string") {
+      return res.status(400).json({ error: "Instructions text is required." });
+    }
+    articleDb.prepare(`
+      INSERT INTO title_prompt_settings (id, instructions, updated_at)
+      VALUES (1, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(id) DO UPDATE SET instructions = excluded.instructions, updated_at = CURRENT_TIMESTAMP
+    `).run(instructions);
+    const updated = articleDb.prepare("SELECT instructions, updated_at FROM title_prompt_settings WHERE id = 1").get();
+    res.json({ success: true, ...updated });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 3. Generate Gemini Title Suggestions (8 structured candidates)
+app.post("/api/videos/:videoId/generate-titles", auth.requireAuth(), async (req, res) => {
+  try {
+    const { videoId } = req.params;
+    const { context } = req.body || {};
+
+    const video = articleDb.prepare("SELECT * FROM videos WHERE youtube_id = ?").get(videoId);
+    if (!video) {
+      return res.status(404).json({ error: "Video not found in catalog." });
+    }
+
+    // Check for saved transcript
+    const transRow = articleDb.prepare("SELECT plain_text FROM transcripts WHERE video_id = ?").get(videoId);
+    const plainText = (transRow && transRow.plain_text) || video.transcript;
+    if (!plainText || plainText.trim().length < 20) {
+      return res.status(400).json({ error: "A saved transcript is required first before generating title ideas." });
+    }
+
+    // Retrieve title prompt instructions
+    const promptRow = articleDb.prepare("SELECT instructions FROM title_prompt_settings WHERE id = 1").get();
+    const systemPrompt = promptRow ? promptRow.instructions : "You are a YouTube title strategist for The Electric Duo.";
+
+    const apiKey = getGeminiApiKey();
+    if (!apiKey) {
+      return res.status(400).json({ error: "Gemini API Key is not configured." });
+    }
+
+    const ai = new GoogleGenAI({ apiKey });
+
+    let configuredModel = "gemini-3.8-flash";
+    try {
+      const row = articleDb.prepare("SELECT value FROM app_settings WHERE key = 'default_model'").get();
+      if (row && row.value) configuredModel = row.value;
+    } catch (e) {}
+
+    let userPrompt = `Video Title: "${video.title}"\n`;
+    if (context && context.trim()) {
+      userPrompt += `Creator Context & Highlights:\n${context.trim()}\n\n`;
+    }
+    userPrompt += `Cleaned Transcript:\n${plainText.slice(0, 45000)}\n\nGenerate exactly 8 high-CTR title suggestions adhering to all channel rules. Return them as a JSON array matching the required schema.`;
+
+    const requestOptions = {
+      model: configuredModel,
+      contents: userPrompt,
+      config: {
+        systemInstruction: systemPrompt,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              title: { type: "string", description: "The YouTube title candidate" },
+              charCount: { type: "integer", description: "Character count of the title" },
+              first40Preview: { type: "string", description: "First 40 characters truncated for mobile survival" },
+              emotion: {
+                type: "string",
+                enum: ["curiosity", "desire", "fear_negativity"],
+                description: "Primary emotional psychological driver"
+              },
+              rationale: { type: "string", description: "One sentence explaining why this works for this specific video" },
+              deliversOnPromise: {
+                type: "boolean",
+                description: "True if the video content actually backs up what the title implies"
+              }
+            },
+            required: ["title", "charCount", "first40Preview", "emotion", "rationale", "deliversOnPromise"]
+          }
+        }
+      }
+    };
+
+    const response = await callGeminiWithRetry(ai, requestOptions, 2);
+    let rawText = response.text || "";
+    rawText = rawText.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/, "").trim();
+
+    let candidates = [];
+    try {
+      candidates = JSON.parse(rawText);
+    } catch (parseErr) {
+      const match = rawText.match(/\[[\s\S]*\]/);
+      if (match) candidates = JSON.parse(match[0]);
+    }
+
+    if (!Array.isArray(candidates) || candidates.length === 0) {
+      throw new Error("Gemini AI failed to return valid title candidates. Response was: " + rawText.slice(0, 200));
+    }
+
+    // Ensure all 8 candidates are properly formatted
+    const formatted = candidates.slice(0, 8).map((c) => {
+      const title = (c.title || "").trim();
+      const charCount = typeof c.charCount === "number" ? c.charCount : title.length;
+      const first40Preview = c.first40Preview || title.slice(0, 40);
+      const emotion = ["curiosity", "desire", "fear_negativity"].includes(c.emotion) ? c.emotion : "curiosity";
+      const rationale = c.rationale || "";
+      const deliversOnPromise = typeof c.deliversOnPromise === "boolean" ? c.deliversOnPromise : true;
+      return {
+        title,
+        charCount,
+        first40Preview,
+        emotion,
+        rationale,
+        deliversOnPromise,
+      };
+    });
+
+    res.json({ success: true, candidates: formatted });
+  } catch (error) {
+    console.error("Gemini title generation error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 4. Save Selected Working Title to Video Record
+app.post("/api/videos/:videoId/working-title", auth.requireAuth(), (req, res) => {
+  try {
+    const { videoId } = req.params;
+    const { workingTitle } = req.body || {};
+    articleDb.prepare("UPDATE videos SET working_title = ? WHERE youtube_id = ?").run(workingTitle || null, videoId);
+    res.json({ success: true, videoId, working_title: workingTitle || null });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

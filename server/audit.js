@@ -450,7 +450,12 @@ async function getOrRunAudit(youtubeId, forceRefresh = false) {
 }
 
 function getAuditsSummary() {
-  const rows = db.prepare("SELECT youtube_id, health_score, updated_at FROM video_audits").all();
+  const rows = db.prepare(`
+    SELECT va.youtube_id, va.health_score, va.updated_at
+    FROM video_audits va
+    JOIN videos v ON va.youtube_id = v.youtube_id
+    WHERE (v.privacy_status IS NULL OR v.privacy_status = 'public')
+  `).all();
   const map = {};
   rows.forEach((r) => {
     map[r.youtube_id] = { healthScore: r.health_score, updatedAt: r.updated_at };

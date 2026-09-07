@@ -1,0 +1,460 @@
+{
+  "_comment": "Each entry: 'correct' is what you want in the output; 'wrong' lists what ASR actually produces. Matching is case-insensitive with word boundaries. Multi-word entries are applied before single-word ones automatically. Add to this file as you hear new errors -- it is the only file you should need to edit.",
+  "vehicles": [
+    {
+      "correct": "Mach-E",
+      "wrong": [
+        "maki",
+        "mach e",
+        "mock e",
+        "mocky",
+        "match e",
+        "mark e",
+        "mach ee",
+        "marquee"
+      ]
+    },
+    {
+      "correct": "Mustang Mach-E",
+      "wrong": [
+        "mustang maki",
+        "mustang mach e",
+        "mustang mock e"
+      ]
+    },
+    {
+      "correct": "Fathom",
+      "wrong": [
+        "fathum",
+        "fanthom",
+        "phantom truck"
+      ]
+    },
+    {
+      "correct": "Ford Fathom",
+      "wrong": [
+        "ford phantom",
+        "ford fathum"
+      ]
+    },
+    {
+      "correct": "Maverick",
+      "wrong": [
+        "maveric",
+        "maverik"
+      ]
+    },
+    {
+      "correct": "Ioniq",
+      "wrong": [
+        "ionic",
+        "ionique",
+        "i onic"
+      ]
+    },
+    {
+      "correct": "Aptera",
+      "wrong": [
+        "aptara",
+        "aptura",
+        "up terra",
+        "apterra"
+      ]
+    },
+    {
+      "correct": "Rivian",
+      "wrong": [
+        "revian",
+        "rivien",
+        "riviann"
+      ]
+    },
+    {
+      "correct": "Lucid",
+      "wrong": [
+        "lucyd"
+      ]
+    },
+    {
+      "correct": "Polestar",
+      "wrong": [
+        "pole star",
+        "polstar"
+      ]
+    },
+    {
+      "correct": "Solterra",
+      "wrong": [
+        "sol terra",
+        "soltera"
+      ]
+    },
+    {
+      "correct": "Uncharted",
+      "wrong": [
+        "un charted"
+      ]
+    },
+    {
+      "correct": "Equinox EV",
+      "wrong": [
+        "equinox e v",
+        "equinox ev ev"
+      ]
+    },
+    {
+      "correct": "EV9",
+      "wrong": [
+        "e v nine",
+        "ev nine"
+      ]
+    },
+    {
+      "correct": "R1T",
+      "wrong": [
+        "r one t",
+        "are one tea"
+      ]
+    },
+    {
+      "correct": "R1S",
+      "wrong": [
+        "r one s",
+        "are one ess"
+      ]
+    },
+    {
+      "correct": "Slate",
+      "wrong": [
+        "slait"
+      ]
+    },
+    {
+      "correct": "F-150 Lightning",
+      "wrong": []
+    }
+  ],
+  "charging": [
+    {
+      "correct": "NACS",
+      "wrong": [
+        "knacks",
+        "nacks",
+        "nax",
+        "n a c s",
+        "knax"
+      ]
+    },
+    {
+      "correct": "CCS",
+      "wrong": [
+        "c c s",
+        "see see ess"
+      ]
+    },
+    {
+      "correct": "CHAdeMO",
+      "wrong": [
+        "chademo",
+        "chad emo",
+        "chad e mo",
+        "shadow mo"
+      ]
+    },
+    {
+      "correct": "J1772",
+      "wrong": [
+        "j seventeen seventy two",
+        "j 1772",
+        "jay 1772"
+      ]
+    },
+    {
+      "correct": "Supercharger",
+      "wrong": [
+        "super charger"
+      ]
+    },
+    {
+      "correct": "Superchargers",
+      "wrong": [
+        "super chargers"
+      ]
+    },
+    {
+      "correct": "Electrify America",
+      "wrong": [
+        "electrified america",
+        "electrify american"
+      ]
+    },
+    {
+      "correct": "EVgo",
+      "wrong": [
+        "ev go",
+        "e v go"
+      ]
+    },
+    {
+      "correct": "IONNA",
+      "wrong": [
+        "iona",
+        "ionna",
+        "i onna",
+        "yona"
+      ]
+    },
+    {
+      "correct": "Level 2",
+      "wrong": [
+        "level two",
+        "l two"
+      ]
+    },
+    {
+      "correct": "DC fast charging",
+      "wrong": [
+        "d c fast charging",
+        "dcfc charging"
+      ]
+    },
+    {
+      "correct": "DCFC",
+      "wrong": [
+        "d c f c"
+      ]
+    },
+    {
+      "correct": "V2H",
+      "wrong": [
+        "v two h",
+        "vee two h",
+        "v 2 h"
+      ]
+    },
+    {
+      "correct": "V2L",
+      "wrong": [
+        "v two l",
+        "v 2 l"
+      ]
+    },
+    {
+      "correct": "V2X",
+      "wrong": [
+        "v two x",
+        "v 2 x"
+      ]
+    },
+    {
+      "correct": "bidirectional",
+      "wrong": [
+        "bi directional",
+        "by directional"
+      ]
+    },
+    {
+      "correct": "state of charge",
+      "wrong": [
+        "state-of-charge"
+      ]
+    }
+  ],
+  "tech": [
+    {
+      "correct": "BlueCruise",
+      "wrong": [
+        "blue cruise",
+        "blucruise"
+      ]
+    },
+    {
+      "correct": "Super Cruise",
+      "wrong": [
+        "supercruise"
+      ]
+    },
+    {
+      "correct": "FordPass",
+      "wrong": [
+        "ford pass"
+      ]
+    },
+    {
+      "correct": "solid-state",
+      "wrong": [
+        "solid state"
+      ]
+    },
+    {
+      "correct": "Donut Lab",
+      "wrong": [
+        "doughnut lab",
+        "donut labs"
+      ]
+    },
+    {
+      "correct": "in-wheel motor",
+      "wrong": [
+        "in wheel motor"
+      ]
+    },
+    {
+      "correct": "LFP",
+      "wrong": [
+        "l f p"
+      ]
+    },
+    {
+      "correct": "NMC",
+      "wrong": [
+        "n m c"
+      ]
+    },
+    {
+      "correct": "OTA",
+      "wrong": [
+        "o t a",
+        "over the air update"
+      ]
+    },
+    {
+      "correct": "regen",
+      "wrong": [
+        "re gen"
+      ]
+    },
+    {
+      "correct": "one-pedal driving",
+      "wrong": [
+        "one pedal driving"
+      ]
+    },
+    {
+      "correct": "frunk",
+      "wrong": [
+        "front trunk",
+        "frunck"
+      ]
+    }
+  ],
+  "units": [
+    {
+      "correct": "kWh",
+      "wrong": [
+        "kilowatt hours",
+        "kilowatt hour",
+        "kilowatt-hours",
+        "kilo watt hours",
+        "kilowatt ours"
+      ]
+    },
+    {
+      "correct": "kW",
+      "wrong": [
+        "kilowatts",
+        "kilowatt",
+        "kilo watts"
+      ]
+    },
+    {
+      "correct": "MWh",
+      "wrong": [
+        "megawatt hours",
+        "megawatt hour"
+      ]
+    },
+    {
+      "correct": "MW",
+      "wrong": [
+        "megawatts",
+        "megawatt"
+      ]
+    },
+    {
+      "correct": "mi/kWh",
+      "wrong": [
+        "miles per kilowatt hour"
+      ]
+    },
+    {
+      "correct": "mph",
+      "wrong": [
+        "miles per hour"
+      ]
+    },
+    {
+      "correct": "hp",
+      "wrong": [
+        "horsepower"
+      ]
+    },
+    {
+      "correct": "lb-ft",
+      "wrong": [
+        "pound feet",
+        "foot pounds",
+        "pound-feet"
+      ]
+    },
+    {
+      "correct": "amps",
+      "wrong": [
+        "amperes"
+      ]
+    },
+    {
+      "correct": "240V",
+      "wrong": [
+        "two forty volt",
+        "240 volt",
+        "two hundred forty volt"
+      ]
+    },
+    {
+      "correct": "120V",
+      "wrong": [
+        "one twenty volt",
+        "120 volt"
+      ]
+    }
+  ],
+  "people_places": [
+    {
+      "correct": "Liv",
+      "wrong": [
+        "live leigh",
+        "liv lee",
+        "olive"
+      ]
+    },
+    {
+      "correct": "Jim Farley",
+      "wrong": [
+        "jim farlie",
+        "jim farly"
+      ]
+    },
+    {
+      "correct": "Schenectady",
+      "wrong": [
+        "schenectedy",
+        "skanectady",
+        "ska nectady"
+      ]
+    },
+    {
+      "correct": "Salem",
+      "wrong": [
+        "saylem"
+      ]
+    },
+    {
+      "correct": "The Electric Duo",
+      "wrong": [
+        "the electric duel",
+        "the electric dual"
+      ]
+    }
+  ]
+}

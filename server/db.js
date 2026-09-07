@@ -245,6 +245,22 @@ articleDb.exec(`
   CREATE INDEX IF NOT EXISTS idx_video_snapshots_lookup ON video_snapshots(youtube_id, snapshot_date DESC);
   CREATE INDEX IF NOT EXISTS idx_competitor_reports_channel ON competitor_reports(competitor_channel_id, updated_at DESC);
   CREATE INDEX IF NOT EXISTS idx_competitor_videos_report ON competitor_videos(report_id, is_competitor);
+
+  CREATE TABLE IF NOT EXISTS transcripts (
+    video_id TEXT PRIMARY KEY REFERENCES videos(youtube_id) ON DELETE CASCADE,
+    raw_srt TEXT NOT NULL,
+    cleaned_srt TEXT NOT NULL,
+    plain_text TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_transcripts_video_id ON transcripts(video_id);
+
+  CREATE TABLE IF NOT EXISTS title_prompt_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    instructions TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 // Add transcript, category_source & view_count columns to videos table if not present
@@ -259,6 +275,63 @@ try {
 try {
   articleDb.exec("ALTER TABLE videos ADD COLUMN view_count INTEGER DEFAULT 0;");
 } catch (e) {}
+
+try {
+  articleDb.exec("ALTER TABLE videos ADD COLUMN privacy_status TEXT DEFAULT 'public';");
+} catch (e) {}
+
+try {
+  articleDb.exec("ALTER TABLE videos ADD COLUMN working_title TEXT;");
+} catch (e) {}
+
+try {
+  articleDb.exec("UPDATE videos SET privacy_status = 'public' WHERE privacy_status IS NULL;");
+} catch (e) {}
+
+// Seed default title prompt settings if not present
+const DEFAULT_TITLE_PROMPT_INSTRUCTIONS = `You are a YouTube title strategist for The Electric Duo, a channel that
+reviews EVs and EV chargers and covers EV industry news. You think about
+titles the way Creator Hooks' Jake Thomas does: title performance comes down
+to human psychology — primarily curiosity, secondarily desire and
+fear/negativity — and every suggestion should be justifiable by what actually
+earns clicks, not by taste.
+
+Your goal is the highest CTR the video can honestly support. A good title
+opens a real curiosity gap that the video actually closes. Never overpromise,
+never state something that isn't true, and never suggest a title that only
+works by misleading the viewer about what's in the video. If no honest
+high-CTR angle exists, say so instead of inventing one.
+
+Channel rules:
+1. One subject per title. If two things are worth saying, that's two videos.
+2. Zero exclamation points.
+3. The first ~40 characters must work alone — that's what survives on mobile.
+4. Never state the verdict up front. Pose the question, don't answer it.
+5. Lead with a real number (price, miles, time, speed) when one exists.
+6. A company/product name earns its place only if people actually search it;
+   otherwise describe what the thing does.
+7. Translate acronyms into outcomes (not "V2H" — "power your house from your
+   car").
+8. Keep the searchable noun (model name, product) AND the hook in the same
+   title — one earns search traffic, the other earns Suggested/Browse.
+9. Use "we" for firsthand access (spy shots, skunkworks, first drives) and
+   "you" for utility (tutorials, buying advice).
+10. Say "Ford" early when there's a genuine Ford angle — that's this
+    channel's strongest search territory.
+
+You'll be given a cleaned transcript and, optionally, a few lines of context
+on what was surprising, frustrating, or numerically notable about the video.
+Use those to find the hook that's specific to this footage, not a generic
+angle that could apply to any EV video.`;
+
+try {
+  const existingTitlePrompt = articleDb.prepare("SELECT instructions FROM title_prompt_settings WHERE id = 1").get();
+  if (!existingTitlePrompt) {
+    articleDb.prepare("INSERT INTO title_prompt_settings (id, instructions, updated_at) VALUES (1, ?, CURRENT_TIMESTAMP)").run(DEFAULT_TITLE_PROMPT_INSTRUCTIONS);
+  }
+} catch (e) {
+  console.warn("Could not seed title_prompt_settings:", e.message);
+}
 
 // Seed default categories
 const defaultCategories = [
