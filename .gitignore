@@ -4,3 +4,4 @@ frontend/dist/
 data/
 .env
 scratch/
+.DS_Store
