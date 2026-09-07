@@ -124,9 +124,13 @@ export default function AdminSettings({ currentUser }) {
 
   // Title Prompt Settings State
   const [promptInstructions, setPromptInstructions] = useState("");
+  const [thumbnailInstructions, setThumbnailInstructions] = useState("");
   const [loadingPrompt, setLoadingPrompt] = useState(false);
   const [isSavingPrompt, setIsSavingPrompt] = useState(false);
   const [promptLastUpdated, setPromptLastUpdated] = useState("");
+
+  // Gemini Connection Test Modal
+  const [geminiSuccessModal, setGeminiSuccessModal] = useState({ isOpen: false, model: "", latency: 0, message: "" });
 
   // Feedback Toast
   const [toast, setToast] = useState(null);
@@ -263,6 +267,14 @@ export default function AdminSettings({ currentUser }) {
           ...prev,
           [service]: { ok: true, message: data.message },
         }));
+        if (service === "gemini") {
+          setGeminiSuccessModal({
+            isOpen: true,
+            model: data.model || "gemini-3.8-flash",
+            latency: data.latency,
+            message: data.message,
+          });
+        }
       } else {
         setTestResults((prev) => ({
           ...prev,
@@ -624,6 +636,7 @@ export default function AdminSettings({ currentUser }) {
       if (res.ok) {
         const data = await res.json();
         setPromptInstructions(data.instructions || "");
+        setThumbnailInstructions(data.thumbnail_instructions || "");
         setPromptLastUpdated(data.updated_at || "");
       }
     } catch (e) {
@@ -721,7 +734,10 @@ export default function AdminSettings({ currentUser }) {
         method: "PUT",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ instructions: promptInstructions }),
+        body: JSON.stringify({
+          instructions: promptInstructions,
+          thumbnail_instructions: thumbnailInstructions,
+        }),
       });
       const data = await res.json();
       if (res.ok && data.success) {
@@ -977,7 +993,7 @@ export default function AdminSettings({ currentUser }) {
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 text-xs font-semibold border border-slate-700 transition-colors"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${testingService === "gemini" ? "animate-spin" : ""}`} />
-                <span>Test Gemini 3.7 API</span>
+                <span>Test Gemini API</span>
               </button>
             </div>
 
@@ -1474,8 +1490,31 @@ export default function AdminSettings({ currentUser }) {
                 <span className="text-xs text-slate-500 font-mono">
                   {promptInstructions.length} characters · {promptInstructions.split(/\s+/).filter(Boolean).length} words
                 </span>
+              </div>
 
+              {/* Thumbnail Words Suggestion Section */}
+              <div className="pt-4 border-t border-slate-800 flex flex-col gap-2">
                 <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 uppercase tracking-widest">
+                    Thumbnail Words Suggestion
+                  </span>
+                  <h4 className="text-sm font-bold text-white">Thumbnail Words & Phrases Instructions</h4>
+                </div>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Instructions given to Gemini for generating 2–4 word punchy thumbnail text alongside each suggested title.
+                </p>
+                <textarea
+                  value={thumbnailInstructions}
+                  onChange={(e) => setThumbnailInstructions(e.target.value)}
+                  rows={8}
+                  className="w-full p-4 rounded-2xl bg-slate-950 border border-slate-800 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors leading-relaxed selection:bg-cyan-500 selection:text-slate-950"
+                  placeholder="Enter thumbnail words instructions..."
+                />
+                <span className="text-xs text-slate-500 font-mono">
+                  {thumbnailInstructions.length} characters · {thumbnailInstructions.split(/\s+/).filter(Boolean).length} words
+                </span>
+              </div>
+                <div className="flex items-center justify-end gap-2">
                   <button
                     type="submit"
                     disabled={isSavingPrompt}
@@ -1485,7 +1524,6 @@ export default function AdminSettings({ currentUser }) {
                     <span>{isSavingPrompt ? "Saving Instructions…" : "Save Prompt Instructions"}</span>
                   </button>
                 </div>
-              </div>
             </form>
           </div>
         </div>
@@ -2081,6 +2119,53 @@ export default function AdminSettings({ currentUser }) {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Gemini Test Success Modal */}
+      {geminiSuccessModal.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-fade-in">
+          <div className="relative w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl p-6 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+                <CheckCircle2 className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">Gemini API Connected</h3>
+                <p className="text-xs text-slate-400">Google Gemini Studio API test succeeded</p>
+              </div>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-3">
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400">Gemini Model Version:</span>
+                <span className="font-mono font-bold text-cyan-400 px-2.5 py-1 rounded-lg bg-cyan-950/60 border border-cyan-500/30 text-xs">
+                  {geminiSuccessModal.model}
+                </span>
+              </div>
+              {geminiSuccessModal.latency > 0 && (
+                <div className="flex justify-between items-center text-xs">
+                  <span className="text-slate-400">Response Latency:</span>
+                  <span className="font-mono text-slate-300">{geminiSuccessModal.latency}ms</span>
+                </div>
+              )}
+              {geminiSuccessModal.message && (
+                <div className="text-[11px] text-slate-400 pt-1 border-t border-slate-900 leading-relaxed font-mono">
+                  {geminiSuccessModal.message}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end pt-1">
+              <button
+                type="button"
+                onClick={() => setGeminiSuccessModal({ ...geminiSuccessModal, isOpen: false })}
+                className="px-5 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 text-xs font-bold transition-all shadow-md shadow-cyan-500/20"
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}

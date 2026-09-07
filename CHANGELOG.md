@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.2.5] - 2026-09-07
+
+### Added
+- **Click-to-Scroll in Transcripts Diff**: Clicking on any word or subtitle block in "Original Raw Input" smoothly scrolls the "Cleaned Output" pane to the matching location and highlights the corresponding segment.
+- **4-Option Correction Dialogue**: Upgraded term editing to a dedicated 4-option correction dialog (`Cancel`, `Fix one time`, `Fix all in this video`, `Add to Term List`), allowing users to make instant inline corrections or permanently expand the deterministic EV dictionary.
+- **Thumbnail Titles Manual Editing & Match Tracking**:
+  - Added in-place title editing and persistence in the video details header (`PATCH /api/videos/:videoId/title`).
+  - Added live tracking comparison with YouTube (`Matches YouTube` vs `Differs from YouTube`).
+  - Provided "Copy Title" clipboard action and a user-confirmed "Push to YouTube" action with confirmation modal (`POST /api/videos/:videoId/title/push`) using Google OAuth2 and YouTube Data API v3.
+- **Stored Title Suggestions & Re-generation**:
+  - Automatically persists generated title suggestions to the SQLite database (`videos.title_suggestions`).
+  - Stored suggestions load automatically when selecting a video, with the button toggling between "Generate Title Ideas" and "Regenerate Title Ideas".
+- **Thumbnail Words Suggestion**:
+  - Gemini now generates punchy 2–4 word phrases for video thumbnails alongside each title recommendation.
+  - Added an editable instructions section for Thumbnail Words in Admin AI settings (`title_prompt_settings.thumbnail_instructions`).
+- **Gemini API Test Pop-up**: Updated the Admin test button to "Test Gemini API" with a modal displaying the exact active Gemini model version and latency upon successful connection.
+
 ## [2.2.4] - 2026-09-07
 
 ### Fixed

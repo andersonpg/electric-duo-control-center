@@ -288,12 +288,17 @@ addColumnIfNotExists(articleDb, "videos", "view_count", "INTEGER DEFAULT 0");
 addColumnIfNotExists(articleDb, "videos", "privacy_status", "TEXT DEFAULT 'public'");
 addColumnIfNotExists(articleDb, "videos", "working_title", "TEXT");
 addColumnIfNotExists(articleDb, "videos", "caption_status", "TEXT DEFAULT 'none'");
+addColumnIfNotExists(articleDb, "videos", "title_suggestions", "TEXT");
+addColumnIfNotExists(articleDb, "videos", "youtube_title", "TEXT");
+
+addColumnIfNotExists(articleDb, "title_prompt_settings", "thumbnail_instructions", "TEXT");
 
 addColumnIfNotExists(articleDb, "transcripts", "status", "TEXT DEFAULT 'unfixed'");
 addColumnIfNotExists(articleDb, "transcripts", "youtube_caption_id", "TEXT");
 addColumnIfNotExists(articleDb, "transcripts", "uploaded_at", "DATETIME");
 
 articleDb.exec("UPDATE videos SET privacy_status = 'public' WHERE privacy_status IS NULL;");
+articleDb.exec("UPDATE videos SET youtube_title = title WHERE youtube_title IS NULL;");
 
 try {
   articleDb.exec(`
@@ -357,10 +362,20 @@ on what was surprising, frustrating, or numerically notable about the video.
 Use those to find the hook that's specific to this footage, not a generic
 angle that could apply to any EV video.`;
 
+const DEFAULT_THUMBNAIL_PROMPT_INSTRUCTIONS = `You are a thumbnail strategist for The Electric Duo. For each title candidate, suggest 1-3 ultra-punchy thumbnail words or a short phrase (2 to 4 words maximum) designed to appear in large, bold text on the thumbnail image.
+
+Thumbnail Rules:
+1. 2 to 4 words maximum — readable at small size on mobile devices.
+2. Complement, never repeat: do not just repeat words from the title. Create tension, curiosity, or an unanswered question that works together with the title.
+3. Emotional triggers: Provoke an immediate reaction (e.g. "BIGGEST MISTAKE", "THEY LIED", "740 MILES LATER", "DON'T BUY THIS", "FINALLY FIXED?").
+4. High contrast and immediate comprehension at a glance.`;
+
 try {
-  const existingTitlePrompt = articleDb.prepare("SELECT instructions FROM title_prompt_settings WHERE id = 1").get();
+  const existingTitlePrompt = articleDb.prepare("SELECT instructions, thumbnail_instructions FROM title_prompt_settings WHERE id = 1").get();
   if (!existingTitlePrompt) {
-    articleDb.prepare("INSERT INTO title_prompt_settings (id, instructions, updated_at) VALUES (1, ?, CURRENT_TIMESTAMP)").run(DEFAULT_TITLE_PROMPT_INSTRUCTIONS);
+    articleDb.prepare("INSERT INTO title_prompt_settings (id, instructions, thumbnail_instructions, updated_at) VALUES (1, ?, ?, CURRENT_TIMESTAMP)").run(DEFAULT_TITLE_PROMPT_INSTRUCTIONS, DEFAULT_THUMBNAIL_PROMPT_INSTRUCTIONS);
+  } else if (!existingTitlePrompt.thumbnail_instructions || !existingTitlePrompt.thumbnail_instructions.trim()) {
+    articleDb.prepare("UPDATE title_prompt_settings SET thumbnail_instructions = ? WHERE id = 1").run(DEFAULT_THUMBNAIL_PROMPT_INSTRUCTIONS);
   }
 } catch (e) {
   console.warn("Could not seed title_prompt_settings:", e.message);

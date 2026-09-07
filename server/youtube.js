@@ -820,6 +820,43 @@ async function addManualVideo(urlOrId, forcedPrivacy = "unlisted") {
   return saved;
 }
 
+async function updateYoutubeVideoTitle(videoId, newTitle) {
+  const oauthClient = getAuthenticatedClient();
+  if (!oauthClient) {
+    throw new Error("Google OAuth is not connected. Please connect in Admin Settings.");
+  }
+  const youtube = google.youtube({ version: "v3", auth: oauthClient });
+
+  const videoRes = await youtube.videos.list({
+    part: ["snippet"],
+    id: [videoId],
+  });
+
+  const item = videoRes.data.items?.[0];
+  if (!item || !item.snippet) {
+    throw new Error(`Video ${videoId} not found on YouTube.`);
+  }
+
+  const existingSnippet = item.snippet;
+
+  const updateRes = await youtube.videos.update({
+    part: ["snippet"],
+    requestBody: {
+      id: videoId,
+      snippet: {
+        title: newTitle,
+        categoryId: existingSnippet.categoryId,
+        description: existingSnippet.description || "",
+        tags: existingSnippet.tags || [],
+        defaultLanguage: existingSnippet.defaultLanguage,
+        defaultAudioLanguage: existingSnippet.defaultAudioLanguage,
+      },
+    },
+  });
+
+  return updateRes.data;
+}
+
 module.exports = {
   syncCatalog,
   purgeNonPublicVideos,
@@ -830,4 +867,6 @@ module.exports = {
   getYoutubeChannelId,
   getYoutubeClient,
   fetchExactPublishDate,
+  updateYoutubeVideoTitle,
 };
+

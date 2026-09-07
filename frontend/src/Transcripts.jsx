@@ -27,7 +27,50 @@ import {
   DownloadCloud,
   UploadCloud,
   AlertCircle,
+  Pencil,
 } from "lucide-react";
+
+function escapeRegExp(string) {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function parseSrtChunks(srtText) {
+  if (!srtText || typeof srtText !== "string") return [];
+  const normalized = srtText.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+  if (!normalized) return [];
+
+  const rawBlocks = normalized.split(/\n\n+/);
+  const chunks = [];
+
+  for (let i = 0; i < rawBlocks.length; i++) {
+    const lines = rawBlocks[i].trim().split("\n");
+    if (!lines.length) continue;
+
+    let seq = i + 1;
+    let timestamp = "";
+    let textLines = [];
+
+    if (/^\d+$/.test(lines[0]?.trim()) && lines[1] && lines[1].includes("-->")) {
+      seq = parseInt(lines[0].trim(), 10) || (i + 1);
+      timestamp = lines[1].trim();
+      textLines = lines.slice(2);
+    } else if (lines[0] && lines[0].includes("-->")) {
+      timestamp = lines[0].trim();
+      textLines = lines.slice(1);
+    } else {
+      textLines = lines;
+    }
+
+    chunks.push({
+      seq,
+      timestamp,
+      text: textLines.join(" "),
+      raw: rawBlocks[i],
+    });
+  }
+
+  return chunks;
+}
 
 export default function Transcripts({ currentUser, initialVideoId, onClearInitialVideoId }) {
   const [videos, setVideos] = useState([]);
@@ -47,12 +90,22 @@ export default function Transcripts({ currentUser, initialVideoId, onClearInitia
   const [isPreviewing, setIsPreviewing] = useState(false);
   const [isSavingTranscript, setIsSavingTranscript] = useState(false);
   const [activeDiffTab, setActiveDiffTab] = useState("side-by-side"); // 'side-by-side' | 'cleaned' | 'raw'
+  const [activeChunk, setActiveChunk] = useState(null);
+  const cleanedChunkRefs = useRef({});
 
-  // Manual Term Correction Dialog state
-  const [isTermModalOpen, setIsTermModalOpen] = useState(false);
-  const [termCategory, setTermCategory] = useState("vehicles");
-  const [termCorrect, setTermCorrect] = useState("");
-  const [termWrong, setTermWrong] = useState("");
+  // Title Editing & YouTube Push state
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [editTitleText, setEditTitleText] = useState("");
+  const [isSavingTitle, setIsSavingTitle] = useState(false);
+  const [isPushingTitle, setIsPushingTitle] = useState(false);
+  const [isPushConfirmOpen, setIsPushConfirmOpen] = useState(false);
+
+  // Correction Dialogue state (4 options: Cancel, Fix one time, Fix all in this video, Add to Term List)
+  const [isCorrectionOpen, setIsCorrectionOpen] = useState(false);
+  const [correctionCategory, setCorrectionCategory] = useState("vehicles");
+  const [correctionCorrect, setCorrectionCorrect] = useState("");
+  const [correctionWrong, setCorrectionWrong] = useState("");
+  const [correctionChunkSeq, setCorrectionChunkSeq] = useState(null);
   const [isAddingTerm, setIsAddingTerm] = useState(false);
 
   // Terms Registry Full Manager Dialog state
@@ -65,6 +118,7 @@ export default function Transcripts({ currentUser, initialVideoId, onClearInitia
   // Title Prompt Settings Dialog state
   const [isPromptSettingsOpen, setIsPromptSettingsOpen] = useState(false);
   const [promptInstructions, setPromptInstructions] = useState("");
+  const [thumbnailInstructions, setThumbnailInstructions] = useState("");
   const [promptUpdatedAt, setPromptUpdatedAt] = useState("");
   const [isSavingPrompt, setIsSavingPrompt] = useState(false);
 
@@ -123,9 +177,33 @@ export default function Transcripts({ currentUser, initialVideoId, onClearInitia
     setPreviewData(null);
     setRawInput("");
     setIsUploadingNew(false);
-    setTitleCandidates([]);
     setCreatorContext("");
     setLoadingTranscript(true);
+    setActiveChunk(null);
+    setIsEditingTitle(false);
+    setEditTitleText(video.working_title || video.title || "");
+
+    // Load stored title suggestions
+    if (video.title_suggestions) {
+      try {
+        const parsed = typeof video.title_suggestions === "string"
+          ? JSON.parse(video.title_suggestions)
+          : video.title_suggestions;
+        setTitleCandidates(Array.isArray(parsed) ? parsed : []);
+      } catch (e) {
+        setTitleCandidates([]);
+      }
+    } else {
+      setTitleCandidates([]);
+      fetch(`/api/videos/${video.youtube_id}/title-suggestions`, { credentials: "same-origin" })
+        .then((r) => r.json())
+        .then((d) => {
+          if (d.ok && Array.isArray(d.suggestions) && d.suggestions.length > 0) {
+            setTitleCandidates(d.suggestions);
+          }
+        })
+        .catch(() => {});
+    }
 
     try {
       const res = await fetch(`/api/transcripts/${video.youtube_id}`, { credentials: "same-origin" });
@@ -297,17 +375,90 @@ export default function Transcripts({ currentUser, initialVideoId, onClearInitia
     }
   };
 
-  // Handle manual term addition
-  const handleOpenAddTermModal = (selectedWord = "") => {
-    setTermWrong(selectedWord.trim());
-    setTermCorrect(selectedWord.trim());
-    setTermCategory("vehicles");
-    setIsTermModalOpen(true);
+  // Click to scroll to matching cleaned chunk
+  const scrollToCleanedChunk = (seq) => {
+    setActiveChunk(seq);
+    const targetEl = cleanedChunkRefs.current[seq] || document.getElementById(`cleaned-chunk-${seq}`);
+    if (targetEl) {
+      targetEl.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
   };
 
-  const handleAddTermSubmit = async (e) => {
-    e.preventDefault();
-    if (!termCategory || !termCorrect.trim() || !termWrong.trim()) {
+  const handleWordClick = (word, seq) => {
+    scrollToCleanedChunk(seq);
+  };
+
+  // Open 4-option Correction Dialog
+  const handleOpenCorrectionModal = (selectedWord = "", chunkSeq = null) => {
+    setCorrectionWrong(selectedWord.trim());
+    setCorrectionCorrect(selectedWord.trim());
+    setCorrectionCategory("vehicles");
+    setCorrectionChunkSeq(chunkSeq);
+    setIsCorrectionOpen(true);
+  };
+
+  // Option 2: Fix one time
+  const handleFixOneTime = () => {
+    if (!previewData || !correctionWrong.trim() || !correctionCorrect.trim()) return;
+
+    let newCleanedSrt = previewData.cleaned_srt;
+    if (correctionChunkSeq) {
+      const chunks = parseSrtChunks(previewData.cleaned_srt);
+      const chunkIdx = chunks.findIndex((c) => c.seq === correctionChunkSeq);
+      if (chunkIdx !== -1) {
+        const wrongRegex = new RegExp(escapeRegExp(correctionWrong.trim()), "i");
+        chunks[chunkIdx].text = chunks[chunkIdx].text.replace(wrongRegex, correctionCorrect.trim());
+        newCleanedSrt = chunks.map((c) => `${c.seq}\n${c.timestamp}\n${c.text}`).join("\n\n") + "\n";
+      } else {
+        const wrongRegex = new RegExp(escapeRegExp(correctionWrong.trim()), "i");
+        newCleanedSrt = newCleanedSrt.replace(wrongRegex, correctionCorrect.trim());
+      }
+    } else {
+      const wrongRegex = new RegExp(escapeRegExp(correctionWrong.trim()), "i");
+      newCleanedSrt = newCleanedSrt.replace(wrongRegex, correctionCorrect.trim());
+    }
+
+    const wrongRegex = new RegExp(escapeRegExp(correctionWrong.trim()), "i");
+    const newPlainText = (previewData.plain_text || "").replace(wrongRegex, correctionCorrect.trim());
+
+    setPreviewData({
+      ...previewData,
+      cleaned_srt: newCleanedSrt,
+      plain_text: newPlainText,
+    });
+    setIsCorrectionOpen(false);
+    showToast(`Fixed 1 occurrence: "${correctionWrong}" → "${correctionCorrect}"`, "success");
+  };
+
+  // Option 3: Fix all in this video
+  const handleFixAllInVideo = () => {
+    if (!previewData || !correctionWrong.trim() || !correctionCorrect.trim()) return;
+    const wrongRegex = new RegExp(escapeRegExp(correctionWrong.trim()), "gi");
+    const newCleanedSrt = previewData.cleaned_srt.replace(wrongRegex, correctionCorrect.trim());
+    const newPlainText = (previewData.plain_text || "").replace(wrongRegex, correctionCorrect.trim());
+
+    setPreviewData({
+      ...previewData,
+      cleaned_srt: newCleanedSrt,
+      plain_text: newPlainText,
+      summary: [
+        ...(previewData.summary || []),
+        {
+          before: correctionWrong.trim(),
+          after: correctionCorrect.trim(),
+          count: 1,
+          category: correctionCategory,
+        },
+      ],
+    });
+    setIsCorrectionOpen(false);
+    showToast(`Fixed all occurrences of "${correctionWrong}" in this video!`, "success");
+  };
+
+  // Option 4: Add to Term List (writes to ev_terms.json and re-cleans)
+  const handleCorrectionAddToTermList = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    if (!correctionCategory || !correctionCorrect.trim() || !correctionWrong.trim()) {
       showToast("Please fill in category, correct spelling, and mis-transcription.", "error");
       return;
     }
@@ -319,9 +470,9 @@ export default function Transcripts({ currentUser, initialVideoId, onClearInitia
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
         body: JSON.stringify({
-          category: termCategory.trim(),
-          correct: termCorrect.trim(),
-          wrong: termWrong.trim(),
+          category: correctionCategory.trim(),
+          correct: correctionCorrect.trim(),
+          wrong: correctionWrong.trim(),
         }),
       });
 
@@ -329,8 +480,8 @@ export default function Transcripts({ currentUser, initialVideoId, onClearInitia
       if (!res.ok) throw new Error(data.error || "Failed to add term");
 
       if (data.added) {
-        showToast(`Added "${termWrong}" → "${termCorrect}" to EV Terms!`, "success");
-        setIsTermModalOpen(false);
+        showToast(`Added "${correctionWrong}" → "${correctionCorrect}" to EV Terms!`, "success");
+        setIsCorrectionOpen(false);
         if (rawInput || (previewData && previewData.raw_srt)) {
           runPreview(rawInput || previewData.raw_srt);
         }
@@ -341,6 +492,77 @@ export default function Transcripts({ currentUser, initialVideoId, onClearInitia
       showToast(err.message, "error");
     } finally {
       setIsAddingTerm(false);
+    }
+  };
+
+  // Manual Title Editing & YouTube Push handlers
+  const handleSaveLocalTitle = async () => {
+    if (!selectedVideo || !editTitleText.trim()) return;
+    setIsSavingTitle(true);
+    try {
+      const res = await fetch(`/api/videos/${selectedVideo.youtube_id}/title`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ title: editTitleText.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to save title");
+
+      const updatedTitle = editTitleText.trim();
+      setSelectedVideo((prev) => ({
+        ...prev,
+        working_title: updatedTitle,
+      }));
+      setVideos((prev) =>
+        prev.map((v) =>
+          v.youtube_id === selectedVideo.youtube_id ? { ...v, working_title: updatedTitle } : v
+        )
+      );
+      setIsEditingTitle(false);
+      showToast("Local title saved successfully!", "success");
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      setIsSavingTitle(false);
+    }
+  };
+
+  const handlePushTitleToYoutube = async () => {
+    if (!selectedVideo) return;
+    const titleToPush = (selectedVideo.working_title || selectedVideo.title || "").trim();
+    if (!titleToPush) return;
+
+    setIsPushingTitle(true);
+    try {
+      const res = await fetch(`/api/videos/${selectedVideo.youtube_id}/title/push`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ title: titleToPush }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to push title to YouTube");
+
+      setSelectedVideo((prev) => ({
+        ...prev,
+        title: titleToPush,
+        youtube_title: titleToPush,
+        working_title: titleToPush,
+      }));
+      setVideos((prev) =>
+        prev.map((v) =>
+          v.youtube_id === selectedVideo.youtube_id
+            ? { ...v, title: titleToPush, youtube_title: titleToPush, working_title: titleToPush }
+            : v
+        )
+      );
+      setIsPushConfirmOpen(false);
+      showToast("Successfully updated title on YouTube!", "success");
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      setIsPushingTitle(false);
     }
   };
 
@@ -392,6 +614,7 @@ export default function Transcripts({ currentUser, initialVideoId, onClearInitia
       if (res.ok) {
         const data = await res.json();
         setPromptInstructions(data.instructions || "");
+        setThumbnailInstructions(data.thumbnail_instructions || "");
         setPromptUpdatedAt(data.updated_at || "");
       }
     } catch (e) {}
@@ -409,7 +632,10 @@ export default function Transcripts({ currentUser, initialVideoId, onClearInitia
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify({ instructions: promptInstructions }),
+        body: JSON.stringify({
+          instructions: promptInstructions,
+          thumbnail_instructions: thumbnailInstructions,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Save failed");
@@ -440,7 +666,19 @@ export default function Transcripts({ currentUser, initialVideoId, onClearInitia
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Title generation failed");
 
-      setTitleCandidates(data.candidates || []);
+      const candidates = data.candidates || [];
+      setTitleCandidates(candidates);
+      setSelectedVideo((prev) => ({
+        ...prev,
+        title_suggestions: JSON.stringify(candidates),
+      }));
+      setVideos((prev) =>
+        prev.map((v) =>
+          v.youtube_id === selectedVideo.youtube_id
+            ? { ...v, title_suggestions: JSON.stringify(candidates) }
+            : v
+        )
+      );
       showToast("Generated 8 high-CTR title candidates!", "success");
     } catch (err) {
       showToast(err.message, "error");
@@ -675,46 +913,149 @@ export default function Transcripts({ currentUser, initialVideoId, onClearInitia
           ) : (
             <div className="space-y-6">
               {/* Video Header Card */}
-              <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-5 flex items-center justify-between flex-wrap gap-4 shadow-xl backdrop-blur-xl">
-                <div className="flex items-center gap-4 min-w-0">
-                  <img
-                    src={selectedVideo.thumbnail_url || `https://img.youtube.com/vi/${selectedVideo.youtube_id}/mqdefault.jpg`}
-                    alt={selectedVideo.title}
-                    className="w-24 h-14 rounded-xl object-cover bg-slate-800 shrink-0 border border-slate-700/60 shadow-md"
-                  />
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 uppercase tracking-wider">
-                        {selectedVideo.privacy_status === "unlisted" ? "Unlisted Video" : "Public Upload"}
-                      </span>
-                      <span className="text-xs text-slate-400 font-mono">
-                        {selectedVideo.youtube_id}
-                      </span>
+              {(() => {
+                const activeTitle = (selectedVideo.working_title || selectedVideo.title || "").trim();
+                const ytTitle = (selectedVideo.youtube_title || selectedVideo.title || "").trim();
+                const titlesMatch = activeTitle === ytTitle;
+
+                return (
+                  <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-5 flex flex-col gap-4 shadow-xl backdrop-blur-xl">
+                    <div className="flex items-start justify-between flex-wrap gap-4">
+                      <div className="flex items-start gap-4 min-w-0 flex-1">
+                        <img
+                          src={selectedVideo.thumbnail_url || `https://img.youtube.com/vi/${selectedVideo.youtube_id}/mqdefault.jpg`}
+                          alt={selectedVideo.title}
+                          className="w-24 h-14 rounded-xl object-cover bg-slate-800 shrink-0 border border-slate-700/60 shadow-md mt-0.5"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 uppercase tracking-wider">
+                              {selectedVideo.privacy_status === "unlisted" ? "Unlisted Video" : "Public Upload"}
+                            </span>
+                            <span className="text-xs text-slate-400 font-mono">
+                              {selectedVideo.youtube_id}
+                            </span>
+                            {titlesMatch ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-bold">
+                                <CheckCircle2 className="w-3 h-3" /> Matches YouTube
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 text-[10px] font-bold">
+                                <AlertCircle className="w-3 h-3" /> Differs from YouTube
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Editable Title or Display */}
+                          {isEditingTitle ? (
+                            <div className="flex items-center gap-2 mt-2">
+                              <input
+                                type="text"
+                                value={editTitleText}
+                                onChange={(e) => setEditTitleText(e.target.value)}
+                                className="flex-1 px-3 py-1.5 rounded-xl bg-slate-950 border border-cyan-500 text-sm font-bold text-white focus:outline-none"
+                                autoFocus
+                              />
+                              <button
+                                type="button"
+                                onClick={handleSaveLocalTitle}
+                                disabled={isSavingTitle || !editTitleText.trim()}
+                                className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 text-xs font-bold shadow-md shadow-cyan-500/20 disabled:opacity-50"
+                              >
+                                {isSavingTitle ? "Saving…" : "Save Title"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setIsEditingTitle(false)}
+                                className="px-3 py-1.5 rounded-xl bg-slate-800 text-slate-300 text-xs font-bold hover:text-white"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-2 mt-1">
+                              <h2 className="text-sm sm:text-base font-bold text-white truncate max-w-lg">
+                                {activeTitle}
+                              </h2>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditTitleText(activeTitle);
+                                  setIsEditingTitle(true);
+                                }}
+                                className="p-1 rounded-lg text-slate-400 hover:text-cyan-400 hover:bg-slate-800 transition-colors"
+                                title="Edit Title"
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          )}
+
+                          {/* Original / Working Title details */}
+                          {selectedVideo.working_title && selectedVideo.working_title !== selectedVideo.title && (
+                            <div className="text-[11px] text-slate-400 mt-0.5">
+                              Original YouTube Title: <span className="font-mono text-slate-300">"{selectedVideo.title}"</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        <a
+                          href={`https://www.youtube.com/watch?v=${selectedVideo.youtube_id}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                          title="Open on YouTube"
+                        >
+                          <ExternalLink className="w-4 h-4" />
+                        </a>
+                      </div>
                     </div>
-                    <h2 className="text-sm sm:text-base font-bold text-white truncate max-w-lg mt-0.5">
-                      {selectedVideo.title}
-                    </h2>
-                    {selectedVideo.working_title && (
-                      <div className="text-xs text-cyan-300 font-semibold mt-0.5 flex items-center gap-1.5">
-                        <Tag className="w-3 h-3 text-cyan-400" />
-                        <span>Working Title: <b>{selectedVideo.working_title}</b></span>
+
+                    {/* If title differs from YouTube, show diff bar with Copy and Push actions */}
+                    {!titlesMatch && (
+                      <div className="p-3 rounded-2xl bg-amber-950/30 border border-amber-500/30 flex items-center justify-between flex-wrap gap-3 animate-fade-in">
+                        <div className="text-xs text-amber-200 flex items-center gap-2">
+                          <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                          <span>
+                            Live YouTube Title: <b className="font-mono text-white">"{ytTitle}"</b>
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => copyToClipboard(activeTitle, "header-title")}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition-colors"
+                          >
+                            {copiedTitleIndex === "header-title" ? (
+                              <>
+                                <Check className="w-3.5 h-3.5 text-emerald-400" />
+                                <span className="text-emerald-400">Copied!</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-3.5 h-3.5 text-slate-400" />
+                                <span>Copy Title</span>
+                              </>
+                            )}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setIsPushConfirmOpen(true)}
+                            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-400 hover:to-rose-500 text-white text-xs font-bold shadow-md shadow-red-500/20 transition-all"
+                          >
+                            <UploadCloud className="w-3.5 h-3.5" />
+                            <span>Push to YouTube</span>
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>
-                </div>
-
-                <div className="flex items-center gap-2 shrink-0">
-                  <a
-                    href={`https://www.youtube.com/watch?v=${selectedVideo.youtube_id}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
-                    title="Open on YouTube"
-                  >
-                    <ExternalLink className="w-4 h-4" />
-                  </a>
-                </div>
-              </div>
+                );
+              })()}
 
               {/* Saved Transcript Status Bar & Actions */}
               {savedTranscript && !isUploadingNew && (
@@ -899,11 +1240,11 @@ I drove the maki to a super charger with fifty kilowatt hours..."
 
                     <div className="flex items-center gap-2">
                       <button
-                        onClick={() => handleOpenAddTermModal("")}
+                        onClick={() => handleOpenCorrectionModal("")}
                         className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 text-xs font-bold border border-cyan-500/30 transition-all"
                       >
-                        <Plus className="w-3.5 h-3.5" />
-                        <span>Add New Term</span>
+                        <Pencil className="w-3.5 h-3.5" />
+                        <span>Correction</span>
                       </button>
 
                       <button
@@ -973,39 +1314,140 @@ I drove the maki to a super charger with fifty kilowatt hours..."
                     </div>
 
                     <span className="text-[11px] text-slate-400 italic">
-                      Tip: Highlight any mis-transcribed word below to add it to the EV Vocabulary list.
+                      Tip: Click any word to scroll to Cleaned Output · Double-click to open Correction.
                     </span>
                   </div>
 
                   {/* Diff Panes */}
                   {activeDiffTab === "side-by-side" ? (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1 px-1">
-                          Original Raw Input
-                        </div>
-                        <div
-                          onMouseUp={() => {
-                            const sel = window.getSelection()?.toString();
-                            if (sel && sel.trim().length > 1 && sel.trim().length < 40) {
-                              handleOpenAddTermModal(sel.trim());
-                            }
-                          }}
-                          className="h-80 overflow-y-auto p-3 rounded-2xl bg-slate-950 border border-slate-800 text-slate-300 text-xs font-mono whitespace-pre-wrap selection:bg-rose-500/30 custom-scrollbar"
-                        >
-                          {previewData.raw_srt}
-                        </div>
-                      </div>
+                    (() => {
+                      const rawChunks = parseSrtChunks(previewData.raw_srt);
+                      const cleanedChunks = parseSrtChunks(previewData.cleaned_srt);
 
-                      <div>
-                        <div className="text-[11px] font-bold text-cyan-400 uppercase tracking-wider mb-1 px-1">
-                          Cleaned Output
+                      if (rawChunks.length > 0 && cleanedChunks.length > 0) {
+                        return (
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                              <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1 px-1 flex items-center justify-between">
+                                <span>Original Raw Input</span>
+                                <span className="text-[10px] text-slate-500 font-normal">{rawChunks.length} chunks</span>
+                              </div>
+                              <div className="h-96 overflow-y-auto p-3 rounded-2xl bg-slate-950 border border-slate-800 text-xs font-mono custom-scrollbar space-y-2">
+                                {rawChunks.map((chunk) => (
+                                  <div
+                                    key={chunk.seq}
+                                    id={`raw-chunk-${chunk.seq}`}
+                                    onClick={() => scrollToCleanedChunk(chunk.seq)}
+                                    className={`p-2.5 rounded-xl border transition-all cursor-pointer ${
+                                      activeChunk === chunk.seq
+                                        ? "bg-cyan-950/40 border-cyan-500 ring-1 ring-cyan-500/30 shadow-md"
+                                        : "bg-slate-900/50 border-slate-800/80 hover:border-slate-700 hover:bg-slate-900/80"
+                                    }`}
+                                  >
+                                    <div className="flex items-center justify-between text-[10px] text-slate-500 mb-1">
+                                      <span className="font-bold text-slate-400">#{chunk.seq}</span>
+                                      <span>{chunk.timestamp}</span>
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleOpenCorrectionModal("", chunk.seq);
+                                        }}
+                                        className="text-[10px] text-cyan-400/80 hover:text-cyan-300 flex items-center gap-0.5"
+                                        title="Open correction dialogue for this block"
+                                      >
+                                        <Pencil className="w-2.5 h-2.5" /> Correct
+                                      </button>
+                                    </div>
+                                    <div className="text-slate-200 leading-relaxed">
+                                      {chunk.text.split(/(\s+)/).map((segment, sIdx) => {
+                                        if (/^\s+$/.test(segment) || !segment) return segment;
+                                        return (
+                                          <span
+                                            key={sIdx}
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleWordClick(segment, chunk.seq);
+                                            }}
+                                            onDoubleClick={(e) => {
+                                              e.stopPropagation();
+                                              handleOpenCorrectionModal(segment, chunk.seq);
+                                            }}
+                                            className="hover:text-cyan-400 hover:bg-cyan-500/10 cursor-pointer rounded px-0.5 py-0.5 transition-colors"
+                                            title="Click to scroll to Cleaned Output · Double-click to Correct"
+                                          >
+                                            {segment}
+                                          </span>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+
+                            <div>
+                              <div className="text-[11px] font-bold text-cyan-400 uppercase tracking-wider mb-1 px-1 flex items-center justify-between">
+                                <span>Cleaned Output</span>
+                                <span className="text-[10px] text-cyan-500/60 font-normal">{cleanedChunks.length} chunks</span>
+                              </div>
+                              <div className="h-96 overflow-y-auto p-3 rounded-2xl bg-slate-950 border border-cyan-500/30 text-xs font-mono custom-scrollbar space-y-2">
+                                {cleanedChunks.map((chunk) => (
+                                  <div
+                                    key={chunk.seq}
+                                    id={`cleaned-chunk-${chunk.seq}`}
+                                    ref={(el) => (cleanedChunkRefs.current[chunk.seq] = el)}
+                                    className={`p-2.5 rounded-xl border transition-all ${
+                                      activeChunk === chunk.seq
+                                        ? "bg-cyan-950/50 border-cyan-400 ring-2 ring-cyan-400/50 shadow-lg shadow-cyan-500/20"
+                                        : "bg-slate-900/50 border-cyan-500/20"
+                                    }`}
+                                  >
+                                    <div className="flex items-center justify-between text-[10px] text-cyan-500/60 mb-1">
+                                      <span className="font-bold text-cyan-400">#{chunk.seq}</span>
+                                      <span>{chunk.timestamp}</span>
+                                    </div>
+                                    <div className="text-cyan-100 leading-relaxed">
+                                      {chunk.text}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div>
+                            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1 px-1">
+                              Original Raw Input
+                            </div>
+                            <div
+                              onMouseUp={() => {
+                                const sel = window.getSelection()?.toString();
+                                if (sel && sel.trim().length > 1 && sel.trim().length < 40) {
+                                  handleOpenCorrectionModal(sel.trim());
+                                }
+                              }}
+                              className="h-80 overflow-y-auto p-3 rounded-2xl bg-slate-950 border border-slate-800 text-slate-300 text-xs font-mono whitespace-pre-wrap selection:bg-rose-500/30 custom-scrollbar"
+                            >
+                              {previewData.raw_srt}
+                            </div>
+                          </div>
+
+                          <div>
+                            <div className="text-[11px] font-bold text-cyan-400 uppercase tracking-wider mb-1 px-1">
+                              Cleaned Output
+                            </div>
+                            <div className="h-80 overflow-y-auto p-3 rounded-2xl bg-slate-950 border border-cyan-500/30 text-cyan-100 text-xs font-mono whitespace-pre-wrap selection:bg-cyan-500/30 custom-scrollbar">
+                              {previewData.cleaned_srt}
+                            </div>
+                          </div>
                         </div>
-                        <div className="h-80 overflow-y-auto p-3 rounded-2xl bg-slate-950 border border-cyan-500/30 text-cyan-100 text-xs font-mono whitespace-pre-wrap selection:bg-cyan-500/30 custom-scrollbar">
-                          {previewData.cleaned_srt}
-                        </div>
-                      </div>
-                    </div>
+                      );
+                    })()
                   ) : activeDiffTab === "cleaned" ? (
                     <div className="h-96 overflow-y-auto p-4 rounded-2xl bg-slate-950 border border-cyan-500/30 text-cyan-100 text-xs font-mono whitespace-pre-wrap custom-scrollbar">
                       {previewData.cleaned_srt}
@@ -1058,7 +1500,13 @@ I drove the maki to a super charger with fifty kilowatt hours..."
                       className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 text-xs font-black transition-all shadow-lg shadow-cyan-500/20 disabled:opacity-50"
                     >
                       <Sparkles className={`w-4 h-4 ${isGeneratingTitles ? "animate-spin" : ""}`} />
-                      <span>{isGeneratingTitles ? "Generating 8 Titles…" : "Generate Title Ideas"}</span>
+                      <span>
+                        {isGeneratingTitles
+                          ? "Generating 8 Titles…"
+                          : titleCandidates.length > 0
+                          ? "Regenerate Title Ideas"
+                          : "Generate Title Ideas"}
+                      </span>
                     </button>
                   </div>
 
@@ -1102,8 +1550,13 @@ I drove the maki to a super charger with fifty kilowatt hours..."
                   {/* 8 Title Candidates Grid */}
                   {titleCandidates.length > 0 && (
                     <div className="space-y-3 pt-2">
-                      <div className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                        8 Candidate Suggestions:
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                          {selectedVideo.title_suggestions ? "Saved Title Suggestions:" : "Candidate Suggestions:"}
+                        </div>
+                        <span className="text-[10px] text-slate-500 font-mono">
+                          {titleCandidates.length} generated
+                        </span>
                       </div>
 
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1158,6 +1611,32 @@ I drove the maki to a super charger with fifty kilowatt hours..."
                                   {cand.title}
                                 </h4>
 
+                                {/* Thumbnail Words Suggestion */}
+                                {cand.thumbnailWords && (
+                                  <div className="flex items-center justify-between p-2.5 rounded-xl bg-blue-950/40 border border-blue-500/20 text-xs">
+                                    <div className="flex items-center gap-2 min-w-0">
+                                      <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30 uppercase tracking-widest font-mono shrink-0">
+                                        Thumbnail Words
+                                      </span>
+                                      <span className="font-extrabold text-blue-200 tracking-wide truncate">
+                                        "{cand.thumbnailWords}"
+                                      </span>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => copyToClipboard(cand.thumbnailWords, `thumb-${idx}`)}
+                                      className="text-slate-400 hover:text-blue-300 p-1 shrink-0 transition-colors"
+                                      title="Copy thumbnail words"
+                                    >
+                                      {copiedTitleIndex === `thumb-${idx}` ? (
+                                        <Check className="w-3.5 h-3.5 text-emerald-400" />
+                                      ) : (
+                                        <Copy className="w-3.5 h-3.5" />
+                                      )}
+                                    </button>
+                                  </div>
+                                )}
+
                                 <div className="p-2 rounded-xl bg-slate-900/90 border border-slate-800/80 text-[11px] text-slate-300 flex items-center gap-1.5 font-mono">
                                   <Smartphone className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
                                   <span className="truncate">{cand.first40Preview}…</span>
@@ -1181,7 +1660,7 @@ I drove the maki to a super charger with fifty kilowatt hours..."
                                   ) : (
                                     <>
                                       <Copy className="w-3.5 h-3.5" />
-                                      <span>Copy</span>
+                                      <span>Copy Title</span>
                                     </>
                                   )}
                                 </button>
@@ -1211,31 +1690,31 @@ I drove the maki to a super charger with fifty kilowatt hours..."
         </div>
       </div>
 
-      {/* MODAL 1: Add New Term Modal */}
-      {isTermModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xl animate-fade-in">
+      {/* MODAL 1: 4-Option Correction Dialog */}
+      {isCorrectionOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-xl animate-fade-in">
           <div className="relative w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl p-6 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                <BookOpen className="w-4 h-4 text-cyan-400" />
-                <span>Add Explicit EV Term</span>
+                <Pencil className="w-4 h-4 text-cyan-400" />
+                <span>Correction Dialogue</span>
               </h3>
               <button
-                onClick={() => setIsTermModalOpen(false)}
+                onClick={() => setIsCorrectionOpen(false)}
                 className="p-1 rounded-lg text-slate-400 hover:text-white"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <form onSubmit={handleAddTermSubmit} className="space-y-3 text-xs">
+            <div className="space-y-3 text-xs">
               <div>
                 <label className="font-bold text-slate-300">Mis-transcription (Wrong ASR text):</label>
                 <input
                   type="text"
                   required
-                  value={termWrong}
-                  onChange={(e) => setTermWrong(e.target.value)}
+                  value={correctionWrong}
+                  onChange={(e) => setCorrectionWrong(e.target.value)}
                   placeholder="e.g. knacks, maki, ionic"
                   className="w-full mt-1 p-2.5 rounded-xl bg-slate-950 border border-slate-800 text-slate-100 font-medium focus:border-cyan-500 focus:outline-none"
                 />
@@ -1246,18 +1725,18 @@ I drove the maki to a super charger with fifty kilowatt hours..."
                 <input
                   type="text"
                   required
-                  value={termCorrect}
-                  onChange={(e) => setTermCorrect(e.target.value)}
+                  value={correctionCorrect}
+                  onChange={(e) => setCorrectionCorrect(e.target.value)}
                   placeholder="e.g. NACS, Mach-E, Ioniq"
                   className="w-full mt-1 p-2.5 rounded-xl bg-slate-950 border border-slate-800 text-slate-100 font-medium focus:border-cyan-500 focus:outline-none"
                 />
               </div>
 
               <div>
-                <label className="font-bold text-slate-300">Category:</label>
+                <label className="font-bold text-slate-300">Category (for Term List):</label>
                 <select
-                  value={termCategory}
-                  onChange={(e) => setTermCategory(e.target.value)}
+                  value={correctionCategory}
+                  onChange={(e) => setCorrectionCategory(e.target.value)}
                   className="w-full mt-1 p-2.5 rounded-xl bg-slate-950 border border-slate-800 text-slate-100 font-medium focus:border-cyan-500 focus:outline-none"
                 >
                   <option value="vehicles">Vehicles</option>
@@ -1268,26 +1747,50 @@ I drove the maki to a super charger with fifty kilowatt hours..."
               </div>
 
               <p className="text-[11px] text-slate-400 italic">
-                Note: This writes explicitly to `ev_terms.json` via termList.js. It never runs automatically.
+                Choose how to apply this correction:
               </p>
 
-              <div className="flex justify-end gap-2 pt-3">
+              {/* 4 Correction Options Grid */}
+              <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-800">
                 <button
                   type="button"
-                  onClick={() => setIsTermModalOpen(false)}
-                  className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 hover:text-white"
+                  onClick={() => setIsCorrectionOpen(false)}
+                  className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition-colors text-center"
                 >
                   Cancel
                 </button>
+
                 <button
-                  type="submit"
-                  disabled={isAddingTerm}
-                  className="px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 font-bold disabled:opacity-50"
+                  type="button"
+                  onClick={handleFixOneTime}
+                  disabled={!correctionWrong.trim() || !correctionCorrect.trim()}
+                  className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-cyan-500/30 text-xs font-bold transition-colors text-center disabled:opacity-50"
+                  title="Fix only this instance"
                 >
-                  {isAddingTerm ? "Adding…" : "Add to Term List"}
+                  Fix one time
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleFixAllInVideo}
+                  disabled={!correctionWrong.trim() || !correctionCorrect.trim()}
+                  className="px-3 py-2 rounded-xl bg-cyan-950/80 hover:bg-cyan-900/80 text-cyan-200 border border-cyan-500/40 text-xs font-bold transition-colors text-center disabled:opacity-50"
+                  title="Replace all occurrences across this video"
+                >
+                  Fix all in this video
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleCorrectionAddToTermList}
+                  disabled={isAddingTerm || !correctionWrong.trim() || !correctionCorrect.trim()}
+                  className="px-3 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 text-xs font-black transition-all text-center shadow-md shadow-cyan-500/20 disabled:opacity-50"
+                  title="Save permanently to EV Terms list"
+                >
+                  {isAddingTerm ? "Saving…" : "Add to Term List"}
                 </button>
               </div>
-            </form>
+            </div>
           </div>
         </div>
       )}
@@ -1309,7 +1812,7 @@ I drove the maki to a super charger with fifty kilowatt hours..."
 
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => handleOpenAddTermModal("")}
+                  onClick={() => handleOpenCorrectionModal("")}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-bold transition-all"
                 >
                   <Plus className="w-3.5 h-3.5" />
@@ -1401,10 +1904,11 @@ I drove the maki to a super charger with fifty kilowatt hours..."
 
                       <button
                         onClick={() => {
-                          setTermCategory(t.category);
-                          setTermCorrect(t.correct);
-                          setTermWrong("");
-                          setIsTermModalOpen(true);
+                          setCorrectionCategory(t.category);
+                          setCorrectionCorrect(t.correct);
+                          setCorrectionWrong("");
+                          setCorrectionChunkSeq(null);
+                          setIsCorrectionOpen(true);
                         }}
                         className="text-[11px] font-bold text-cyan-400 hover:text-cyan-300 px-2 py-1 rounded-lg bg-slate-900 border border-slate-800 shrink-0"
                       >
@@ -1418,7 +1922,71 @@ I drove the maki to a super charger with fifty kilowatt hours..."
         </div>
       )}
 
-      {/* MODAL 3: Title Prompt Settings Modal */}
+      {/* MODAL 3: Push Title to YouTube Confirmation Modal */}
+      {isPushConfirmOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-xl animate-fade-in">
+          <div className="relative w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl p-6 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">Push Title to YouTube</h3>
+                <p className="text-xs text-slate-400">Update live title on the public YouTube channel</p>
+              </div>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2.5 text-xs">
+              <div>
+                <span className="text-slate-500 uppercase tracking-wider text-[10px] font-bold">Current YouTube Title:</span>
+                <div className="text-rose-300 font-mono line-through mt-0.5 break-words">
+                  {selectedVideo.youtube_title || selectedVideo.title}
+                </div>
+              </div>
+              <div className="pt-2 border-t border-slate-800/80">
+                <span className="text-emerald-400 uppercase tracking-wider text-[10px] font-bold">New Title to Push:</span>
+                <div className="text-emerald-300 font-bold font-mono mt-0.5 break-words">
+                  {(selectedVideo.working_title || selectedVideo.title || "").trim()}
+                </div>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-400 leading-relaxed">
+              This action will update the title on YouTube video <span className="font-mono text-cyan-400">{selectedVideo.youtube_id}</span>. Are you sure you want to push this change now?
+            </p>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setIsPushConfirmOpen(false)}
+                className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 hover:text-white text-xs font-bold"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handlePushTitleToYoutube}
+                disabled={isPushingTitle}
+                className="flex items-center gap-2 px-5 py-2 rounded-xl bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-400 hover:to-rose-500 text-white font-bold text-xs shadow-md shadow-red-500/20 disabled:opacity-50 transition-all"
+              >
+                {isPushingTitle ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Pushing to YouTube…</span>
+                  </>
+                ) : (
+                  <>
+                    <UploadCloud className="w-3.5 h-3.5" />
+                    <span>Yes, Push to YouTube</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 4: Title Prompt Settings Modal */}
       {isPromptSettingsOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-slate-950/85 backdrop-blur-xl animate-fade-in">
           <div className="relative w-full max-w-3xl bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl p-6 flex flex-col max-h-[90vh] overflow-hidden space-y-4">
@@ -1430,7 +1998,7 @@ I drove the maki to a super charger with fifty kilowatt hours..."
                 <div>
                   <h3 className="text-base font-bold text-white">Title Strategist Instructions</h3>
                   <p className="text-xs text-slate-400">
-                    System prompt and 10 Channel Rules used by Gemini for title brainstorming
+                    System prompt and rules used by Gemini for title and thumbnail brainstorming
                   </p>
                 </div>
               </div>
@@ -1443,13 +2011,33 @@ I drove the maki to a super charger with fifty kilowatt hours..."
               </button>
             </div>
 
-            <div className="flex-1 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
-              <textarea
-                rows={16}
-                value={promptInstructions}
-                onChange={(e) => setPromptInstructions(e.target.value)}
-                className="w-full p-4 rounded-2xl bg-slate-950 border border-slate-800 text-slate-200 text-xs font-mono leading-relaxed focus:outline-none focus:border-cyan-500"
-              />
+            <div className="flex-1 overflow-y-auto space-y-4 pr-1 custom-scrollbar">
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-300">Title Generation Instructions:</label>
+                <textarea
+                  rows={10}
+                  value={promptInstructions}
+                  onChange={(e) => setPromptInstructions(e.target.value)}
+                  className="w-full p-4 rounded-2xl bg-slate-950 border border-slate-800 text-slate-200 text-xs font-mono leading-relaxed focus:outline-none focus:border-cyan-500"
+                />
+              </div>
+
+              <div className="space-y-1.5 pt-3 border-t border-slate-800">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 uppercase tracking-widest">
+                    Thumbnail Words
+                  </span>
+                  <label className="text-xs font-bold text-white">Thumbnail Words Suggestion Instructions:</label>
+                </div>
+                <textarea
+                  rows={6}
+                  value={thumbnailInstructions}
+                  onChange={(e) => setThumbnailInstructions(e.target.value)}
+                  placeholder="Instructions for generating 2-4 punchy thumbnail words alongside titles..."
+                  className="w-full p-4 rounded-2xl bg-slate-950 border border-slate-800 text-slate-200 text-xs font-mono leading-relaxed focus:outline-none focus:border-cyan-500"
+                />
+              </div>
+
               {promptUpdatedAt && (
                 <div className="text-[10px] text-slate-500 italic">
                   Last updated: {new Date(promptUpdatedAt).toLocaleString()}

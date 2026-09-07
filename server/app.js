@@ -1003,36 +1003,41 @@ app.delete("/api/terms", auth.requireAuth(), (req, res, next) => {
 
 /* ---------------- Title Prompt Settings & Gemini Generation ---------------- */
 
-// 1. Get Title Prompt Instructions
+// 1. Get Title & Thumbnail Prompt Instructions
 app.get("/api/title-prompt-settings", auth.requireAuth(), (req, res, next) => {
   try {
-    const row = articleDb.prepare("SELECT instructions, updated_at FROM title_prompt_settings WHERE id = 1").get();
-    res.json(row || { instructions: "", updated_at: null });
+    const row = articleDb.prepare("SELECT instructions, thumbnail_instructions, updated_at FROM title_prompt_settings WHERE id = 1").get();
+    res.json(row || { instructions: "", thumbnail_instructions: "", updated_at: null });
   } catch (error) {
     next(error);
   }
 });
 
-// 2. Update Title Prompt Instructions
+// 2. Update Title & Thumbnail Prompt Instructions
 app.put("/api/title-prompt-settings", auth.requireAuth(), (req, res, next) => {
   try {
-    const { instructions } = req.body || {};
-    if (!instructions || typeof instructions !== "string") {
-      return res.status(400).json({ error: "Instructions text is required." });
-    }
+    const { instructions, thumbnail_instructions } = req.body || {};
+    const current = articleDb.prepare("SELECT instructions, thumbnail_instructions FROM title_prompt_settings WHERE id = 1").get() || {};
+    const newInstructions = typeof instructions === "string" ? instructions : (current.instructions || "");
+    const newThumbnail = typeof thumbnail_instructions === "string" ? thumbnail_instructions : (current.thumbnail_instructions || "");
+
     articleDb.prepare(`
-      INSERT INTO title_prompt_settings (id, instructions, updated_at)
-      VALUES (1, ?, CURRENT_TIMESTAMP)
-      ON CONFLICT(id) DO UPDATE SET instructions = excluded.instructions, updated_at = CURRENT_TIMESTAMP
-    `).run(instructions);
-    const updated = articleDb.prepare("SELECT instructions, updated_at FROM title_prompt_settings WHERE id = 1").get();
-    res.json({ success: true, ...updated });
+      INSERT INTO title_prompt_settings (id, instructions, thumbnail_instructions, updated_at)
+      VALUES (1, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(id) DO UPDATE SET
+        instructions = excluded.instructions,
+        thumbnail_instructions = excluded.thumbnail_instructions,
+        updated_at = CURRENT_TIMESTAMP
+    `).run(newInstructions, newThumbnail);
+
+    const updated = articleDb.prepare("SELECT instructions, thumbnail_instructions, updated_at FROM title_prompt_settings WHERE id = 1").get();
+    res.json({ success: true, ok: true, ...updated });
   } catch (error) {
     next(error);
   }
 });
 
-// 3. Generate Gemini Title Suggestions (8 structured candidates)
+// 3. Generate Gemini Title Suggestions (8 structured candidates with thumbnail words)
 app.post("/api/videos/:videoId/generate-titles", auth.requireAuth(), aiLimiter, async (req, res, next) => {
   try {
     const { videoId } = req.params;
@@ -1050,9 +1055,12 @@ app.post("/api/videos/:videoId/generate-titles", auth.requireAuth(), aiLimiter, 
       return res.status(400).json({ error: "A saved transcript is required first before generating title ideas." });
     }
 
-    // Retrieve title prompt instructions
-    const promptRow = articleDb.prepare("SELECT instructions FROM title_prompt_settings WHERE id = 1").get();
-    const systemPrompt = promptRow ? promptRow.instructions : "You are a YouTube title strategist for The Electric Duo.";
+    // Retrieve title and thumbnail prompt instructions
+    const promptRow = articleDb.prepare("SELECT instructions, thumbnail_instructions FROM title_prompt_settings WHERE id = 1").get();
+    const titlePrompt = promptRow?.instructions || "You are a YouTube title strategist for The Electric Duo.";
+    const thumbPrompt = promptRow?.thumbnail_instructions || "Suggest 1-3 punchy thumbnail words (2-4 words maximum) per candidate.";
+
+    const systemPrompt = `${titlePrompt}\n\n=== THUMBNAIL WORDS INSTRUCTIONS ===\n${thumbPrompt}`;
 
     const apiKey = getGeminiApiKey();
     if (!apiKey) {
@@ -1073,7 +1081,7 @@ app.post("/api/videos/:videoId/generate-titles", auth.requireAuth(), aiLimiter, 
     if (context && context.trim()) {
       userPrompt += `Creator Context & Highlights:\n${context.trim()}\n\n`;
     }
-    userPrompt += `Cleaned Transcript:\n${plainText.slice(0, 45000)}\n\nGenerate exactly 8 high-CTR title suggestions adhering to all channel rules. Return them as a JSON array matching the required schema.`;
+    userPrompt += `Cleaned Transcript:\n${plainText.slice(0, 45000)}\n\nGenerate exactly 8 high-CTR title suggestions adhering to all channel rules. For each candidate, also generate 2-4 punchy thumbnail words or phrase according to the thumbnail instructions. Return them as a JSON array matching the required schema.`;
 
     const requestOptions = {
       model: configuredModel,
@@ -1098,9 +1106,13 @@ app.post("/api/videos/:videoId/generate-titles", auth.requireAuth(), aiLimiter, 
               deliversOnPromise: {
                 type: "boolean",
                 description: "True if the video content actually backs up what the title implies"
+              },
+              thumbnailWords: {
+                type: "string",
+                description: "2 to 4 ultra-punchy thumbnail words or phrase (e.g. 'BIGGEST MISTAKE', '740 MILES LATER')"
               }
             },
-            required: ["title", "charCount", "first40Preview", "emotion", "rationale", "deliversOnPromise"]
+            required: ["title", "charCount", "first40Preview", "emotion", "rationale", "deliversOnPromise", "thumbnailWords"]
           }
         }
       }
@@ -1130,6 +1142,7 @@ app.post("/api/videos/:videoId/generate-titles", auth.requireAuth(), aiLimiter, 
       const emotion = ["curiosity", "desire", "fear_negativity"].includes(c.emotion) ? c.emotion : "curiosity";
       const rationale = c.rationale || "";
       const deliversOnPromise = typeof c.deliversOnPromise === "boolean" ? c.deliversOnPromise : true;
+      const thumbnailWords = (c.thumbnailWords || "").trim();
       return {
         title,
         charCount,
@@ -1137,8 +1150,13 @@ app.post("/api/videos/:videoId/generate-titles", auth.requireAuth(), aiLimiter, 
         emotion,
         rationale,
         deliversOnPromise,
+        thumbnailWords,
       };
     });
+
+    // Persist suggestions in database so they can be reloaded
+    articleDb.prepare("UPDATE videos SET title_suggestions = ? WHERE youtube_id = ?")
+      .run(JSON.stringify(formatted), videoId);
 
     res.json({ success: true, candidates: formatted });
   } catch (error) {
@@ -1147,13 +1165,76 @@ app.post("/api/videos/:videoId/generate-titles", auth.requireAuth(), aiLimiter, 
   }
 });
 
-// 4. Save Selected Working Title to Video Record
+// 4. Retrieve Previously Generated Title Suggestions
+app.get("/api/videos/:videoId/title-suggestions", auth.requireAuth(), (req, res, next) => {
+  try {
+    const { videoId } = req.params;
+    const row = articleDb.prepare("SELECT title_suggestions FROM videos WHERE youtube_id = ?").get(videoId);
+    let candidates = [];
+    if (row && row.title_suggestions) {
+      try {
+        candidates = JSON.parse(row.title_suggestions);
+      } catch (e) {
+        candidates = [];
+      }
+    }
+    res.json({ ok: true, candidates, suggestions: candidates });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 5. Save Selected Working Title to Video Record
 app.post("/api/videos/:videoId/working-title", auth.requireAuth(), (req, res, next) => {
   try {
     const { videoId } = req.params;
     const { workingTitle } = req.body || {};
     articleDb.prepare("UPDATE videos SET working_title = ? WHERE youtube_id = ?").run(workingTitle || null, videoId);
     res.json({ success: true, videoId, working_title: workingTitle || null });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 6. Manually Edit and Save Local Video Title
+app.patch("/api/videos/:videoId/title", auth.requireAuth(), (req, res, next) => {
+  try {
+    const { videoId } = req.params;
+    const { title } = req.body || {};
+    const newTitle = (title || "").trim();
+    if (!newTitle) {
+      return res.status(400).json({ error: "Title cannot be empty." });
+    }
+    articleDb.prepare("UPDATE videos SET working_title = ? WHERE youtube_id = ?").run(newTitle, videoId);
+    const updated = articleDb.prepare("SELECT * FROM videos WHERE youtube_id = ?").get(videoId);
+    res.json({ ok: true, title: newTitle, video: updated });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 7. Push Local Title to YouTube via Google OAuth (User-Confirmed Action)
+app.post("/api/videos/:videoId/title/push", auth.requireAuth(), async (req, res, next) => {
+  try {
+    const { videoId } = req.params;
+    const { title } = req.body || {};
+    const video = articleDb.prepare("SELECT * FROM videos WHERE youtube_id = ?").get(videoId);
+    if (!video) {
+      return res.status(404).json({ error: "Video not found in catalog." });
+    }
+    const newTitle = typeof title === "string" ? title.trim() : (video.working_title || video.title || "").trim();
+    if (!newTitle) {
+      return res.status(400).json({ error: "Title to push cannot be empty." });
+    }
+
+    const { updateYoutubeVideoTitle } = require("./youtube");
+    await updateYoutubeVideoTitle(videoId, newTitle);
+
+    articleDb.prepare("UPDATE videos SET title = ?, youtube_title = ?, working_title = ? WHERE youtube_id = ?")
+      .run(newTitle, newTitle, newTitle, videoId);
+
+    const updated = articleDb.prepare("SELECT * FROM videos WHERE youtube_id = ?").get(videoId);
+    res.json({ ok: true, video: updated, message: `Successfully pushed title to YouTube: "${newTitle}"` });
   } catch (error) {
     next(error);
   }
@@ -1352,12 +1433,12 @@ app.post("/api/admin/test-connection", auth.requireAuth(), auth.requireAdmin(), 
 
     if (service === "gemini") {
       const { GoogleGenAI } = require("@google/genai");
-      const { getGeminiApiKey } = require("./gemini");
+      const { getGeminiApiKey, DEFAULT_GEMINI_MODEL } = require("./gemini");
       const apiKey = getGeminiApiKey();
       if (!apiKey) throw new Error("Gemini API key is not configured.");
       const ai = new GoogleGenAI({ apiKey });
 
-      let configuredModel = "gemini-3.7-flash";
+      let configuredModel = DEFAULT_GEMINI_MODEL;
       try {
         const row = articleDb.prepare("SELECT value FROM app_settings WHERE key = 'default_model'").get();
         if (row && row.value) configuredModel = row.value;
@@ -1365,18 +1446,12 @@ app.post("/api/admin/test-connection", auth.requireAuth(), auth.requireAdmin(), 
         console.warn("Could not read default_model for connection test:", e.message);
       }
 
-      if (configuredModel.includes("2.5") || configuredModel.includes("2.0") || configuredModel.includes("1.5") || configuredModel.includes("3.5-pro")) {
-        configuredModel = "gemini-3.7-flash";
-      }
-
-      // Fast test candidate chain: configured model -> 3.5-flash-lite (ultra-fast 500ms) -> 3.7-flash -> 3.8-flash -> 3.5-flash
       const fastModels = [
         configuredModel,
-        "gemini-3.5-flash-lite",
-        "gemini-3.7-flash",
+        DEFAULT_GEMINI_MODEL,
         "gemini-3.8-flash",
-        "gemini-3.5-flash",
-        "gemini-3.6-flash",
+        "gemini-3.7-flash",
+        "gemini-3.5-flash-lite",
       ].filter((m, i, arr) => m && arr.indexOf(m) === i);
 
       let lastErr = null;
@@ -1391,6 +1466,8 @@ app.post("/api/admin/test-connection", auth.requireAuth(), auth.requireAdmin(), 
           const reply = response.text ? response.text.trim() : "OK";
           return res.json({
             ok: true,
+            model: m,
+            latency,
             message: `Connected to Gemini API using ${m} (${latency}ms) — Response: ${reply}`,
           });
         } catch (err) {
@@ -1771,6 +1848,10 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Electric Duo Command Center running on port ${PORT}`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Electric Duo Command Center running on port ${PORT}`);
+  });
+}
+
+module.exports = app;
