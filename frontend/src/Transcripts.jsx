@@ -241,7 +241,12 @@ export default function Transcripts({ currentUser, initialVideoId, onClearInitia
         credentials: "same-origin",
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to retrieve captions from YouTube");
+      if (!res.ok) {
+        if (data.canQuickPaste) {
+          setIsUploadingNew(true);
+        }
+        throw new Error(data.error || "Failed to retrieve captions from YouTube");
+      }
 
       if (data.transcript) {
         setSavedTranscript(data.transcript);

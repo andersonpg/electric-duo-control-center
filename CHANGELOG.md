@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.2.2] - 2026-09-07
+
+### Added
+- **Official YouTube Data API v3 Caption Retrieval Fallback**:
+  - Added `fetchViaOfficialApi(videoId)` leveraging official `youtube.captions.list` and `youtube.captions.download({ id, tfmt: 'srt' })` via the channel's authenticated OAuth client.
+  - Successfully retrieves any uploaded or official caption tracks directly, immune to datacenter IP scraping blocks.
+- **Direct YouTube Transcript Converter (`convertRawTranscriptToSrt`)**:
+  - Parses raw text copied directly from YouTube's desktop player transcript box (e.g. `0:00 Hello\n0:05 World`, or raw blocks without timestamps) into strictly formatted SubRip (`.srt`) timing cues.
+- **1-Click Quick Paste Capability**:
+  - Added `POST /api/videos/:videoId/captions/paste` to convert, clean with `fixCaptionSrt`, and save transcripts in one single click.
+  - Added Quick Paste modal on Video Audit cards, Video Audit Report modal, and Transcripts workspace with direct link to the video on YouTube and step-by-step instructions.
+
+### Fixed
+- **Resolved Misleading OAuth Reconnect Error**:
+  - Fixed issue where cloud datacenter IP blocks (`LOGIN_REQUIRED`) were mistakenly diagnosed as an OAuth disconnect. Google Cloud Console OAuth bearer tokens are rejected with 401 by YouTube's private InnerTube endpoints; InnerTube headers have been sanitized and the user is provided with immediate Quick Paste options instead of misleading OAuth reconnect prompts.
+
+---
+
 ## [2.2.1] - 2026-09-07
 
 ### Fixed

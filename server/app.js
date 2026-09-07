@@ -29,6 +29,7 @@ const {
   saveCaptionRecord,
   uploadCaptionsToYoutube,
   processVideoCaptions,
+  convertRawTranscriptToSrt,
 } = require("./captions");
 const termsPath = path.join(__dirname, "..", "ev_terms.json");
 
@@ -684,12 +685,13 @@ app.post("/api/transcripts/preview", auth.requireAuth(), (req, res) => {
     if (!srtText || typeof srtText !== "string") {
       return res.status(400).json({ error: "srtText is required." });
     }
+    const normalizedSrt = convertRawTranscriptToSrt(srtText);
     const termsData = JSON.parse(fs.readFileSync(termsPath, "utf8"));
     const rules = loadRules(termsData);
-    const { output, log, summary } = fixSrt(srtText, rules, { isVtt: !!isVtt });
+    const { output, log, summary } = fixSrt(normalizedSrt, rules, { isVtt: !!isVtt });
     const plainText = srtToPlainText(output);
     res.json({
-      raw_srt: srtText,
+      raw_srt: normalizedSrt,
       cleaned_srt: output,
       plain_text: plainText,
       summary,
@@ -791,6 +793,45 @@ app.post("/api/videos/:videoId/captions/retrieve", auth.requireAuth(), async (re
       success: true,
       videoId,
       status: "unfixed",
+      chunkCount,
+      summary: fixed.summary,
+      transcript: saved,
+    });
+  } catch (error) {
+    console.warn(`[Captions] Retrieve captions error for ${req.params?.videoId}:`, error.message);
+    res.status(500).json({
+      error: error.message,
+      canQuickPaste: error.canQuickPaste ?? true,
+      youtubeUrl: error.youtubeUrl || `https://www.youtube.com/watch?v=${req.params?.videoId}`,
+      isCloudIpBlock: error.isCloudIpBlock ?? true,
+    });
+  }
+});
+
+// 4a-2. Paste raw transcript text or copied YouTube transcript directly
+app.post("/api/videos/:videoId/captions/paste", auth.requireAuth(), (req, res) => {
+  try {
+    const { videoId } = req.params;
+    const inputText = (req.body?.text || req.body?.rawText || "").trim();
+    if (!inputText) {
+      return res.status(400).json({ error: "Transcript text is required." });
+    }
+
+    const srt = convertRawTranscriptToSrt(inputText);
+    const fixed = fixCaptionSrt(srt);
+    const chunkCount = (srt.match(/-->/g) || []).length;
+
+    const saved = saveCaptionRecord(videoId, {
+      raw_srt: srt,
+      cleaned_srt: fixed.cleaned_srt,
+      plain_text: fixed.plain_text,
+      status: "fixed",
+    });
+
+    res.json({
+      success: true,
+      videoId,
+      status: "fixed",
       chunkCount,
       summary: fixed.summary,
       transcript: saved,

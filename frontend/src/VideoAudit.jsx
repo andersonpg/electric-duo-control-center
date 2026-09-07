@@ -17,6 +17,7 @@ import {
   FileText,
   Check,
   AlertCircle,
+  ExternalLink,
   X,
 } from "lucide-react";
 import AuditReportModal from "./AuditReportModal";
@@ -37,6 +38,8 @@ export default function VideoAudit({ currentUser, initialVideoId, onClearInitial
   const [cleaningCaptions, setCleaningCaptions] = useState({});
   const [uploadingCaptions, setUploadingCaptions] = useState({});
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, video: null, message: "", onConfirm: null });
+  const [quickPasteModal, setQuickPasteModal] = useState({ isOpen: false, video: null, youtubeUrl: "", text: "" });
+  const [savingPaste, setSavingPaste] = useState(false);
   const [toast, setToast] = useState(null);
 
   useEffect(() => {
@@ -150,6 +153,15 @@ export default function VideoAudit({ currentUser, initialVideoId, onClearInitial
       }
 
       if (!res.ok) {
+        if (data.canQuickPaste || data.isCloudIpBlock) {
+          setQuickPasteModal({
+            isOpen: true,
+            video,
+            youtubeUrl: data.youtubeUrl || `https://www.youtube.com/watch?v=${video.youtube_id}`,
+            text: "",
+          });
+          return;
+        }
         throw new Error(data.error || "Failed to retrieve captions");
       }
 
@@ -161,12 +173,45 @@ export default function VideoAudit({ currentUser, initialVideoId, onClearInitial
       );
       setToast({
         type: "success",
-        text: `Retrieved ${data.chunkCount || ""} caption chunks from YouTube! Status: Unfixed Captions.`,
+        text: `Retrieved ${data.chunkCount || ""} caption chunks from YouTube! Status: ${newStatus === "fixed" ? "Fixed Captions" : "Unfixed Captions"}.`,
       });
     } catch (err) {
       setToast({ type: "error", text: err.message });
     } finally {
       setRetrievingCaptions((prev) => ({ ...prev, [video.youtube_id]: false }));
+    }
+  };
+
+  const handlePasteCaptions = async (video, text) => {
+    if (!text || !text.trim()) {
+      setToast({ type: "error", text: "Please paste a transcript before submitting." });
+      return;
+    }
+    setSavingPaste(true);
+    try {
+      const res = await fetch(`/api/videos/${video.youtube_id}/captions/paste`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+        credentials: "same-origin",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to save transcript");
+
+      setVideos((prev) =>
+        prev.map((v) =>
+          v.youtube_id === video.youtube_id ? { ...v, caption_status: "fixed" } : v
+        )
+      );
+      setQuickPasteModal({ isOpen: false, video: null, youtubeUrl: "", text: "" });
+      setToast({
+        type: "success",
+        text: `Successfully converted, saved & cleaned EV terms for ${data.chunkCount || ""} cues! Status: Fixed Captions.`,
+      });
+    } catch (err) {
+      setToast({ type: "error", text: err.message });
+    } finally {
+      setSavingPaste(false);
     }
   };
 
@@ -550,14 +595,30 @@ export default function VideoAudit({ currentUser, initialVideoId, onClearInitial
                     {/* Caption Action Buttons */}
                     <div className="flex items-center gap-1.5">
                       {captionStatus === "none" && (
-                        <button
-                          onClick={() => handleRetrieveCaptions(video)}
-                          disabled={isRetrieving}
-                          className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-semibold border border-slate-700 hover:border-slate-600 transition-all disabled:opacity-50"
-                        >
-                          <DownloadCloud className={`w-3 h-3 text-cyan-400 ${isRetrieving ? "animate-bounce" : ""}`} />
-                          <span>{isRetrieving ? "Retrieving…" : "Retrieve Captions"}</span>
-                        </button>
+                        <div className="flex-1 flex items-center gap-1.5">
+                          <button
+                            onClick={() => handleRetrieveCaptions(video)}
+                            disabled={isRetrieving}
+                            className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-semibold border border-slate-700 hover:border-slate-600 transition-all disabled:opacity-50"
+                          >
+                            <DownloadCloud className={`w-3 h-3 text-cyan-400 ${isRetrieving ? "animate-bounce" : ""}`} />
+                            <span>{isRetrieving ? "Retrieving…" : "Retrieve Captions"}</span>
+                          </button>
+                          <button
+                            onClick={() =>
+                              setQuickPasteModal({
+                                isOpen: true,
+                                video,
+                                youtubeUrl: `https://www.youtube.com/watch?v=${video.youtube_id}`,
+                                text: "",
+                              })
+                            }
+                            className="px-2 py-1.5 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-cyan-300 text-[11px] border border-slate-700 transition-all"
+                            title="Paste transcript directly from YouTube"
+                          >
+                            <FileText className="w-3 h-3" />
+                          </button>
+                        </div>
                       )}
 
                       {captionStatus === "unfixed" && (
@@ -645,6 +706,79 @@ export default function VideoAudit({ currentUser, initialVideoId, onClearInitial
           onAuditUpdated={handleAuditUpdated}
           onSelectVideoForTranscript={onSelectVideoForTranscript}
         />
+      )}
+
+      {/* Quick Paste Modal */}
+      {quickPasteModal.isOpen && quickPasteModal.video && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fade-in">
+          <div className="relative w-full max-w-2xl bg-slate-900 border border-slate-700/80 rounded-2xl shadow-2xl p-6 text-slate-200">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2">
+                <FileText className="w-5 h-5 text-cyan-400" />
+                <h3 className="text-base font-bold text-slate-100 truncate max-w-md">
+                  Add Captions: {quickPasteModal.video.title}
+                </h3>
+              </div>
+              <button
+                onClick={() => setQuickPasteModal({ isOpen: false, video: null, youtubeUrl: "", text: "" })}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="my-4 space-y-3">
+              <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-xs text-amber-200/90 leading-relaxed">
+                <span className="font-semibold text-amber-300">YouTube Cloud Server Restriction:</span> YouTube restricts automated transcript downloads from cloud servers. You can easily pull the transcript directly from YouTube in seconds:
+              </div>
+
+              <div className="flex items-center justify-between p-3 bg-slate-800/60 rounded-xl border border-slate-700/60 text-xs">
+                <div>
+                  <span className="font-semibold text-slate-200">Step 1:</span> Open the video on YouTube, click <span className="text-cyan-300 font-medium">"...more"</span> below description $\rightarrow$ <span className="text-cyan-300 font-medium">"Show transcript"</span> and copy it.
+                </div>
+                <a
+                  href={quickPasteModal.youtubeUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 font-semibold text-xs border border-cyan-500/30 transition-all shrink-0 ml-2"
+                >
+                  <span>Open Video on YouTube</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                  Step 2: Paste the copied YouTube transcript (with or without timestamps) or .srt file:
+                </label>
+                <textarea
+                  value={quickPasteModal.text}
+                  onChange={(e) => setQuickPasteModal((prev) => ({ ...prev, text: e.target.value }))}
+                  placeholder="0:00 Hello and welcome&#10;0:05 to Dallas Texas&#10;0:10 with the Mach E..."
+                  rows={8}
+                  className="w-full bg-slate-950/70 border border-slate-700 rounded-xl p-3 text-xs font-mono text-slate-200 placeholder-slate-600 focus:outline-none focus:border-cyan-500 transition-all"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-800">
+              <button
+                onClick={() => setQuickPasteModal({ isOpen: false, video: null, youtubeUrl: "", text: "" })}
+                className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handlePasteCaptions(quickPasteModal.video, quickPasteModal.text)}
+                disabled={savingPaste || !quickPasteModal.text.trim()}
+                className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 text-xs font-bold transition-all shadow-md shadow-cyan-500/20 disabled:opacity-50"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>{savingPaste ? "Saving & Cleaning…" : "Save & Clean EV Captions"}</span>
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
