@@ -256,7 +256,7 @@ export default function Transcripts({ currentUser, initialVideoId, onClearInitia
         setSavedTranscript(data.transcript);
       }
       setRawInput(data.transcript?.raw_srt || "");
-      await handlePreviewText(data.transcript?.raw_srt || "");
+      await runPreview(data.transcript?.raw_srt || "");
       setIsUploadingNew(false);
       showToast(`Retrieved ${data.chunkCount || ""} caption chunks from YouTube!`, "success");
 
@@ -284,7 +284,7 @@ export default function Transcripts({ currentUser, initialVideoId, onClearInitia
       if (!res.ok) throw new Error(data.error || "Failed to upload clean captions to YouTube");
 
       showToast(`Clean captions uploaded to YouTube as "English (Edited)"!`, "success");
-      await loadTranscriptForVideo(selectedVideo.youtube_id);
+      await handleSelectVideo(selectedVideo);
       setVideos((prev) =>
         prev.map((v) =>
           v.youtube_id === selectedVideo.youtube_id ? { ...v, caption_status: "uploaded" } : v

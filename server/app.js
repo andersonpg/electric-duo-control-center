@@ -36,6 +36,7 @@ const {
 const termsPath = path.join(__dirname, "..", "ev_terms.json");
 
 const app = express();
+app.set("trust proxy", 1);
 
 app.use(
   helmet({
@@ -100,7 +101,7 @@ app.post("/login", loginLimiter, (req, res) => {
   res.cookie(auth.SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: "lax",
-    secure: req.secure || req.headers["x-forwarded-proto"] === "https",
+    secure: req.secure,
     expires: new Date(expires),
   });
   res.json({ ok: true, user: { id: user.id, name: user.name, username: user.username, is_admin: Boolean(user.is_admin) } });

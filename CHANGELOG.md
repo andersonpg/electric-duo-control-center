@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.2.4] - 2026-09-07
+
+### Fixed
+- **Content Security Policy on Login**: Moved inline script from `public/login.html` into `public/assets/login.js` to comply with CSP `script-src 'self'`. Replaced external `app.css` link with self-contained styling.
+- **Build Asset Retention**: Updated `scripts/build.js` to preserve `public/assets/login.js` when clearing assets, ensuring login scripts are never deleted during Vite bundle compilation.
+- **Cleaned Orphan Prototype Assets**: Deleted `public/dashboard.html` which referenced deleted legacy assets.
+- **Transcripts Function References**: Resolved `handlePreviewText is not defined` by calling `runPreview`, and fixed `loadTranscriptForVideo` to call `handleSelectVideo(selectedVideo)` in `frontend/src/Transcripts.jsx`.
+- **Frontend Oxlint Environment**: Configured `"env": { "browser": true }` in `frontend/.oxlintrc.json` so standard browser globals (`window`, `document`, `fetch`, `setTimeout`) pass lint verification.
+- **Admin Startup Persistence**: Removed improper startup `UPDATE users SET is_admin = 1` query in `server/db.js` so accounts created with `is_admin = 0` remain non-admin across server restarts.
+- **Proxy-Aware Rate Limiting & Secure Cookies**: Configured `app.set("trust proxy", 1)` for accurate single-hop client IP resolution behind nginx reverse proxy, preventing collective rate limit lockouts; simplified cookie `secure` option in `/login` to rely directly on `req.secure`.
+- **Repository Cleanliness**: Purged sensitive `AUDIT_2026-09-07.md` from the public git history.
+
 ## [2.2.3] - 2026-09-07
 
 ### Security

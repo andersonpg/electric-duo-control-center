@@ -1,6 +1,6 @@
 {
   "name": "electric-duo-control-center",
-  "version": "2.2.3",
+  "version": "2.2.4",
   "description": "The Electric Duo Master Command Center — Plan Checklist & Article Generator",
   "private": true,
   "main": "server/app.js",
@@ -8,7 +8,7 @@
     "start": "node server/app.js",
     "dev": "node server/app.js",
     "create-user": "node scripts/create-user.js",
-    "build:frontend": "npm --prefix frontend run build && rm -rf public/assets && cp -r frontend/dist/* public/",
+    "build:frontend": "node scripts/build.js",
     "build": "node scripts/build.js"
   },
   "dependencies": {

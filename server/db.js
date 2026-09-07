@@ -279,8 +279,6 @@ const addedAdmin = addColumnIfNotExists(controlDb, "users", "is_admin", "INTEGER
 if (addedAdmin) {
   controlDb.exec("UPDATE users SET is_admin = 1;");
 }
-// Also ensure any preexisting users are marked admin
-controlDb.exec("UPDATE users SET is_admin = 1 WHERE is_admin = 0 AND datetime(created_at) <= datetime('now');");
 addColumnIfNotExists(controlDb, "sessions", "oauth_state", "TEXT");
 
 // Video and transcript column migrations
