@@ -285,7 +285,47 @@ try {
 } catch (e) {}
 
 try {
+  articleDb.exec("ALTER TABLE videos ADD COLUMN caption_status TEXT DEFAULT 'none';");
+} catch (e) {}
+
+try {
+  articleDb.exec("ALTER TABLE transcripts ADD COLUMN status TEXT DEFAULT 'unfixed';");
+} catch (e) {}
+
+try {
+  articleDb.exec("ALTER TABLE transcripts ADD COLUMN youtube_caption_id TEXT;");
+} catch (e) {}
+
+try {
+  articleDb.exec("ALTER TABLE transcripts ADD COLUMN uploaded_at DATETIME;");
+} catch (e) {}
+
+try {
   articleDb.exec("UPDATE videos SET privacy_status = 'public' WHERE privacy_status IS NULL;");
+} catch (e) {}
+
+try {
+  articleDb.exec(`
+    UPDATE videos SET caption_status = 'uploaded'
+    WHERE youtube_id IN (SELECT video_id FROM transcripts WHERE status = 'uploaded');
+
+    UPDATE videos SET caption_status = 'fixed'
+    WHERE youtube_id IN (
+      SELECT video_id FROM transcripts 
+      WHERE (cleaned_srt IS NOT NULL AND length(cleaned_srt) > 0)
+        AND (status IS NULL OR status != 'uploaded')
+    );
+
+    UPDATE videos SET caption_status = 'unfixed'
+    WHERE youtube_id IN (
+      SELECT video_id FROM transcripts 
+      WHERE (cleaned_srt IS NULL OR length(cleaned_srt) = 0)
+        AND (raw_srt IS NOT NULL AND length(raw_srt) > 0)
+        AND (status IS NULL OR status != 'uploaded')
+    );
+
+    UPDATE videos SET caption_status = 'none' WHERE caption_status IS NULL;
+  `);
 } catch (e) {}
 
 // Seed default title prompt settings if not present

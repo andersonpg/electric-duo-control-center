@@ -24,6 +24,9 @@ import {
   Tag,
   ArrowRight,
   Video,
+  DownloadCloud,
+  UploadCloud,
+  AlertCircle,
 } from "lucide-react";
 
 export default function Transcripts({ currentUser, initialVideoId, onClearInitialVideoId }) {
@@ -221,6 +224,67 @@ export default function Transcripts({ currentUser, initialVideoId, onClearInitia
       showToast(err.message, "error");
     } finally {
       setIsSavingTranscript(false);
+    }
+  };
+
+  const [isRetrievingYoutubeCaptions, setIsRetrievingYoutubeCaptions] = useState(false);
+  const [isUploadingYoutubeCaptions, setIsUploadingYoutubeCaptions] = useState(false);
+
+  const handleRetrieveFromYoutube = async () => {
+    if (!selectedVideo) return;
+    setIsRetrievingYoutubeCaptions(true);
+    try {
+      const res = await fetch(`/api/videos/${selectedVideo.youtube_id}/captions/retrieve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ overwrite: true }),
+        credentials: "same-origin",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to retrieve captions from YouTube");
+
+      if (data.transcript) {
+        setSavedTranscript(data.transcript);
+      }
+      setRawInput(data.transcript?.raw_srt || "");
+      await handlePreviewText(data.transcript?.raw_srt || "");
+      setIsUploadingNew(false);
+      showToast(`Retrieved ${data.chunkCount || ""} caption chunks from YouTube!`, "success");
+
+      setVideos((prev) =>
+        prev.map((v) =>
+          v.youtube_id === selectedVideo.youtube_id ? { ...v, caption_status: data.status || "unfixed" } : v
+        )
+      );
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      setIsRetrievingYoutubeCaptions(false);
+    }
+  };
+
+  const handleUploadToYoutube = async () => {
+    if (!selectedVideo) return;
+    setIsUploadingYoutubeCaptions(true);
+    try {
+      const res = await fetch(`/api/videos/${selectedVideo.youtube_id}/captions/upload`, {
+        method: "POST",
+        credentials: "same-origin",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to upload clean captions to YouTube");
+
+      showToast(`Clean captions uploaded to YouTube as "English (Edited)"!`, "success");
+      await loadTranscriptForVideo(selectedVideo.youtube_id);
+      setVideos((prev) =>
+        prev.map((v) =>
+          v.youtube_id === selectedVideo.youtube_id ? { ...v, caption_status: "uploaded" } : v
+        )
+      );
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      setIsUploadingYoutubeCaptions(false);
     }
   };
 
@@ -647,18 +711,53 @@ export default function Transcripts({ currentUser, initialVideoId, onClearInitia
               {savedTranscript && !isUploadingNew && (
                 <div className="bg-slate-900/90 border border-emerald-500/30 rounded-3xl p-5 shadow-xl flex items-center justify-between flex-wrap gap-4 backdrop-blur-xl">
                   <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
+                    <div className={`w-10 h-10 rounded-2xl border flex items-center justify-center shrink-0 ${
+                      savedTranscript.status === "uploaded"
+                        ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+                        : "bg-cyan-500/10 border-cyan-500/30 text-cyan-400"
+                    }`}>
                       <CheckCircle2 className="w-5 h-5" />
                     </div>
                     <div>
-                      <h4 className="text-xs font-bold text-emerald-300">Cleaned Transcript Saved</h4>
-                      <p className="text-[11px] text-slate-400">
+                      <div className="flex items-center gap-2">
+                        <h4 className="text-xs font-bold text-white">Cleaned Transcript Saved</h4>
+                        {savedTranscript.status === "uploaded" ? (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-950/80 text-emerald-300 border border-emerald-500/40">
+                            Uploaded to YouTube
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-cyan-950/80 text-cyan-300 border border-cyan-500/40">
+                            Ready to Upload
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
                         Updated {new Date(savedTranscript.updated_at).toLocaleString()} · Ready for title generation & YouTube subtitles
                       </p>
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      onClick={handleUploadToYoutube}
+                      disabled={isUploadingYoutubeCaptions}
+                      className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all shadow-md disabled:opacity-50 ${
+                        savedTranscript.status === "uploaded"
+                          ? "bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700"
+                          : "bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 shadow-cyan-500/20"
+                      }`}
+                      title="Upload cleaned subtitle track to YouTube Data API v3"
+                    >
+                      <UploadCloud className={`w-3.5 h-3.5 ${isUploadingYoutubeCaptions ? "animate-bounce" : ""}`} />
+                      <span>
+                        {isUploadingYoutubeCaptions
+                          ? "Uploading to YouTube…"
+                          : savedTranscript.status === "uploaded"
+                          ? "Re-upload to YouTube"
+                          : "Upload Clean Captions to YouTube"}
+                      </span>
+                    </button>
+
                     <a
                       href={`/api/transcripts/${selectedVideo.youtube_id}/download`}
                       className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 text-xs font-bold transition-all shadow-md shadow-emerald-600/20"
@@ -672,7 +771,7 @@ export default function Transcripts({ currentUser, initialVideoId, onClearInitia
                       className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold border border-slate-700 transition-all"
                     >
                       <Upload className="w-3.5 h-3.5 text-cyan-400" />
-                      <span>Replace Transcript</span>
+                      <span>Replace Subtitles</span>
                     </button>
                   </div>
                 </div>
@@ -685,10 +784,10 @@ export default function Transcripts({ currentUser, initialVideoId, onClearInitia
                     <div>
                       <h3 className="text-sm font-bold text-white flex items-center gap-2">
                         <Upload className="w-4 h-4 text-cyan-400" />
-                        <span>Upload or Paste Subtitles</span>
+                        <span>Upload or Retrieve Subtitles</span>
                       </h3>
                       <p className="text-xs text-slate-400 mt-0.5">
-                        Drop an `.srt` file or paste subtitle text to run deterministic EV spelling and numeral correction.
+                        Download YouTube auto-captions directly, drop an `.srt` file, or paste subtitle text.
                       </p>
                     </div>
 
@@ -702,6 +801,28 @@ export default function Transcripts({ currentUser, initialVideoId, onClearInitia
                     )}
                   </div>
 
+                  {/* Quick Retrieve from YouTube Box */}
+                  <div className="p-4 rounded-2xl bg-cyan-950/20 border border-cyan-500/20 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                      <h4 className="text-xs font-bold text-cyan-300 flex items-center gap-1.5">
+                        <DownloadCloud className="w-4 h-4 text-cyan-400" />
+                        <span>Fetch Captions from YouTube</span>
+                      </h4>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        Directly download auto-generated or published YouTube captions without having to export files.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleRetrieveFromYoutube}
+                      disabled={isRetrievingYoutubeCaptions}
+                      className="flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 text-xs font-bold transition-all shadow-md shadow-cyan-500/20 disabled:opacity-50 shrink-0"
+                    >
+                      <DownloadCloud className={`w-3.5 h-3.5 ${isRetrievingYoutubeCaptions ? "animate-bounce" : ""}`} />
+                      <span>{isRetrievingYoutubeCaptions ? "Fetching Captions…" : "Retrieve Auto-Captions"}</span>
+                    </button>
+                  </div>
+
                   {/* Drag-and-drop / File upload box */}
                   <div
                     onClick={() => fileInputRef.current?.click()}
@@ -710,7 +831,7 @@ export default function Transcripts({ currentUser, initialVideoId, onClearInitia
                     <input
                       ref={fileInputRef}
                       type="file"
-                      accept=".srt,.vtt,.txt"
+                      accept=".srt,.vtt"
                       onChange={handleFileChange}
                       className="hidden"
                     />

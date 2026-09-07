@@ -6,6 +6,7 @@ const db = require("./db").articleDb;
 const SCOPES = [
   "https://www.googleapis.com/auth/yt-analytics.readonly",
   "https://www.googleapis.com/auth/youtube.readonly",
+  "https://www.googleapis.com/auth/youtube.force-ssl",
 ];
 
 function getRedirectUri() {
@@ -46,12 +47,26 @@ function createOAuth2Client() {
 
 function getSavedTokens() {
   const raw = getSetting("google_oauth_tokens");
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw);
-  } catch (e) {
-    return null;
+  let tokens = null;
+  if (raw) {
+    try {
+      tokens = JSON.parse(raw);
+    } catch (e) {
+      tokens = null;
+    }
   }
+
+  // Fallback to process.env.GOOGLE_REFRESH_TOKEN if not stored or missing refresh_token
+  const envRefreshToken = process.env.GOOGLE_REFRESH_TOKEN;
+  if (envRefreshToken) {
+    if (!tokens) {
+      tokens = { refresh_token: envRefreshToken };
+    } else if (!tokens.refresh_token) {
+      tokens.refresh_token = envRefreshToken;
+    }
+  }
+
+  return tokens;
 }
 
 function saveTokens(tokens) {
@@ -63,13 +78,14 @@ function getAuthenticatedClient() {
   if (!oauth2Client) return null;
 
   const tokens = getSavedTokens();
-  if (!tokens || !tokens.access_token) return null;
+  if (!tokens || (!tokens.access_token && !tokens.refresh_token)) return null;
 
   oauth2Client.setCredentials(tokens);
 
   // Auto-save refreshed tokens
   oauth2Client.on("tokens", (newTokens) => {
-    const merged = { ...tokens, ...newTokens };
+    const current = getSavedTokens() || {};
+    const merged = { ...current, ...newTokens };
     saveTokens(merged);
   });
 

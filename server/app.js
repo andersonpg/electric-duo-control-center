@@ -23,6 +23,13 @@ const fathomNewsRouter = require("./fathom-news");
 
 const { loadRules, fixSrt, srtToPlainText } = require("../fixTranscript");
 const { addTerm, listTerms, removeVariant } = require("../termList");
+const {
+  fetchRawCaptionsAsSrt,
+  fixCaptionSrt,
+  saveCaptionRecord,
+  uploadCaptionsToYoutube,
+  processVideoCaptions,
+} = require("./captions");
 const termsPath = path.join(__dirname, "..", "ev_terms.json");
 
 const app = express();
@@ -242,7 +249,7 @@ app.post("/api/runrate", auth.requireAuth(), (req, res) => {
 // Videos Catalog
 app.get("/api/videos", auth.requireAuth(), (req, res) => {
   try {
-    const { search, status, contentType, privacy, excludeShorts } = req.query;
+    const { search, status, contentType, privacy, excludeShorts, captionStatus } = req.query;
 
     let query = "SELECT * FROM videos WHERE 1=1";
     const params = [];
@@ -265,6 +272,15 @@ app.get("/api/videos", auth.requireAuth(), (req, res) => {
     if (contentType && contentType !== "all") {
       query += " AND content_type = ?";
       params.push(contentType);
+    }
+
+    if (captionStatus && captionStatus !== "all") {
+      if (captionStatus === "none") {
+        query += " AND (caption_status IS NULL OR caption_status = 'none')";
+      } else {
+        query += " AND caption_status = ?";
+        params.push(captionStatus);
+      }
     }
 
     if (search) {
@@ -695,18 +711,19 @@ app.post("/api/transcripts/:videoId", auth.requireAuth(), (req, res) => {
     const plainText = plain_text || srtToPlainText(cleaned_srt);
 
     const stmt = articleDb.prepare(`
-      INSERT INTO transcripts (video_id, raw_srt, cleaned_srt, plain_text, updated_at)
-      VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+      INSERT INTO transcripts (video_id, raw_srt, cleaned_srt, plain_text, status, updated_at)
+      VALUES (?, ?, ?, ?, 'fixed', CURRENT_TIMESTAMP)
       ON CONFLICT(video_id) DO UPDATE SET
         raw_srt = excluded.raw_srt,
         cleaned_srt = excluded.cleaned_srt,
         plain_text = excluded.plain_text,
+        status = 'fixed',
         updated_at = CURRENT_TIMESTAMP
     `);
     stmt.run(videoId, raw_srt, cleaned_srt, plainText);
 
-    // Also update videos.transcript for compatibility with Article Generator
-    articleDb.prepare("UPDATE videos SET transcript = ? WHERE youtube_id = ?").run(plainText, videoId);
+    // Also update videos.transcript and caption_status
+    articleDb.prepare("UPDATE videos SET transcript = ?, caption_status = 'fixed' WHERE youtube_id = ?").run(plainText, videoId);
 
     const saved = articleDb.prepare("SELECT * FROM transcripts WHERE video_id = ?").get(videoId);
     res.json({ success: true, transcript: saved });
@@ -720,7 +737,7 @@ app.get("/api/transcripts/:videoId", auth.requireAuth(), (req, res) => {
   try {
     const { videoId } = req.params;
     const transcript = articleDb.prepare("SELECT * FROM transcripts WHERE video_id = ?").get(videoId);
-    const video = articleDb.prepare("SELECT youtube_id, title, duration, thumbnail_url, working_title, privacy_status FROM videos WHERE youtube_id = ?").get(videoId);
+    const video = articleDb.prepare("SELECT youtube_id, title, duration, thumbnail_url, working_title, privacy_status, caption_status FROM videos WHERE youtube_id = ?").get(videoId);
     if (!transcript) {
       return res.status(404).json({ error: "Transcript not found for this video.", video: video || null });
     }
@@ -738,11 +755,109 @@ app.get("/api/transcripts/:videoId/download", auth.requireAuth(), (req, res) => 
     if (!transcript || !transcript.cleaned_srt) {
       return res.status(404).send("Transcript not found for video.");
     }
-    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.setHeader("Content-Type", "application/x-subrip; charset=utf-8");
     res.setHeader("Content-Disposition", `attachment; filename="${videoId}-cleaned.srt"`);
     res.send(transcript.cleaned_srt);
   } catch (error) {
     res.status(500).send("Error downloading transcript: " + error.message);
+  }
+});
+
+// 4a. Retrieve raw YouTube captions (Bypasses Data API restrictions)
+app.post("/api/videos/:videoId/captions/retrieve", auth.requireAuth(), async (req, res) => {
+  try {
+    const { videoId } = req.params;
+    const { overwrite } = req.body || {};
+
+    const existing = articleDb.prepare("SELECT * FROM transcripts WHERE video_id = ?").get(videoId);
+    if (existing && (existing.raw_srt || existing.cleaned_srt) && !overwrite) {
+      return res.status(409).json({
+        promptConfirmation: true,
+        message: "Captions already exist for this video. Overwrite existing captions?",
+      });
+    }
+
+    const { srt, chunkCount } = await fetchRawCaptionsAsSrt(videoId);
+    const fixed = fixCaptionSrt(srt);
+
+    const saved = saveCaptionRecord(videoId, {
+      raw_srt: srt,
+      cleaned_srt: fixed.cleaned_srt,
+      plain_text: fixed.plain_text,
+      status: "unfixed",
+    });
+
+    res.json({
+      success: true,
+      videoId,
+      status: "unfixed",
+      chunkCount,
+      summary: fixed.summary,
+      transcript: saved,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 4b. Clean existing captions with EV terminology
+app.post("/api/videos/:videoId/captions/clean", auth.requireAuth(), (req, res) => {
+  try {
+    const { videoId } = req.params;
+    const transcript = articleDb.prepare("SELECT * FROM transcripts WHERE video_id = ?").get(videoId);
+    if (!transcript || !transcript.raw_srt) {
+      return res.status(404).json({ error: "No raw captions found for this video. Retrieve captions first." });
+    }
+
+    const fixed = fixCaptionSrt(transcript.raw_srt);
+    const saved = saveCaptionRecord(videoId, {
+      raw_srt: transcript.raw_srt,
+      cleaned_srt: fixed.cleaned_srt,
+      plain_text: fixed.plain_text,
+      status: "fixed",
+    });
+
+    res.json({
+      success: true,
+      videoId,
+      status: "fixed",
+      summary: fixed.summary,
+      transcript: saved,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 4c. Upload cleaned SRT subtitle track to YouTube Data API v3
+app.post("/api/videos/:videoId/captions/upload", auth.requireAuth(), async (req, res) => {
+  try {
+    const { videoId } = req.params;
+    const transcript = articleDb.prepare("SELECT * FROM transcripts WHERE video_id = ?").get(videoId);
+    if (!transcript || !transcript.cleaned_srt) {
+      return res.status(400).json({ error: "Cleaned captions are not available. Clean transcript first." });
+    }
+
+    const uploadRes = await uploadCaptionsToYoutube(videoId, transcript.cleaned_srt);
+    res.json({
+      success: true,
+      videoId,
+      status: "uploaded",
+      captionId: uploadRes.captionId,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 4d. Full Orchestrator: retrieve -> fix -> save -> upload
+app.post("/api/videos/:videoId/captions/orchestrate", auth.requireAuth(), async (req, res) => {
+  try {
+    const { videoId } = req.params;
+    const result = await processVideoCaptions(videoId);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 

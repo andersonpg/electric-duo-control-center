@@ -127,7 +127,7 @@ export default function App() {
               Command Center
             </span>
             <span className="hidden sm:inline-block text-[10px] font-mono font-bold tracking-wider px-2 py-0.5 rounded-full bg-cyan-950/70 border border-cyan-500/30 text-cyan-400">
-              v2.1.0
+              v2.2.0
             </span>
           </div>
         </div>

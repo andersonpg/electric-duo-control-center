@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.2.0] - 2026-09-07
+
+### Added
+- **Auto-Generated YouTube Caption Retrieval (Bypassing API Restriction)**:
+  - Added public caption extractor engine in `server/captions.js` utilizing `youtube-transcript` with `youtube-caption-extractor` fallback to extract timed transcript chunks without official API restrictions.
+  - Reconstructs transcript chunks into fully compliant SubRip (`.srt`) format with sequential numbering, `00:00:00,000 --> 00:00:00,000` timestamps, and decoded HTML entities.
+  - Added "Retrieve Captions" action button across Video Audit cards, the Video Audit Report modal, and the Transcripts studio.
+  - Added confirmation dialog prompt (`Are you sure? ...`) when retrieving captions for a video that already has existing transcripts/edits.
+  - Added automatic caption download on future Catalog Syncs (`syncCatalog`) for newly discovered videos.
+- **Caption Status Tracking & Indicator Badges**:
+  - Added `caption_status` column to `videos` table (`none`, `unfixed`, `fixed`, `uploaded`) and status tracking to `transcripts` table (`status`, `youtube_caption_id`, `uploaded_at`).
+  - Added visual indicator badges on `VideoAudit.jsx`:
+    - `No Captions` (Gray badge)
+    - `Unfixed Captions` (Amber badge)
+    - `Fixed Captions` (Cyan badge)
+    - `Uploaded` (Emerald badge)
+  - Added Caption Status filter dropdown in Video Audit Hub (filter by All / No Captions / Unfixed / Fixed / Uploaded).
+  - Added 1-click "Clean Captions" action on unfixed videos to apply EV-terminology corrections immediately.
+- **YouTube Subtitle Track Publishing via Data API v3**:
+  - Added `uploadCaptionsToYoutube` leveraging `googleapis` with `https://www.googleapis.com/auth/youtube.force-ssl` OAuth2 scope.
+  - Inserts caption track with `part: ['snippet']`, `snippet: { videoId, language: 'en', name: 'English (Edited)', isDraft: false }`, and cleaned SRT readable stream (omitting deprecated `sync` parameter).
+  - Added "Upload Clean Captions" button on Video Audit cards, the Audit Report modal, and the Transcripts workspace.
+  - Fallback support for `process.env.GOOGLE_REFRESH_TOKEN` for OAuth credentials.
+- **Orchestrator Pipeline**:
+  - Exported `processVideoCaptions(videoId)` orchestrator function that executes the complete pipeline in one call: caption retrieval $\rightarrow$ EV vocabulary cleanup $\rightarrow$ database persistence $\rightarrow$ YouTube subtitle upload.
+- **Standardized on SRT**:
+  - Switched all subtitle/transcript download routes across the application to SubRip (`.srt`) with `application/x-subrip; charset=utf-8` MIME type.
+
+---
+
 ## [2.1.0] - 2026-09-07
 
 ### Added

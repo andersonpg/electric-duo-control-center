@@ -5,6 +5,26 @@ const { google } = require("googleapis");
 const axios = require("axios");
 const db = require("./db").articleDb;
 const { getAuthenticatedClient, isOAuthConnected } = require("./youtube-analytics");
+const { fetchRawCaptionsAsSrt, fixCaptionSrt, saveCaptionRecord } = require("./captions");
+
+async function tryAutoDownloadCaptions(videoId) {
+  try {
+    const { srt } = await fetchRawCaptionsAsSrt(videoId);
+    if (srt && srt.trim()) {
+      const fixed = fixCaptionSrt(srt);
+      saveCaptionRecord(videoId, {
+        raw_srt: srt,
+        cleaned_srt: fixed.cleaned_srt,
+        plain_text: fixed.plain_text,
+        status: "fixed",
+      });
+      console.log(`[Auto-Captions] Successfully retrieved & cleaned captions for ${videoId}`);
+    }
+  } catch (err) {
+    // Non-blocking: captions may still be processing on YouTube
+    console.log(`[Auto-Captions] Note for ${videoId}: ${err.message}`);
+  }
+}
 
 function getYoutubeApiKey() {
   try {
@@ -336,6 +356,13 @@ async function syncCatalogViaYouTubeApi(mode = "delta") {
     pageToken = playlistRes.data.nextPageToken;
   } while (pageToken);
 
+  // Auto-download captions for any newly discovered videos if available
+  if (newVideosList.length > 0) {
+    for (const newVid of newVideosList) {
+      await tryAutoDownloadCaptions(newVid.id);
+    }
+  }
+
   return { newCount, totalProcessed, removedCount, newVideos: newVideosList, mode, isScraped: false, success: true };
 }
 
@@ -561,6 +588,13 @@ async function syncRealChannelVideosScraper(mode = "delta") {
         }
       })
     );
+  }
+
+  // Auto-download captions for any newly discovered videos if available
+  if (newVideosList.length > 0) {
+    for (const newVid of newVideosList) {
+      await tryAutoDownloadCaptions(newVid.id);
+    }
   }
 
   return { newCount, totalProcessed, newVideos: newVideosList, mode, isScraped: true, success: true };

@@ -21,6 +21,9 @@ import {
   Layers,
   ChevronRight,
   FileText,
+  DownloadCloud,
+  UploadCloud,
+  AlertCircle,
 } from "lucide-react";
 
 export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitle, initialAudit, onAuditUpdated, onSelectVideoForTranscript }) {
@@ -29,6 +32,10 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
   const [refreshing, setRefreshing] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState(null);
   const [activeTab, setActiveTab] = useState("overview"); // 'overview' | 'retention' | 'packaging' | 'discovery' | 'actions'
+  const [transcriptInfo, setTranscriptInfo] = useState(null);
+  const [captionRetrieving, setCaptionRetrieving] = useState(false);
+  const [captionUploading, setCaptionUploading] = useState(false);
+  const [captionToast, setCaptionToast] = useState(null);
   const tabContentRef = React.useRef(null);
 
   useEffect(() => {
@@ -37,8 +44,65 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
     }
   }, [activeTab]);
 
+  const loadTranscriptInfo = async () => {
+    try {
+      const res = await fetch(`/api/transcripts/${youtubeId}`, { credentials: "same-origin" });
+      if (res.ok) {
+        const data = await res.json();
+        setTranscriptInfo(data);
+      } else {
+        setTranscriptInfo(null);
+      }
+    } catch (e) {
+      setTranscriptInfo(null);
+    }
+  };
+
+  const handleRetrieveCaptions = async () => {
+    setCaptionRetrieving(true);
+    try {
+      const res = await fetch(`/api/videos/${youtubeId}/captions/retrieve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ overwrite: true }),
+        credentials: "same-origin",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to retrieve captions");
+      await loadTranscriptInfo();
+      setCaptionToast({ type: "success", text: "Auto-captions retrieved from YouTube!" });
+      setTimeout(() => setCaptionToast(null), 3500);
+    } catch (err) {
+      setCaptionToast({ type: "error", text: err.message });
+      setTimeout(() => setCaptionToast(null), 4000);
+    } finally {
+      setCaptionRetrieving(false);
+    }
+  };
+
+  const handleUploadCaptions = async () => {
+    setCaptionUploading(true);
+    try {
+      const res = await fetch(`/api/videos/${youtubeId}/captions/upload`, {
+        method: "POST",
+        credentials: "same-origin",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to upload clean captions");
+      await loadTranscriptInfo();
+      setCaptionToast({ type: "success", text: "Clean captions uploaded to YouTube as 'English (Edited)'!" });
+      setTimeout(() => setCaptionToast(null), 3500);
+    } catch (err) {
+      setCaptionToast({ type: "error", text: err.message });
+      setTimeout(() => setCaptionToast(null), 4000);
+    } finally {
+      setCaptionUploading(false);
+    }
+  };
+
   useEffect(() => {
     if (isOpen && youtubeId) {
+      loadTranscriptInfo();
       if (initialAudit && initialAudit.youtubeId === youtubeId) {
         setAudit(initialAudit);
         setLoading(false);
@@ -107,10 +171,30 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
               <Sparkles className="w-5 h-5 fill-current" />
             </div>
             <div className="min-w-0">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 uppercase tracking-widest">
                   Video Audit Report
                 </span>
+                {transcriptInfo && transcriptInfo.status === "uploaded" && (
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-950/80 text-emerald-300 border border-emerald-500/40">
+                    Captions Uploaded
+                  </span>
+                )}
+                {transcriptInfo && transcriptInfo.status === "fixed" && (
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-cyan-950/80 text-cyan-300 border border-cyan-500/40">
+                    Cleaned Captions
+                  </span>
+                )}
+                {transcriptInfo && transcriptInfo.status === "unfixed" && (
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-950/80 text-amber-300 border border-amber-500/40">
+                    Unfixed Captions
+                  </span>
+                )}
+                {!transcriptInfo && (
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700">
+                    No Captions
+                  </span>
+                )}
                 {metrics && (
                   <span className="text-xs text-slate-400 font-mono">
                     {metrics.category} · {metrics.durationFormatted}
@@ -123,7 +207,42 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
             </div>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-2 shrink-0 flex-wrap">
+            {/* Quick Caption Actions */}
+            {!transcriptInfo && (
+              <button
+                onClick={handleRetrieveCaptions}
+                disabled={captionRetrieving}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition-all disabled:opacity-50"
+                title="Retrieve auto-captions from YouTube"
+              >
+                <DownloadCloud className={`w-3.5 h-3.5 text-cyan-400 ${captionRetrieving ? "animate-bounce" : ""}`} />
+                <span>{captionRetrieving ? "Retrieving…" : "Retrieve Captions"}</span>
+              </button>
+            )}
+
+            {transcriptInfo && (transcriptInfo.status === "fixed" || transcriptInfo.status === "uploaded") && (
+              <button
+                onClick={handleUploadCaptions}
+                disabled={captionUploading}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all disabled:opacity-50 ${
+                  transcriptInfo.status === "uploaded"
+                    ? "bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border-emerald-500/30"
+                    : "bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border-cyan-500/30 shadow-sm"
+                }`}
+                title="Upload cleaned subtitle track to YouTube as 'English (Edited)'"
+              >
+                <UploadCloud className={`w-3.5 h-3.5 text-cyan-400 ${captionUploading ? "animate-bounce" : ""}`} />
+                <span>
+                  {captionUploading
+                    ? "Uploading…"
+                    : transcriptInfo.status === "uploaded"
+                    ? "Re-upload Clean Track"
+                    : "Upload Clean Captions"}
+                </span>
+              </button>
+            )}
+
             <button
               onClick={() => loadAudit(true)}
               disabled={loading || refreshing}
@@ -139,11 +258,11 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                   onClose();
                   onSelectVideoForTranscript(youtubeId);
                 }}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 text-xs font-semibold border border-cyan-500/30 transition-all shadow-sm"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition-all shadow-sm"
                 title="Upload and clean subtitles with EV terminology"
               >
                 <FileText className="w-3.5 h-3.5 text-cyan-400" />
-                <span>Upload Transcript</span>
+                <span>Transcripts Studio</span>
               </button>
             )}
 
@@ -165,6 +284,32 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
             </button>
           </div>
         </div>
+
+        {/* Caption Action Feedback Banner */}
+        {captionToast && (
+          <div
+            className={`px-6 py-2.5 text-xs font-semibold flex items-center justify-between transition-all ${
+              captionToast.type === "success"
+                ? "bg-emerald-950/90 text-emerald-200 border-b border-emerald-500/40"
+                : "bg-rose-950/90 text-rose-200 border-b border-rose-500/40"
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              {captionToast.type === "success" ? (
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+              ) : (
+                <AlertCircle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+              )}
+              <span>{captionToast.text}</span>
+            </div>
+            <button
+              onClick={() => setCaptionToast(null)}
+              className="text-slate-400 hover:text-white p-0.5"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
 
         {/* Content Body */}
         {loading ? (

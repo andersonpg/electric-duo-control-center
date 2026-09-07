@@ -11,6 +11,13 @@ import {
   Zap,
   TrendingUp,
   BarChart3,
+  DownloadCloud,
+  UploadCloud,
+  RefreshCw,
+  FileText,
+  Check,
+  AlertCircle,
+  X,
 } from "lucide-react";
 import AuditReportModal from "./AuditReportModal";
 
@@ -20,15 +27,29 @@ export default function VideoAudit({ currentUser, initialVideoId, onClearInitial
   const [searchQuery, setSearchQuery] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [auditFilter, setAuditFilter] = useState("all"); // 'all' | 'audited' | 'unaudited'
+  const [captionFilter, setCaptionFilter] = useState("all"); // 'all' | 'none' | 'unfixed' | 'fixed' | 'uploaded'
   const [selectedVideo, setSelectedVideo] = useState(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(true);
 
+  const [retrievingCaptions, setRetrievingCaptions] = useState({});
+  const [cleaningCaptions, setCleaningCaptions] = useState({});
+  const [uploadingCaptions, setUploadingCaptions] = useState({});
+  const [confirmModal, setConfirmModal] = useState({ isOpen: false, video: null, message: "", onConfirm: null });
+  const [toast, setToast] = useState(null);
+
   useEffect(() => {
     fetchCatalogAndAudits();
     fetchCategories();
   }, []);
+
+  useEffect(() => {
+    if (toast) {
+      const timer = setTimeout(() => setToast(null), 4500);
+      return () => clearTimeout(timer);
+    }
+  }, [toast]);
 
   const fetchCategories = async () => {
     try {
@@ -94,6 +115,114 @@ export default function VideoAudit({ currentUser, initialVideoId, onClearInitial
     }));
   };
 
+  const handleRetrieveCaptions = async (video, force = false) => {
+    const hasCaptions = video.caption_status && video.caption_status !== "none";
+    if (!force && hasCaptions) {
+      setConfirmModal({
+        isOpen: true,
+        video,
+        message: `Captions already exist for "${video.title}". Are you sure you want to re-download raw captions from YouTube? Any existing cleaned SRT edits will be overwritten.`,
+        onConfirm: () => handleRetrieveCaptions(video, true),
+      });
+      return;
+    }
+
+    setConfirmModal({ isOpen: false, video: null, message: "", onConfirm: null });
+    setRetrievingCaptions((prev) => ({ ...prev, [video.youtube_id]: true }));
+
+    try {
+      const res = await fetch(`/api/videos/${video.youtube_id}/captions/retrieve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ overwrite: force }),
+        credentials: "same-origin",
+      });
+      const data = await res.json();
+
+      if (res.status === 409 && data.promptConfirmation) {
+        setConfirmModal({
+          isOpen: true,
+          video,
+          message: data.message || `Captions already exist for this video. Overwrite?`,
+          onConfirm: () => handleRetrieveCaptions(video, true),
+        });
+        return;
+      }
+
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to retrieve captions");
+      }
+
+      const newStatus = data.status || "unfixed";
+      setVideos((prev) =>
+        prev.map((v) =>
+          v.youtube_id === video.youtube_id ? { ...v, caption_status: newStatus } : v
+        )
+      );
+      setToast({
+        type: "success",
+        text: `Retrieved ${data.chunkCount || ""} caption chunks from YouTube! Status: Unfixed Captions.`,
+      });
+    } catch (err) {
+      setToast({ type: "error", text: err.message });
+    } finally {
+      setRetrievingCaptions((prev) => ({ ...prev, [video.youtube_id]: false }));
+    }
+  };
+
+  const handleCleanCaptions = async (video) => {
+    setCleaningCaptions((prev) => ({ ...prev, [video.youtube_id]: true }));
+    try {
+      const res = await fetch(`/api/videos/${video.youtube_id}/captions/clean`, {
+        method: "POST",
+        credentials: "same-origin",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to clean captions");
+
+      setVideos((prev) =>
+        prev.map((v) =>
+          v.youtube_id === video.youtube_id ? { ...v, caption_status: "fixed" } : v
+        )
+      );
+      const correctionsCount = data.summary?.length || 0;
+      setToast({
+        type: "success",
+        text: `Cleaned captions with EV vocabulary! (${correctionsCount} correction rule${correctionsCount === 1 ? "" : "s"} applied)`,
+      });
+    } catch (err) {
+      setToast({ type: "error", text: err.message });
+    } finally {
+      setCleaningCaptions((prev) => ({ ...prev, [video.youtube_id]: false }));
+    }
+  };
+
+  const handleUploadCaptions = async (video) => {
+    setUploadingCaptions((prev) => ({ ...prev, [video.youtube_id]: true }));
+    try {
+      const res = await fetch(`/api/videos/${video.youtube_id}/captions/upload`, {
+        method: "POST",
+        credentials: "same-origin",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to upload clean captions to YouTube");
+
+      setVideos((prev) =>
+        prev.map((v) =>
+          v.youtube_id === video.youtube_id ? { ...v, caption_status: "uploaded" } : v
+        )
+      );
+      setToast({
+        type: "success",
+        text: `Clean captions uploaded to YouTube as "English (Edited)"!`,
+      });
+    } catch (err) {
+      setToast({ type: "error", text: err.message });
+    } finally {
+      setUploadingCaptions((prev) => ({ ...prev, [video.youtube_id]: false }));
+    }
+  };
+
   const isShortVideo = (v) => {
     const titleLower = (v.title || "").toLowerCase();
     if (titleLower.includes("#shorts") || titleLower.includes("shorts")) return true;
@@ -128,7 +257,13 @@ export default function VideoAudit({ currentUser, initialVideoId, onClearInitial
       (auditFilter === "audited" && isAudited) ||
       (auditFilter === "unaudited" && !isAudited);
 
-    return matchesSearch && matchesCategory && matchesAudit;
+    const cStatus = v.caption_status || "none";
+    const matchesCaption =
+      captionFilter === "all" ||
+      (captionFilter === "none" && (cStatus === "none" || !v.caption_status)) ||
+      captionFilter === cStatus;
+
+    return matchesSearch && matchesCategory && matchesAudit && matchesCaption;
   });
 
   // Calculate high-level stats
@@ -147,6 +282,63 @@ export default function VideoAudit({ currentUser, initialVideoId, onClearInitial
 
   return (
     <div className="w-full max-w-7xl mx-auto px-6 py-8 flex flex-col gap-6 font-sans">
+      {/* Toast Feedback Notification */}
+      {toast && (
+        <div className="fixed bottom-6 right-6 z-50 animate-bounce-short">
+          <div
+            className={`flex items-center gap-3 px-4 py-3 rounded-2xl shadow-2xl border text-xs font-semibold backdrop-blur-xl ${
+              toast.type === "success"
+                ? "bg-emerald-950/90 text-emerald-200 border-emerald-500/40"
+                : "bg-rose-950/90 text-rose-200 border-rose-500/40"
+            }`}
+          >
+            {toast.type === "success" ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            ) : (
+              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+            )}
+            <span>{toast.text}</span>
+            <button
+              onClick={() => setToast(null)}
+              className="ml-2 text-slate-400 hover:text-white p-0.5"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Confirmation Modal for Overwriting Captions */}
+      {confirmModal.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fade-in">
+          <div className="bg-slate-900 border border-slate-750 p-6 rounded-3xl max-w-md w-full shadow-2xl border-slate-800 space-y-4">
+            <div className="flex items-center gap-3 text-amber-400">
+              <div className="p-2 rounded-xl bg-amber-500/10 border border-amber-500/20">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <h3 className="text-base font-bold text-white">Overwrite Captions?</h3>
+            </div>
+            <p className="text-xs text-slate-300 leading-relaxed">
+              {confirmModal.message}
+            </p>
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                onClick={() => setConfirmModal({ isOpen: false, video: null, message: "", onConfirm: null })}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-300 border border-slate-700 transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmModal.onConfirm}
+                className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-xs font-bold text-slate-950 shadow-md shadow-amber-500/20 transition-all"
+              >
+                Yes, Retrieve & Overwrite
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Masthead Banner */}
       <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 sm:p-8 backdrop-blur-xl shadow-xl">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800/80 pb-5">
@@ -160,12 +352,11 @@ export default function VideoAudit({ currentUser, initialVideoId, onClearInitial
             </h2>
           </div>
 
-          {/* Quick Metrics */}
           <div className="flex items-center gap-3">
             <div className="bg-slate-950/80 border border-slate-800 px-4 py-2 rounded-2xl flex flex-col items-center">
               <span className="text-[10px] text-slate-400 font-bold uppercase">Audited</span>
               <span className="text-base font-extrabold text-cyan-400 font-mono">
-                {totalAudited} / {videos.length}
+                {totalAudited} / {filteredVideos.length}
               </span>
             </div>
 
@@ -179,14 +370,14 @@ export default function VideoAudit({ currentUser, initialVideoId, onClearInitial
         </div>
 
         <p className="text-slate-400 text-xs sm:text-sm mt-4 leading-relaxed max-w-3xl">
-          Evaluate any video across your 500+ back catalog. Generates deep diagnostic evaluations including <b>30-second hook drop-off analysis</b>, <b>2x2 discovery matrix</b> (packaging vs algorithm bottleneck), <b>Gemini Vision thumbnail contrast inspection</b>, and 3-5 grounded alternative title concepts.
+          Evaluate any video across your 500+ back catalog. Includes <b>caption track status</b>, <b>auto-caption retrieval</b>, deterministic <b>EV terminology cleanup</b>, and <b>direct YouTube subtitle track publishing</b>.
         </p>
       </div>
 
       {/* Filter & Search Bar */}
       <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-4">
         {/* Search Input */}
-        <div className="relative flex-1 min-w-[280px]">
+        <div className="relative flex-1 min-w-[240px]">
           <Search className="w-4 h-4 absolute left-3.5 top-3 text-slate-400" />
           <input
             type="text"
@@ -221,14 +412,29 @@ export default function VideoAudit({ currentUser, initialVideoId, onClearInitial
             onChange={(e) => setAuditFilter(e.target.value)}
             className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-700/80 text-xs text-slate-200 focus:outline-none focus:border-cyan-500"
           >
-            <option value="all">All Videos</option>
+            <option value="all">All Audits</option>
             <option value="audited">Audited Only</option>
             <option value="unaudited">Needs Audit Only</option>
           </select>
         </div>
+
+        {/* Caption Status Filter */}
+        <div className="flex items-center gap-2">
+          <select
+            value={captionFilter}
+            onChange={(e) => setCaptionFilter(e.target.value)}
+            className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-700/80 text-xs text-slate-200 focus:outline-none focus:border-cyan-500 font-medium"
+          >
+            <option value="all">All Captions</option>
+            <option value="none">No Captions</option>
+            <option value="unfixed">Unfixed Captions</option>
+            <option value="fixed">Fixed Captions</option>
+            <option value="uploaded">Uploaded to YouTube</option>
+          </select>
+        </div>
       </div>
 
-      {/* Video Cards Grid / Table */}
+      {/* Video Cards Grid */}
       {loading ? (
         <div className="flex items-center justify-center py-20 text-slate-400 gap-3">
           <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-cyan-400"></div>
@@ -244,15 +450,20 @@ export default function VideoAudit({ currentUser, initialVideoId, onClearInitial
             const auditInfo = auditsSummary[video.youtube_id];
             const hasAudit = !!auditInfo;
             const score = auditInfo ? auditInfo.healthScore : null;
+            const captionStatus = video.caption_status || "none";
+
+            const isRetrieving = !!retrievingCaptions[video.youtube_id];
+            const isCleaning = !!cleaningCaptions[video.youtube_id];
+            const isUploading = !!uploadingCaptions[video.youtube_id];
 
             return (
               <div
                 key={video.youtube_id}
-                className="bg-slate-900/80 border border-slate-800 hover:border-slate-700/80 rounded-2xl p-4 flex flex-col justify-between gap-4 transition-all shadow-lg hover:shadow-cyan-500/5 group"
+                className="bg-slate-900/80 border border-slate-800 hover:border-slate-700/80 rounded-2xl p-4 flex flex-col justify-between gap-3.5 transition-all shadow-lg hover:shadow-cyan-500/5 group"
               >
-                <div>
+                <div className="space-y-3">
                   {/* Thumbnail & Badges */}
-                  <div className="relative rounded-xl overflow-hidden aspect-video bg-slate-950 border border-slate-800 mb-3">
+                  <div className="relative rounded-xl overflow-hidden aspect-video bg-slate-950 border border-slate-800">
                     <img
                       src={
                         video.thumbnail_url ||
@@ -286,14 +497,121 @@ export default function VideoAudit({ currentUser, initialVideoId, onClearInitial
                     )}
                   </div>
 
-                  {/* Title & Metadata */}
-                  <h3 className="text-xs font-bold text-slate-100 line-clamp-2 leading-relaxed mb-1.5">
-                    {video.title}
-                  </h3>
+                  {/* Title & Date */}
+                  <div>
+                    <h3 className="text-xs font-bold text-slate-100 line-clamp-2 leading-relaxed mb-1.5">
+                      {video.title}
+                    </h3>
 
-                  <div className="flex items-center gap-2 text-[11px] text-slate-400 font-mono">
-                    <Calendar className="w-3 h-3 text-slate-500" />
-                    <span>{formatDate(video.published_at)}</span>
+                    <div className="flex items-center gap-2 text-[11px] text-slate-400 font-mono">
+                      <Calendar className="w-3 h-3 text-slate-500" />
+                      <span>{formatDate(video.published_at)}</span>
+                    </div>
+                  </div>
+
+                  {/* Caption Track Status & Quick Actions */}
+                  <div className="pt-2.5 pb-1 border-t border-slate-800/80 flex flex-col gap-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] uppercase font-bold text-slate-500">Captions:</span>
+                        {captionStatus === "none" && (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-800/90 text-slate-400 border border-slate-700">
+                            No Captions
+                          </span>
+                        )}
+                        {captionStatus === "unfixed" && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-950/80 text-amber-300 border border-amber-500/40">
+                            <AlertTriangle className="w-2.5 h-2.5" /> Unfixed Captions
+                          </span>
+                        )}
+                        {captionStatus === "fixed" && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-cyan-950/80 text-cyan-300 border border-cyan-500/40">
+                            <CheckCircle2 className="w-2.5 h-2.5" /> Fixed Captions
+                          </span>
+                        )}
+                        {captionStatus === "uploaded" && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950/80 text-emerald-300 border border-emerald-500/40">
+                            <CheckCircle2 className="w-2.5 h-2.5" /> Uploaded
+                          </span>
+                        )}
+                      </div>
+
+                      {onSelectVideoForTranscript && (
+                        <button
+                          onClick={() => onSelectVideoForTranscript(video.youtube_id)}
+                          className="text-[10px] text-cyan-400 hover:text-cyan-300 font-medium underline-offset-2 hover:underline inline-flex items-center gap-1"
+                          title="Open in Transcript Review Studio"
+                        >
+                          <FileText className="w-2.5 h-2.5" /> Review
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Caption Action Buttons */}
+                    <div className="flex items-center gap-1.5">
+                      {captionStatus === "none" && (
+                        <button
+                          onClick={() => handleRetrieveCaptions(video)}
+                          disabled={isRetrieving}
+                          className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-semibold border border-slate-700 hover:border-slate-600 transition-all disabled:opacity-50"
+                        >
+                          <DownloadCloud className={`w-3 h-3 text-cyan-400 ${isRetrieving ? "animate-bounce" : ""}`} />
+                          <span>{isRetrieving ? "Retrieving…" : "Retrieve Captions"}</span>
+                        </button>
+                      )}
+
+                      {captionStatus === "unfixed" && (
+                        <>
+                          <button
+                            onClick={() => handleCleanCaptions(video)}
+                            disabled={isCleaning}
+                            className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-[11px] font-semibold border border-amber-500/30 transition-all disabled:opacity-50"
+                          >
+                            <Sparkles className={`w-3 h-3 text-amber-400 ${isCleaning ? "animate-spin" : ""}`} />
+                            <span>{isCleaning ? "Cleaning…" : "Clean Captions"}</span>
+                          </button>
+                          <button
+                            onClick={() => handleRetrieveCaptions(video)}
+                            disabled={isRetrieving}
+                            className="px-2 py-1.5 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-slate-200 text-[11px] border border-slate-700 transition-all"
+                            title="Re-download raw captions from YouTube"
+                          >
+                            <RefreshCw className={`w-3 h-3 ${isRetrieving ? "animate-spin" : ""}`} />
+                          </button>
+                        </>
+                      )}
+
+                      {(captionStatus === "fixed" || captionStatus === "uploaded") && (
+                        <>
+                          <button
+                            onClick={() => handleUploadCaptions(video)}
+                            disabled={isUploading}
+                            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-xl text-[11px] font-semibold transition-all disabled:opacity-50 border ${
+                              captionStatus === "uploaded"
+                                ? "bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border-emerald-500/30"
+                                : "bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border-cyan-500/30 shadow-sm"
+                            }`}
+                          >
+                            <UploadCloud className={`w-3 h-3 ${isUploading ? "animate-bounce" : ""}`} />
+                            <span>
+                              {isUploading
+                                ? "Uploading…"
+                                : captionStatus === "uploaded"
+                                ? "Re-upload Clean Track"
+                                : "Upload Clean Captions"}
+                            </span>
+                          </button>
+                          <button
+                            onClick={() => handleRetrieveCaptions(video)}
+                            disabled={isRetrieving}
+                            className="px-2 py-1.5 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-slate-200 text-[11px] border border-slate-700 transition-all"
+                            title="Re-download captions from YouTube"
+                          >
+                            <RefreshCw className={`w-3 h-3 ${isRetrieving ? "animate-spin" : ""}`} />
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
 
