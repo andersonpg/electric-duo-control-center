@@ -600,4 +600,5 @@ module.exports = {
   bulkReclassifyLibrary,
   captureSnapshot,
   getChannelHealthReport,
+  parseDurationSec,
 };

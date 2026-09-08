@@ -263,6 +263,13 @@ articleDb.exec(`
     instructions TEXT NOT NULL,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE TABLE IF NOT EXISTS youtube_description_backups (
+    video_id TEXT PRIMARY KEY REFERENCES videos(youtube_id) ON DELETE CASCADE,
+    previous_description TEXT,
+    pushed_block TEXT NOT NULL,
+    pushed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 function addColumnIfNotExists(targetDb, table, column, definition) {
@@ -292,6 +299,8 @@ addColumnIfNotExists(articleDb, "videos", "title_suggestions", "TEXT");
 addColumnIfNotExists(articleDb, "videos", "youtube_title", "TEXT");
 
 addColumnIfNotExists(articleDb, "title_prompt_settings", "thumbnail_instructions", "TEXT");
+addColumnIfNotExists(articleDb, "title_prompt_settings", "description_instructions", "TEXT");
+addColumnIfNotExists(articleDb, "title_prompt_settings", "chapter_instructions", "TEXT");
 
 addColumnIfNotExists(articleDb, "transcripts", "status", "TEXT DEFAULT 'unfixed'");
 addColumnIfNotExists(articleDb, "transcripts", "youtube_caption_id", "TEXT");
@@ -370,12 +379,41 @@ Thumbnail Rules:
 3. Emotional triggers: Provoke an immediate reaction (e.g. "BIGGEST MISTAKE", "THEY LIED", "740 MILES LATER", "DON'T BUY THIS", "FINALLY FIXED?").
 4. High contrast and immediate comprehension at a glance.`;
 
+const DEFAULT_DESCRIPTION_PROMPT_INSTRUCTIONS = `You are a YouTube description strategist for The Electric Duo, an EV review, road trip, and news channel.
+Write a compelling, viewer-first video description that maximizes viewer retention and search discoverability:
+
+Description structure:
+1. Hook: 2 to 3 punchy sentences opening the curiosity gap, outlining the central question, dilemma, or headline takeaway of the video.
+2. Body: A concise, scannable summary covering what the video actually demonstrates — real-world charging speeds, range results, software quirks, build impressions, or highway test metrics. Keep paragraphs brief.
+3. Closing: A thought-provoking discussion prompt for the comments to drive engagement, followed by a call to subscribe to The Electric Duo for real-world EV ownership guides and honest tests.`;
+
+const DEFAULT_CHAPTER_PROMPT_INSTRUCTIONS = `You are a video chapter strategist for The Electric Duo. Generate 6 to 12 logical, chronological chapters based on the provided cleaned SRT transcript with exact timestamps.
+
+Chapter rules:
+1. The first chapter must start at 0:00.
+2. Generate between 6 and 12 chapters total.
+3. Keep labels short, scannable, descriptive, and non-clickbait (under 40 characters each).
+4. Each chapter must represent a meaningful transition, vehicle section, test phase, feature deep dive, or discussion topic.
+5. Every chapter must run at least 10 seconds.
+6. Chapter start timestamps must ascend chronologically and never exceed the video's total duration.`;
+
 try {
-  const existingTitlePrompt = articleDb.prepare("SELECT instructions, thumbnail_instructions FROM title_prompt_settings WHERE id = 1").get();
+  const existingTitlePrompt = articleDb.prepare("SELECT instructions, thumbnail_instructions, description_instructions, chapter_instructions FROM title_prompt_settings WHERE id = 1").get();
   if (!existingTitlePrompt) {
-    articleDb.prepare("INSERT INTO title_prompt_settings (id, instructions, thumbnail_instructions, updated_at) VALUES (1, ?, ?, CURRENT_TIMESTAMP)").run(DEFAULT_TITLE_PROMPT_INSTRUCTIONS, DEFAULT_THUMBNAIL_PROMPT_INSTRUCTIONS);
-  } else if (!existingTitlePrompt.thumbnail_instructions || !existingTitlePrompt.thumbnail_instructions.trim()) {
-    articleDb.prepare("UPDATE title_prompt_settings SET thumbnail_instructions = ? WHERE id = 1").run(DEFAULT_THUMBNAIL_PROMPT_INSTRUCTIONS);
+    articleDb.prepare(`
+      INSERT INTO title_prompt_settings (id, instructions, thumbnail_instructions, description_instructions, chapter_instructions, updated_at)
+      VALUES (1, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    `).run(DEFAULT_TITLE_PROMPT_INSTRUCTIONS, DEFAULT_THUMBNAIL_PROMPT_INSTRUCTIONS, DEFAULT_DESCRIPTION_PROMPT_INSTRUCTIONS, DEFAULT_CHAPTER_PROMPT_INSTRUCTIONS);
+  } else {
+    if (!existingTitlePrompt.thumbnail_instructions || !existingTitlePrompt.thumbnail_instructions.trim()) {
+      articleDb.prepare("UPDATE title_prompt_settings SET thumbnail_instructions = ? WHERE id = 1").run(DEFAULT_THUMBNAIL_PROMPT_INSTRUCTIONS);
+    }
+    if (!existingTitlePrompt.description_instructions || !existingTitlePrompt.description_instructions.trim()) {
+      articleDb.prepare("UPDATE title_prompt_settings SET description_instructions = ? WHERE id = 1").run(DEFAULT_DESCRIPTION_PROMPT_INSTRUCTIONS);
+    }
+    if (!existingTitlePrompt.chapter_instructions || !existingTitlePrompt.chapter_instructions.trim()) {
+      articleDb.prepare("UPDATE title_prompt_settings SET chapter_instructions = ? WHERE id = 1").run(DEFAULT_CHAPTER_PROMPT_INSTRUCTIONS);
+    }
   }
 } catch (e) {
   console.warn("Could not seed title_prompt_settings:", e.message);

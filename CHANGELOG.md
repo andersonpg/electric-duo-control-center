@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.2.6] - 2026-09-07
+
+### Added
+- **Transcript-Driven YouTube Description Generation**:
+  - `POST /api/videos/:videoId/generate-description`: Generates high-retention, viewer-first YouTube descriptions (2–3 sentence hook, video content breakdown, and engaging discussion closing) based on the cleaned transcript and optional creator context.
+  - Enforces a 4,500 character ceiling to guarantee ample headroom under YouTube's 5,000 character limit for chapters and existing descriptions.
+  - Requires cleaned transcript status (`fixed` or `uploaded`) before generating.
+- **Transcript-Driven YouTube Chapter Generation & Server Validation**:
+  - `POST /api/videos/:videoId/generate-chapters`: Derives 6 to 12 logical, chronological chapters from `cleaned_srt` with timestamps.
+  - Server-side validation pipeline: forces the first chapter to `0:00`, drops any entries within 10 seconds of the previous chapter, drops timestamps beyond video duration (`parseDurationSec`), and validates that at least 3 chapters survive (returning `422` otherwise).
+  - Formats timestamps as `M:SS` (<1 hour) and `H:MM:SS` (>=1 hour), returning both the structured array and a preformatted `chapterBlock` ready to copy or push.
+- **AI Prompt Settings Configuration for Descriptions & Chapters**:
+  - Extended `title_prompt_settings` table in SQLite with `description_instructions` and `chapter_instructions` columns, pre-seeded with EV-tailored defaults.
+  - Added dedicated editable textareas with live character and word counters in Admin Settings under the AI System Instructions tab.
+- **Transcripts & Title Strategist UI Panel**:
+  - Added dual Description and Chapters generator cards below the Title Strategist with editable textareas, character meters, and one-click clipboard copy actions with toast notifications.
+  - Displays an informative disabled-state note when a transcript is missing or unfixed.
+- **Guarded Push to YouTube & Rollback Restore for Unlisted Videos**:
+  - `POST /api/videos/:videoId/push-description`: Strictly restricted to unlisted videos (`privacy_status === 'unlisted'`).
+  - Read-modify-write YouTube API v3 update preserving `title`, `categoryId`, `tags`, `defaultLanguage`, and `defaultAudioLanguage`.
+  - Repeat push protection: Automatically detects previously pushed leading block and replaces it rather than stacking duplicate descriptions or chapter lists.
+  - Created `youtube_description_backups` table storing `previous_description` and `pushed_block` prior to calling YouTube API.
+  - Character threshold guard: Rejects any composed description exceeding 5,000 characters before making external calls.
+  - Confirmation Modal: Displays scrollable preview of the full composed payload, character count, and repeat-push detection badge before write execution.
+  - `POST /api/videos/:videoId/restore-description`: Instant undo button in UI allowing creators to roll back the YouTube description to its exact pre-push state.
+
 ## [2.2.5] - 2026-09-07
 
 ### Added

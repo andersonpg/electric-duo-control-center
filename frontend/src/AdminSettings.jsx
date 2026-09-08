@@ -125,6 +125,8 @@ export default function AdminSettings({ currentUser }) {
   // Title Prompt Settings State
   const [promptInstructions, setPromptInstructions] = useState("");
   const [thumbnailInstructions, setThumbnailInstructions] = useState("");
+  const [descriptionInstructions, setDescriptionInstructions] = useState("");
+  const [chapterInstructions, setChapterInstructions] = useState("");
   const [loadingPrompt, setLoadingPrompt] = useState(false);
   const [isSavingPrompt, setIsSavingPrompt] = useState(false);
   const [promptLastUpdated, setPromptLastUpdated] = useState("");
@@ -637,6 +639,8 @@ export default function AdminSettings({ currentUser }) {
         const data = await res.json();
         setPromptInstructions(data.instructions || "");
         setThumbnailInstructions(data.thumbnail_instructions || "");
+        setDescriptionInstructions(data.description_instructions || "");
+        setChapterInstructions(data.chapter_instructions || "");
         setPromptLastUpdated(data.updated_at || "");
       }
     } catch (e) {
@@ -737,6 +741,8 @@ export default function AdminSettings({ currentUser }) {
         body: JSON.stringify({
           instructions: promptInstructions,
           thumbnail_instructions: thumbnailInstructions,
+          description_instructions: descriptionInstructions,
+          chapter_instructions: chapterInstructions,
         }),
       });
       const data = await res.json();
@@ -1514,16 +1520,63 @@ export default function AdminSettings({ currentUser }) {
                   {thumbnailInstructions.length} characters · {thumbnailInstructions.split(/\s+/).filter(Boolean).length} words
                 </span>
               </div>
-                <div className="flex items-center justify-end gap-2">
-                  <button
-                    type="submit"
-                    disabled={isSavingPrompt}
-                    className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-bold text-xs shadow-md shadow-cyan-500/20 disabled:opacity-50 transition-all"
-                  >
-                    <Save className={`w-3.5 h-3.5 ${isSavingPrompt ? "animate-spin" : ""}`} />
-                    <span>{isSavingPrompt ? "Saving Instructions…" : "Save Prompt Instructions"}</span>
-                  </button>
+
+              {/* YouTube Video Description Instructions Section */}
+              <div className="pt-4 border-t border-slate-800 flex flex-col gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 uppercase tracking-widest">
+                    Video Description
+                  </span>
+                  <h4 className="text-sm font-bold text-white">YouTube Video Description Instructions</h4>
                 </div>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Instructions given to Gemini for generating viewer-first video descriptions (hook, content breakdown, and discussion closing).
+                </p>
+                <textarea
+                  value={descriptionInstructions}
+                  onChange={(e) => setDescriptionInstructions(e.target.value)}
+                  rows={10}
+                  className="w-full p-4 rounded-2xl bg-slate-950 border border-slate-800 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors leading-relaxed selection:bg-cyan-500 selection:text-slate-950"
+                  placeholder="Enter video description prompt instructions..."
+                />
+                <span className="text-xs text-slate-500 font-mono">
+                  {descriptionInstructions.length} characters · {descriptionInstructions.split(/\s+/).filter(Boolean).length} words
+                </span>
+              </div>
+
+              {/* Video Chapter List Instructions Section */}
+              <div className="pt-4 border-t border-slate-800 flex flex-col gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 uppercase tracking-widest">
+                    Video Chapters
+                  </span>
+                  <h4 className="text-sm font-bold text-white">Video Chapter List Instructions</h4>
+                </div>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Instructions given to Gemini for generating 6–12 logical, non-clickbait chapters with accurate timestamps from the cleaned SRT.
+                </p>
+                <textarea
+                  value={chapterInstructions}
+                  onChange={(e) => setChapterInstructions(e.target.value)}
+                  rows={10}
+                  className="w-full p-4 rounded-2xl bg-slate-950 border border-slate-800 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors leading-relaxed selection:bg-cyan-500 selection:text-slate-950"
+                  placeholder="Enter video chapter list instructions..."
+                />
+                <span className="text-xs text-slate-500 font-mono">
+                  {chapterInstructions.length} characters · {chapterInstructions.split(/\s+/).filter(Boolean).length} words
+                </span>
+              </div>
+
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  type="submit"
+                  disabled={isSavingPrompt}
+                  className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-bold text-xs shadow-md shadow-cyan-500/20 disabled:opacity-50 transition-all"
+                >
+                  <Save className={`w-3.5 h-3.5 ${isSavingPrompt ? "animate-spin" : ""}`} />
+                  <span>{isSavingPrompt ? "Saving Instructions…" : "Save Prompt Instructions"}</span>
+                </button>
+              </div>
             </form>
           </div>
         </div>

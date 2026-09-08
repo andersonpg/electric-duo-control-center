@@ -129,6 +129,22 @@ export default function Transcripts({ currentUser, initialVideoId, onClearInitia
   const [copiedTitleIndex, setCopiedTitleIndex] = useState(null);
   const [isSettingWorkingTitle, setIsSettingWorkingTitle] = useState(false);
 
+  // YouTube Description & Chapters state
+  const [generatedDescription, setGeneratedDescription] = useState("");
+  const [isGeneratingDescription, setIsGeneratingDescription] = useState(false);
+  const [isCopiedDescription, setIsCopiedDescription] = useState(false);
+  const [generatedChapters, setGeneratedChapters] = useState("");
+  const [isGeneratingChapters, setIsGeneratingChapters] = useState(false);
+  const [isCopiedChapters, setIsCopiedChapters] = useState(false);
+
+  // Description Push & Restore state
+  const [hasDescriptionBackup, setHasDescriptionBackup] = useState(false);
+  const [isPushModalOpen, setIsPushModalOpen] = useState(false);
+  const [pushPreviewData, setPushPreviewData] = useState(null);
+  const [isLoadingPushPreview, setIsLoadingPushPreview] = useState(false);
+  const [isPushingDescription, setIsPushingDescription] = useState(false);
+  const [isRestoringDescription, setIsRestoringDescription] = useState(false);
+
   // Toast message
   const [toast, setToast] = useState(null);
 
@@ -182,6 +198,8 @@ export default function Transcripts({ currentUser, initialVideoId, onClearInitia
     setActiveChunk(null);
     setIsEditingTitle(false);
     setEditTitleText(video.working_title || video.title || "");
+    setGeneratedDescription("");
+    setGeneratedChapters("");
 
     // Load stored title suggestions
     if (video.title_suggestions) {
@@ -218,6 +236,15 @@ export default function Transcripts({ currentUser, initialVideoId, onClearInitia
     } finally {
       setLoadingTranscript(false);
     }
+
+    // Check if description backup exists for this video
+    setHasDescriptionBackup(false);
+    fetch(`/api/videos/${video.youtube_id}/description-backup`, { credentials: "same-origin" })
+      .then((r) => r.json())
+      .then((d) => {
+        if (d && d.hasBackup) setHasDescriptionBackup(true);
+      })
+      .catch(() => setHasDescriptionBackup(false));
   };
 
   // Handle file drop or selection
@@ -719,6 +746,146 @@ export default function Transcripts({ currentUser, initialVideoId, onClearInitia
     navigator.clipboard.writeText(text);
     setCopiedTitleIndex(idx);
     setTimeout(() => setCopiedTitleIndex(null), 2000);
+  };
+
+  // Generate Gemini YouTube Video Description
+  const handleGenerateDescription = async () => {
+    if (!selectedVideo) return;
+    setIsGeneratingDescription(true);
+    try {
+      const res = await fetch(`/api/videos/${selectedVideo.youtube_id}/generate-description`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ context: creatorContext }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Description generation failed");
+
+      setGeneratedDescription(data.description || "");
+      showToast(`Generated description (${data.charCount || (data.description || "").length} characters)!`, "success");
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      setIsGeneratingDescription(false);
+    }
+  };
+
+  // Generate Gemini YouTube Video Chapters
+  const handleGenerateChapters = async () => {
+    if (!selectedVideo) return;
+    setIsGeneratingChapters(true);
+    try {
+      const res = await fetch(`/api/videos/${selectedVideo.youtube_id}/generate-chapters`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Chapter generation failed");
+
+      setGeneratedChapters(data.chapterBlock || "");
+      showToast(`Generated ${data.chapters?.length || 0} video chapters!`, "success");
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      setIsGeneratingChapters(false);
+    }
+  };
+
+  const handleCopyDescription = () => {
+    if (!generatedDescription.trim()) return;
+    navigator.clipboard.writeText(generatedDescription);
+    setIsCopiedDescription(true);
+    setTimeout(() => setIsCopiedDescription(false), 2000);
+    showToast("Copied description to clipboard!", "success");
+  };
+
+  const handleCopyChapters = () => {
+    if (!generatedChapters.trim()) return;
+    navigator.clipboard.writeText(generatedChapters);
+    setIsCopiedChapters(true);
+    setTimeout(() => setIsCopiedChapters(false), 2000);
+    showToast("Copied chapters to clipboard!", "success");
+  };
+
+  // Open Push Confirmation Modal with calculated payload preview
+  const handleOpenPushModal = async () => {
+    // Guarded push restriction: only allow pushing to unlisted videos
+    if (!selectedVideo || selectedVideo.privacy_status !== "unlisted") return;
+    setIsPushModalOpen(true);
+    setIsLoadingPushPreview(true);
+    setPushPreviewData(null);
+    try {
+      const res = await fetch(`/api/videos/${selectedVideo.youtube_id}/preview-push-description`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          description: generatedDescription,
+          chapterBlock: generatedChapters,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to calculate description preview");
+      setPushPreviewData(data);
+    } catch (err) {
+      showToast(err.message, "error");
+      setIsPushModalOpen(false);
+    } finally {
+      setIsLoadingPushPreview(false);
+    }
+  };
+
+  // Confirmed push of final description and chapters to YouTube
+  const handleConfirmPushDescription = async () => {
+    if (!selectedVideo || selectedVideo.privacy_status !== "unlisted") return;
+    setIsPushingDescription(true);
+    try {
+      const res = await fetch(`/api/videos/${selectedVideo.youtube_id}/push-description`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          description: generatedDescription,
+          chapterBlock: generatedChapters,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to push description to YouTube");
+
+      showToast(data.message || "Successfully pushed description to YouTube!", "success");
+      setIsPushModalOpen(false);
+      setHasDescriptionBackup(true);
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      setIsPushingDescription(false);
+    }
+  };
+
+  // Restore description to pre-push backup state
+  const handleRestoreDescription = async () => {
+    if (!selectedVideo || selectedVideo.privacy_status !== "unlisted") return;
+    if (!confirm("Are you sure you want to restore this YouTube video's description to its exact state prior to the last push?")) {
+      return;
+    }
+    setIsRestoringDescription(true);
+    try {
+      const res = await fetch(`/api/videos/${selectedVideo.youtube_id}/restore-description`, {
+        method: "POST",
+        credentials: "same-origin",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to restore description");
+
+      showToast(data.message || "Successfully restored previous description!", "success");
+      setHasDescriptionBackup(false);
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      setIsRestoringDescription(false);
+    }
   };
 
   // Filter videos in sidebar
@@ -1685,6 +1852,175 @@ I drove the maki to a super charger with fifty kilowatt hours..."
                   )}
                 </div>
               )}
+
+              {/* FEATURE 3: YouTube Description & Chapters Generator Section */}
+              <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-6 backdrop-blur-xl">
+                <div className="flex items-center justify-between flex-wrap gap-4 border-b border-slate-800 pb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-cyan-400 to-emerald-500 flex items-center justify-center text-slate-950 shadow-md shadow-cyan-500/20 shrink-0">
+                      <FileText className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="text-base font-bold text-white">YouTube Description & Chapters Generator</h3>
+                      <p className="text-xs text-slate-400">
+                        Generate structured, high-retention descriptions and timestamped chapters from your cleaned transcript.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {/* Undo / Restore button: visible whenever a backup row exists for the selected video */}
+                    {hasDescriptionBackup && (
+                      <button
+                        type="button"
+                        onClick={handleRestoreDescription}
+                        disabled={isRestoringDescription}
+                        className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/30 text-xs font-bold transition-all disabled:opacity-50"
+                        title="Restore previous description from pre-push backup"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${isRestoringDescription ? "animate-spin" : ""}`} />
+                        <span>{isRestoringDescription ? "Restoring…" : "Undo Last Push"}</span>
+                      </button>
+                    )}
+
+                    {/* Guarded Push to YouTube: ONLY shown and enabled for unlisted draft videos */}
+                    {/* Clearly commented condition so it can be lifted later */}
+                    {selectedVideo.privacy_status === "unlisted" && (
+                      <button
+                        type="button"
+                        onClick={handleOpenPushModal}
+                        disabled={!generatedDescription.trim() && !generatedChapters.trim()}
+                        className="flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-400 hover:to-rose-500 text-white text-xs font-black shadow-lg shadow-red-500/20 disabled:opacity-40 transition-all"
+                        title="Push description & chapters to unlisted draft on YouTube"
+                      >
+                        <UploadCloud className="w-4 h-4" />
+                        <span>Push to YouTube (Unlisted Draft)</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {!(savedTranscript && ["fixed", "uploaded"].includes(savedTranscript.status)) ? (
+                  <div className="p-4 rounded-2xl bg-slate-950/70 border border-slate-800/80 flex items-center gap-3 text-slate-400 text-xs">
+                    <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0" />
+                    <div>
+                      <span className="font-bold text-slate-300">Cleaned transcript required:</span> Description and chapter generation require an EV-cleaned transcript (status <code className="text-cyan-400">fixed</code> or <code className="text-cyan-400">uploaded</code>). Please retrieve and clean the transcript above to enable these generators.
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    {/* 1. Description Generator Card */}
+                    <div className="flex flex-col gap-3 p-5 rounded-2xl bg-slate-950/70 border border-slate-800">
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 uppercase tracking-widest">
+                            Description
+                          </span>
+                          <h4 className="text-xs font-bold text-white">Video Description</h4>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={handleGenerateDescription}
+                          disabled={isGeneratingDescription}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 text-xs font-bold shadow-md shadow-cyan-500/20 disabled:opacity-50 transition-all"
+                        >
+                          <Sparkles className={`w-3.5 h-3.5 ${isGeneratingDescription ? "animate-spin" : ""}`} />
+                          <span>{isGeneratingDescription ? "Generating Description…" : generatedDescription ? "Regenerate Description" : "Generate Description"}</span>
+                        </button>
+                      </div>
+
+                      <textarea
+                        rows={12}
+                        value={generatedDescription}
+                        onChange={(e) => setGeneratedDescription(e.target.value)}
+                        placeholder="Click 'Generate Description' to generate a 2-3 sentence hook, content breakdown, and engaging discussion closing..."
+                        className="w-full p-4 rounded-xl bg-slate-900/90 border border-slate-800 text-xs font-sans text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors leading-relaxed selection:bg-cyan-500 selection:text-slate-950"
+                      />
+
+                      <div className="flex items-center justify-between flex-wrap gap-2 pt-1 border-t border-slate-800/80">
+                        <span className={`text-[11px] font-mono ${generatedDescription.length > 4500 ? "text-rose-400 font-bold" : generatedDescription.length > 4000 ? "text-amber-400" : "text-slate-500"}`}>
+                          {generatedDescription.length} / 4,500 characters
+                        </span>
+
+                        <button
+                          type="button"
+                          onClick={handleCopyDescription}
+                          disabled={!generatedDescription.trim()}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition-all disabled:opacity-40"
+                        >
+                          {isCopiedDescription ? (
+                            <>
+                              <Check className="w-3.5 h-3.5 text-emerald-400" />
+                              <span className="text-emerald-400">Copied!</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3.5 h-3.5 text-cyan-400" />
+                              <span>Copy Description</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* 2. Chapters Generator Card */}
+                    <div className="flex flex-col gap-3 p-5 rounded-2xl bg-slate-950/70 border border-slate-800">
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 uppercase tracking-widest">
+                            Chapters
+                          </span>
+                          <h4 className="text-xs font-bold text-white">Timestamped Chapters</h4>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={handleGenerateChapters}
+                          disabled={isGeneratingChapters}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 text-xs font-bold shadow-md shadow-emerald-500/20 disabled:opacity-50 transition-all"
+                        >
+                          <Sparkles className={`w-3.5 h-3.5 ${isGeneratingChapters ? "animate-spin" : ""}`} />
+                          <span>{isGeneratingChapters ? "Generating Chapters…" : generatedChapters ? "Regenerate Chapters" : "Generate Chapters"}</span>
+                        </button>
+                      </div>
+
+                      <textarea
+                        rows={12}
+                        value={generatedChapters}
+                        onChange={(e) => setGeneratedChapters(e.target.value)}
+                        placeholder={"0:00 Introduction\n1:15 Real-World Range Test\n..."}
+                        className="w-full p-4 rounded-xl bg-slate-900/90 border border-slate-800 text-xs font-mono text-emerald-200 focus:outline-none focus:border-emerald-500 transition-colors leading-relaxed selection:bg-emerald-500 selection:text-slate-950"
+                      />
+
+                      <div className="flex items-center justify-between flex-wrap gap-2 pt-1 border-t border-slate-800/80">
+                        <span className="text-[11px] font-mono text-slate-500">
+                          {generatedChapters.trim() ? `${generatedChapters.trim().split("\n").filter(Boolean).length} chapters` : "0 chapters"}
+                        </span>
+
+                        <button
+                          type="button"
+                          onClick={handleCopyChapters}
+                          disabled={!generatedChapters.trim()}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition-all disabled:opacity-40"
+                        >
+                          {isCopiedChapters ? (
+                            <>
+                              <Check className="w-3.5 h-3.5 text-emerald-400" />
+                              <span className="text-emerald-400">Copied!</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3.5 h-3.5 text-emerald-400" />
+                              <span>Copy Chapters</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -2059,6 +2395,123 @@ I drove the maki to a super charger with fifty kilowatt hours..."
                 className="px-5 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 text-xs font-black transition-all shadow-md shadow-cyan-500/20 disabled:opacity-50"
               >
                 {isSavingPrompt ? "Saving…" : "Save Instructions"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 5: Push Description & Chapters to YouTube Confirmation Modal */}
+      {isPushModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-xl animate-fade-in">
+          <div className="relative w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl p-6 space-y-4 max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3 shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400 shrink-0">
+                  <UploadCloud className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Push Description to YouTube</h3>
+                  <p className="text-xs text-slate-400">
+                    Pre-publish draft · Video ID: <span className="font-mono text-cyan-400">{selectedVideo?.youtube_id}</span>
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setIsPushModalOpen(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {isLoadingPushPreview ? (
+              <div className="py-12 flex flex-col items-center justify-center gap-3 text-slate-400 text-xs">
+                <RefreshCw className="w-5 h-5 animate-spin text-cyan-400" />
+                <span>Calculating full YouTube description payload…</span>
+              </div>
+            ) : pushPreviewData ? (
+              <div className="flex-1 overflow-y-auto space-y-3 pr-1 custom-scrollbar">
+                {pushPreviewData.isRepeatPush && (
+                  <div className="p-3 rounded-xl bg-cyan-950/40 border border-cyan-500/30 flex items-center gap-2.5 text-cyan-300 text-xs">
+                    <CheckCircle2 className="w-4 h-4 text-cyan-400 shrink-0" />
+                    <span>
+                      <strong>Repeat push detected:</strong> The previous leading block will be replaced with your updated description and chapters rather than duplicating.
+                    </span>
+                  </div>
+                )}
+
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold text-slate-300 uppercase tracking-wider text-[10px]">
+                      Full Composed Description Preview:
+                    </span>
+                    <span
+                      className={`font-mono text-[11px] font-bold ${
+                        pushPreviewData.charCount > 5000
+                          ? "text-rose-400"
+                          : pushPreviewData.charCount > 4500
+                          ? "text-amber-400"
+                          : "text-emerald-400"
+                      }`}
+                    >
+                      {pushPreviewData.charCount} / 5,000 characters
+                    </span>
+                  </div>
+
+                  <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 text-xs font-mono text-slate-300 max-h-64 overflow-y-auto whitespace-pre-wrap custom-scrollbar leading-relaxed">
+                    {pushPreviewData.composed}
+                  </div>
+                </div>
+
+                {pushPreviewData.charCount > 5000 && (
+                  <div className="p-3 rounded-xl bg-rose-950/50 border border-rose-800/80 text-rose-300 text-xs flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                    <span>
+                      <strong>Exceeds YouTube limit:</strong> Total description exceeds 5,000 characters. Please cut at least {pushPreviewData.charCount - 5000} characters before pushing.
+                    </span>
+                  </div>
+                )}
+
+                <p className="text-[11px] text-slate-400 leading-relaxed italic">
+                  This action will update the description for YouTube video <span className="font-mono text-cyan-400">{selectedVideo?.youtube_id}</span> via Google OAuth. A backup of the current description will be automatically preserved for instant rollback.
+                </p>
+              </div>
+            ) : null}
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800 shrink-0">
+              <button
+                type="button"
+                onClick={() => setIsPushModalOpen(false)}
+                className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 hover:text-white text-xs font-bold"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                onClick={handleConfirmPushDescription}
+                disabled={
+                  isLoadingPushPreview ||
+                  isPushingDescription ||
+                  !pushPreviewData ||
+                  pushPreviewData.charCount > 5000
+                }
+                className="flex items-center gap-2 px-5 py-2 rounded-xl bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-400 hover:to-rose-500 text-white font-bold text-xs shadow-md shadow-red-500/20 disabled:opacity-50 transition-all"
+              >
+                {isPushingDescription ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Pushing to YouTube…</span>
+                  </>
+                ) : (
+                  <>
+                    <UploadCloud className="w-3.5 h-3.5" />
+                    <span>Yes, Push to YouTube</span>
+                  </>
+                )}
               </button>
             </div>
           </div>

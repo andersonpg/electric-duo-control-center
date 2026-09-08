@@ -1003,34 +1003,38 @@ app.delete("/api/terms", auth.requireAuth(), (req, res, next) => {
 
 /* ---------------- Title Prompt Settings & Gemini Generation ---------------- */
 
-// 1. Get Title & Thumbnail Prompt Instructions
+// 1. Get Title, Thumbnail, Description & Chapter Prompt Instructions
 app.get("/api/title-prompt-settings", auth.requireAuth(), (req, res, next) => {
   try {
-    const row = articleDb.prepare("SELECT instructions, thumbnail_instructions, updated_at FROM title_prompt_settings WHERE id = 1").get();
-    res.json(row || { instructions: "", thumbnail_instructions: "", updated_at: null });
+    const row = articleDb.prepare("SELECT instructions, thumbnail_instructions, description_instructions, chapter_instructions, updated_at FROM title_prompt_settings WHERE id = 1").get();
+    res.json(row || { instructions: "", thumbnail_instructions: "", description_instructions: "", chapter_instructions: "", updated_at: null });
   } catch (error) {
     next(error);
   }
 });
 
-// 2. Update Title & Thumbnail Prompt Instructions
+// 2. Update Title, Thumbnail, Description & Chapter Prompt Instructions
 app.put("/api/title-prompt-settings", auth.requireAuth(), (req, res, next) => {
   try {
-    const { instructions, thumbnail_instructions } = req.body || {};
-    const current = articleDb.prepare("SELECT instructions, thumbnail_instructions FROM title_prompt_settings WHERE id = 1").get() || {};
+    const { instructions, thumbnail_instructions, description_instructions, chapter_instructions } = req.body || {};
+    const current = articleDb.prepare("SELECT instructions, thumbnail_instructions, description_instructions, chapter_instructions FROM title_prompt_settings WHERE id = 1").get() || {};
     const newInstructions = typeof instructions === "string" ? instructions : (current.instructions || "");
     const newThumbnail = typeof thumbnail_instructions === "string" ? thumbnail_instructions : (current.thumbnail_instructions || "");
+    const newDescription = typeof description_instructions === "string" ? description_instructions : (current.description_instructions || "");
+    const newChapter = typeof chapter_instructions === "string" ? chapter_instructions : (current.chapter_instructions || "");
 
     articleDb.prepare(`
-      INSERT INTO title_prompt_settings (id, instructions, thumbnail_instructions, updated_at)
-      VALUES (1, ?, ?, CURRENT_TIMESTAMP)
+      INSERT INTO title_prompt_settings (id, instructions, thumbnail_instructions, description_instructions, chapter_instructions, updated_at)
+      VALUES (1, ?, ?, ?, ?, CURRENT_TIMESTAMP)
       ON CONFLICT(id) DO UPDATE SET
         instructions = excluded.instructions,
         thumbnail_instructions = excluded.thumbnail_instructions,
+        description_instructions = excluded.description_instructions,
+        chapter_instructions = excluded.chapter_instructions,
         updated_at = CURRENT_TIMESTAMP
-    `).run(newInstructions, newThumbnail);
+    `).run(newInstructions, newThumbnail, newDescription, newChapter);
 
-    const updated = articleDb.prepare("SELECT instructions, thumbnail_instructions, updated_at FROM title_prompt_settings WHERE id = 1").get();
+    const updated = articleDb.prepare("SELECT instructions, thumbnail_instructions, description_instructions, chapter_instructions, updated_at FROM title_prompt_settings WHERE id = 1").get();
     res.json({ success: true, ok: true, ...updated });
   } catch (error) {
     next(error);
@@ -1236,6 +1240,483 @@ app.post("/api/videos/:videoId/title/push", auth.requireAuth(), async (req, res,
     const updated = articleDb.prepare("SELECT * FROM videos WHERE youtube_id = ?").get(videoId);
     res.json({ ok: true, video: updated, message: `Successfully pushed title to YouTube: "${newTitle}"` });
   } catch (error) {
+    next(error);
+  }
+});
+
+// Helper to format seconds as M:SS (under 1 hour) or H:MM:SS (at or above 1 hour)
+function formatTimestamp(sec) {
+  const s = Math.max(0, Math.floor(sec));
+  const hrs = Math.floor(s / 3600);
+  const mins = Math.floor((s % 3600) / 60);
+  const secs = s % 60;
+  const sStr = secs < 10 ? `0${secs}` : `${secs}`;
+  if (hrs > 0) {
+    const mStr = mins < 10 ? `0${mins}` : `${mins}`;
+    return `${hrs}:${mStr}:${sStr}`;
+  }
+  return `${mins}:${sStr}`;
+}
+
+// 8. Generate Gemini YouTube Video Description
+app.post("/api/videos/:videoId/generate-description", auth.requireAuth(), aiLimiter, async (req, res, next) => {
+  try {
+    const { videoId } = req.params;
+    const { context } = req.body || {};
+
+    const video = articleDb.prepare("SELECT * FROM videos WHERE youtube_id = ?").get(videoId);
+    if (!video) {
+      return res.status(404).json({ error: "Video not found in catalog." });
+    }
+
+    const transRow = articleDb.prepare("SELECT plain_text, status FROM transcripts WHERE video_id = ?").get(videoId);
+    if (!transRow || !["fixed", "uploaded"].includes(transRow.status) || !transRow.plain_text || !transRow.plain_text.trim()) {
+      return res.status(400).json({ error: "The transcript must be retrieved and EV-cleaned first." });
+    }
+
+    const promptRow = articleDb.prepare("SELECT description_instructions FROM title_prompt_settings WHERE id = 1").get();
+    const descPrompt = (promptRow && promptRow.description_instructions && promptRow.description_instructions.trim())
+      ? promptRow.description_instructions.trim()
+      : "You are a YouTube description strategist for The Electric Duo.";
+
+    const apiKey = getGeminiApiKey();
+    if (!apiKey) {
+      return res.status(400).json({ error: "Gemini API Key is not configured." });
+    }
+
+    const ai = new GoogleGenAI({ apiKey });
+
+    let configuredModel = DEFAULT_GEMINI_MODEL;
+    try {
+      const row = articleDb.prepare("SELECT value FROM app_settings WHERE key = 'default_model'").get();
+      if (row && row.value) configuredModel = row.value;
+    } catch (e) {
+      console.warn("Error reading default_model app setting:", e.message);
+    }
+
+    let userPrompt = `Video Title: "${video.working_title || video.title}"\n`;
+    if (context && context.trim()) {
+      userPrompt += `Creator Context & Highlights:\n${context.trim()}\n\n`;
+    }
+    userPrompt += `Cleaned Transcript:\n${transRow.plain_text.slice(0, 45000)}\n\nGenerate an engaging YouTube video description for this video adhering strictly to the system instructions. Return the description as a JSON object matching the required schema.`;
+
+    const requestOptions = {
+      model: configuredModel,
+      contents: userPrompt,
+      config: {
+        systemInstruction: descPrompt,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: "object",
+          properties: {
+            description: {
+              type: "string",
+              description: "The complete plain-text YouTube video description",
+            },
+          },
+          required: ["description"],
+        },
+      },
+    };
+
+    const response = await callGeminiWithRetry(ai, requestOptions, 2);
+    let rawText = response.text || "";
+    rawText = rawText.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/, "").trim();
+
+    let parsed = {};
+    try {
+      parsed = JSON.parse(rawText);
+    } catch (parseErr) {
+      const match = rawText.match(/\{[\s\S]*\}/);
+      if (match) parsed = JSON.parse(match[0]);
+    }
+
+    const description = typeof parsed.description === "string" ? parsed.description.trim() : "";
+    if (!description) {
+      throw new Error("Gemini AI failed to return a valid description. Response was: " + rawText.slice(0, 200));
+    }
+
+    const charCount = description.length;
+    if (charCount > 4500) {
+      return res.status(422).json({
+        error: `Generated description exceeds 4,500 characters (${charCount} characters). Please shorten creator context or regenerate.`,
+        charCount,
+      });
+    }
+
+    res.json({ description, charCount });
+  } catch (error) {
+    console.error("Gemini description generation error:", error);
+    next(error);
+  }
+});
+
+// 9. Generate Gemini YouTube Video Chapters
+app.post("/api/videos/:videoId/generate-chapters", auth.requireAuth(), aiLimiter, async (req, res, next) => {
+  try {
+    const { videoId } = req.params;
+
+    const video = articleDb.prepare("SELECT * FROM videos WHERE youtube_id = ?").get(videoId);
+    if (!video) {
+      return res.status(404).json({ error: "Video not found in catalog." });
+    }
+
+    const transRow = articleDb.prepare("SELECT cleaned_srt, status FROM transcripts WHERE video_id = ?").get(videoId);
+    if (!transRow || !["fixed", "uploaded"].includes(transRow.status)) {
+      return res.status(400).json({ error: "The transcript must be retrieved and EV-cleaned first." });
+    }
+    if (!transRow.cleaned_srt || !transRow.cleaned_srt.trim()) {
+      return res.status(400).json({ error: "Cleaned SRT transcript is empty. Please clean the transcript first." });
+    }
+
+    const { parseDurationSec } = require("./channel-health");
+    const totalDurationSec = parseDurationSec(video.duration);
+
+    const promptRow = articleDb.prepare("SELECT chapter_instructions FROM title_prompt_settings WHERE id = 1").get();
+    const chapterPrompt = (promptRow && promptRow.chapter_instructions && promptRow.chapter_instructions.trim())
+      ? promptRow.chapter_instructions.trim()
+      : "You are a video chapter strategist for The Electric Duo.";
+
+    const apiKey = getGeminiApiKey();
+    if (!apiKey) {
+      return res.status(400).json({ error: "Gemini API Key is not configured." });
+    }
+
+    const ai = new GoogleGenAI({ apiKey });
+
+    let configuredModel = DEFAULT_GEMINI_MODEL;
+    try {
+      const row = articleDb.prepare("SELECT value FROM app_settings WHERE key = 'default_model'").get();
+      if (row && row.value) configuredModel = row.value;
+    } catch (e) {
+      console.warn("Error reading default_model app setting:", e.message);
+    }
+
+    const formattedTotalRuntime = formatTimestamp(totalDurationSec);
+    let userPrompt = `Video Title: "${video.working_title || video.title}"\n`;
+    userPrompt += `Total Video Runtime: ${totalDurationSec} seconds (${formattedTotalRuntime})\n\n`;
+    userPrompt += `Cleaned SRT Transcript with Timestamps:\n${transRow.cleaned_srt.slice(0, 45000)}\n\n`;
+    userPrompt += `Generate 6 to 12 logical, chronological chapters with integer startSeconds and concise titles adhering to system rules. The first chapter MUST start at 0. Do NOT invent chapters past the total runtime (${totalDurationSec} seconds). Return as a JSON array matching the schema.`;
+
+    const requestOptions = {
+      model: configuredModel,
+      contents: userPrompt,
+      config: {
+        systemInstruction: chapterPrompt,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              startSeconds: {
+                type: "integer",
+                description: "Start timestamp of chapter in seconds from start of video",
+              },
+              title: {
+                type: "string",
+                description: "Short, scannable, non-clickbait chapter label",
+              },
+            },
+            required: ["startSeconds", "title"],
+          },
+        },
+      },
+    };
+
+    const response = await callGeminiWithRetry(ai, requestOptions, 2);
+    let rawText = response.text || "";
+    rawText = rawText.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/, "").trim();
+
+    let rawChapters = [];
+    try {
+      rawChapters = JSON.parse(rawText);
+    } catch (parseErr) {
+      const match = rawText.match(/\[[\s\S]*\]/);
+      if (match) rawChapters = JSON.parse(match[0]);
+    }
+
+    if (!Array.isArray(rawChapters) || rawChapters.length === 0) {
+      throw new Error("Gemini AI failed to return valid chapter items. Response was: " + rawText.slice(0, 200));
+    }
+
+    // Server-side validation rules:
+    // 1. Sort ascending by startSeconds
+    const sanitized = rawChapters
+      .map((ch) => ({
+        startSeconds: typeof ch.startSeconds === "number" ? Math.floor(ch.startSeconds) : parseInt(ch.startSeconds, 10) || 0,
+        title: (ch.title || "").trim(),
+      }))
+      .filter((ch) => ch.title.length > 0)
+      .sort((a, b) => a.startSeconds - b.startSeconds);
+
+    if (sanitized.length === 0) {
+      return res.status(422).json({ error: "Transcript was too short or sparse to derive valid chapters." });
+    }
+
+    // 2. Force the first entry to 0
+    sanitized[0].startSeconds = 0;
+
+    // 3. Drop any entry at or beyond video duration, and drop any within 10s of previous kept entry
+    const survived = [];
+    for (const ch of sanitized) {
+      if (ch.startSeconds >= totalDurationSec) {
+        continue;
+      }
+      if (survived.length === 0) {
+        survived.push(ch);
+      } else {
+        const prev = survived[survived.length - 1];
+        if (ch.startSeconds - prev.startSeconds < 10) {
+          continue;
+        }
+        survived.push(ch);
+      }
+    }
+
+    // 4. If fewer than three survive, return 422
+    if (survived.length < 3) {
+      return res.status(422).json({
+        error: "Transcript was too short or sparse to derive valid chapters.",
+      });
+    }
+
+    const chapters = survived.map((ch) => ({
+      startSeconds: ch.startSeconds,
+      timeFormatted: formatTimestamp(ch.startSeconds),
+      title: ch.title,
+    }));
+
+    const chapterBlock = chapters
+      .map((ch) => `${ch.timeFormatted} ${ch.title}`)
+      .join("\n");
+
+    res.json({
+      chapters,
+      chapterBlock,
+    });
+  } catch (error) {
+    console.error("Gemini chapter generation error:", error);
+    next(error);
+  }
+});
+
+// Helper to compose description payload with repeat-push leading-block replacement
+function composeDescriptionPayload(currentYTDesc, description, chapterBlock, storedPushedBlock) {
+  const descClean = (description || "").trim();
+  const chapClean = (chapterBlock || "").trim();
+
+  let newLeadingBlock = "";
+  if (descClean && chapClean) {
+    newLeadingBlock = `${descClean}\n\n${chapClean}`;
+  } else {
+    newLeadingBlock = descClean || chapClean;
+  }
+
+  const currentDesc = currentYTDesc || "";
+  let composed = "";
+  let isRepeatPush = false;
+
+  if (storedPushedBlock && currentDesc.startsWith(storedPushedBlock)) {
+    isRepeatPush = true;
+    const remainder = currentDesc.slice(storedPushedBlock.length).replace(/^\n{1,2}/, "");
+    if (newLeadingBlock && remainder) {
+      composed = `${newLeadingBlock}\n\n${remainder}`;
+    } else {
+      composed = newLeadingBlock || remainder;
+    }
+  } else {
+    if (newLeadingBlock && currentDesc.trim()) {
+      composed = `${newLeadingBlock}\n\n${currentDesc.trim()}`;
+    } else {
+      composed = newLeadingBlock || currentDesc;
+    }
+  }
+
+  return {
+    newLeadingBlock,
+    composed,
+    isRepeatPush,
+  };
+}
+
+// 10. Check Description Backup Status for Video
+app.get("/api/videos/:videoId/description-backup", auth.requireAuth(), (req, res, next) => {
+  try {
+    const { videoId } = req.params;
+    const backup = articleDb.prepare("SELECT * FROM youtube_description_backups WHERE video_id = ?").get(videoId);
+    res.json({ hasBackup: !!backup, backup: backup || null });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 11. Preview Composed YouTube Description Payload
+app.post("/api/videos/:videoId/preview-push-description", auth.requireAuth(), async (req, res, next) => {
+  try {
+    const { videoId } = req.params;
+    const { description, chapterBlock } = req.body || {};
+
+    const video = articleDb.prepare("SELECT * FROM videos WHERE youtube_id = ?").get(videoId);
+    if (!video) {
+      return res.status(404).json({ error: "Video not found in catalog." });
+    }
+
+    // Guarded push restriction: only allow pushing to unlisted videos (pre-publish drafts)
+    if (video.privacy_status !== "unlisted") {
+      return res.status(403).json({ error: "Pushing descriptions to YouTube is restricted to unlisted videos only." });
+    }
+
+    let currentDesc = video.description || "";
+    try {
+      const { getYoutubeVideoSnippet } = require("./youtube");
+      const snippet = await getYoutubeVideoSnippet(videoId);
+      if (snippet && typeof snippet.description === "string") {
+        currentDesc = snippet.description;
+      }
+    } catch (e) {
+      // Fallback to locally stored description
+    }
+
+    const backupRow = articleDb.prepare("SELECT * FROM youtube_description_backups WHERE video_id = ?").get(videoId);
+    const storedPushedBlock = backupRow?.pushed_block || null;
+
+    const { newLeadingBlock, composed, isRepeatPush } = composeDescriptionPayload(
+      currentDesc,
+      description,
+      chapterBlock,
+      storedPushedBlock
+    );
+
+    res.json({
+      ok: true,
+      composed,
+      charCount: composed.length,
+      isOverLimit: composed.length > 5000,
+      isRepeatPush,
+      newLeadingBlock,
+      currentDescription: currentDesc,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 12. Guarded Push Description & Chapters to YouTube
+app.post("/api/videos/:videoId/push-description", auth.requireAuth(), async (req, res, next) => {
+  try {
+    const { videoId } = req.params;
+    const { description, chapterBlock } = req.body || {};
+
+    const video = articleDb.prepare("SELECT * FROM videos WHERE youtube_id = ?").get(videoId);
+    if (!video) {
+      return res.status(404).json({ error: "Video not found in catalog." });
+    }
+
+    // Guarded push restriction: only allow pushing to unlisted videos (pre-publish drafts)
+    if (video.privacy_status !== "unlisted") {
+      return res.status(403).json({ error: "Pushing descriptions to YouTube is restricted to unlisted videos only." });
+    }
+
+    if (!description?.trim() && !chapterBlock?.trim()) {
+      return res.status(400).json({ error: "Description or chapter block is required to push to YouTube." });
+    }
+
+    const { getYoutubeVideoSnippet, updateYoutubeVideoDescription } = require("./youtube");
+    const existingSnippet = await getYoutubeVideoSnippet(videoId);
+    const currentDesc = existingSnippet.description || "";
+
+    const backupRow = articleDb.prepare("SELECT * FROM youtube_description_backups WHERE video_id = ?").get(videoId);
+    const storedPushedBlock = backupRow?.pushed_block || null;
+
+    const { newLeadingBlock, composed, isRepeatPush } = composeDescriptionPayload(
+      currentDesc,
+      description,
+      chapterBlock,
+      storedPushedBlock
+    );
+
+    // Reject if composed result exceeds 5,000 characters
+    if (composed.length > 5000) {
+      return res.status(400).json({
+        error: `Composed description exceeds YouTube's 5,000 character limit (${composed.length} characters). Please cut at least ${composed.length - 5000} characters before pushing.`,
+        charCount: composed.length,
+        limit: 5000,
+      });
+    }
+
+    // Determine the base previous_description to store for restore
+    let basePreviousDesc = currentDesc;
+    if (isRepeatPush && backupRow && backupRow.previous_description !== undefined) {
+      basePreviousDesc = backupRow.previous_description;
+    }
+
+    // Save to backup table BEFORE calling videos.update
+    articleDb.prepare(`
+      INSERT INTO youtube_description_backups (video_id, previous_description, pushed_block, pushed_at)
+      VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(video_id) DO UPDATE SET
+        previous_description = excluded.previous_description,
+        pushed_block = excluded.pushed_block,
+        pushed_at = CURRENT_TIMESTAMP
+    `).run(videoId, basePreviousDesc, newLeadingBlock);
+
+    // Call videos.update with part: ["snippet"], preserving all other snippet fields
+    await updateYoutubeVideoDescription(videoId, composed);
+
+    // Update local database
+    articleDb.prepare("UPDATE videos SET description = ? WHERE youtube_id = ?").run(composed, videoId);
+
+    res.json({
+      ok: true,
+      message: `Successfully pushed description and chapters to YouTube (${composed.length} characters).`,
+      charCount: composed.length,
+      isRepeatPush,
+    });
+  } catch (error) {
+    console.error("Error pushing description to YouTube:", error);
+    next(error);
+  }
+});
+
+// 13. Restore Previous YouTube Description from Backup
+app.post("/api/videos/:videoId/restore-description", auth.requireAuth(), async (req, res, next) => {
+  try {
+    const { videoId } = req.params;
+
+    const video = articleDb.prepare("SELECT * FROM videos WHERE youtube_id = ?").get(videoId);
+    if (!video) {
+      return res.status(404).json({ error: "Video not found in catalog." });
+    }
+
+    // Guarded push restriction: only allow pushing to unlisted videos (pre-publish drafts)
+    if (video.privacy_status !== "unlisted") {
+      return res.status(403).json({ error: "Restoring descriptions is restricted to unlisted videos only." });
+    }
+
+    const backupRow = articleDb.prepare("SELECT * FROM youtube_description_backups WHERE video_id = ?").get(videoId);
+    if (!backupRow) {
+      return res.status(404).json({ error: "No backup description found for this video." });
+    }
+
+    const previousDescription = backupRow.previous_description || "";
+
+    const { updateYoutubeVideoDescription } = require("./youtube");
+    await updateYoutubeVideoDescription(videoId, previousDescription);
+
+    // Delete backup record now that it is restored
+    articleDb.prepare("DELETE FROM youtube_description_backups WHERE video_id = ?").run(videoId);
+
+    // Update local video record
+    articleDb.prepare("UPDATE videos SET description = ? WHERE youtube_id = ?").run(previousDescription, videoId);
+
+    res.json({
+      ok: true,
+      message: "Successfully restored previous description from backup.",
+      previousDescription,
+    });
+  } catch (error) {
+    console.error("Error restoring description on YouTube:", error);
     next(error);
   }
 });

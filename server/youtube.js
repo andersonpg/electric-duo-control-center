@@ -857,6 +857,63 @@ async function updateYoutubeVideoTitle(videoId, newTitle) {
   return updateRes.data;
 }
 
+async function getYoutubeVideoSnippet(videoId) {
+  const oauthClient = getAuthenticatedClient();
+  if (!oauthClient) {
+    throw new Error("Google OAuth is not connected. Please connect in Admin Settings.");
+  }
+  const youtube = google.youtube({ version: "v3", auth: oauthClient });
+
+  const videoRes = await youtube.videos.list({
+    part: ["snippet"],
+    id: [videoId],
+  });
+
+  const item = videoRes.data.items?.[0];
+  if (!item || !item.snippet) {
+    throw new Error(`Video ${videoId} not found on YouTube.`);
+  }
+
+  return item.snippet;
+}
+
+async function updateYoutubeVideoDescription(videoId, newDescription) {
+  const oauthClient = getAuthenticatedClient();
+  if (!oauthClient) {
+    throw new Error("Google OAuth is not connected. Please connect in Admin Settings.");
+  }
+  const youtube = google.youtube({ version: "v3", auth: oauthClient });
+
+  const videoRes = await youtube.videos.list({
+    part: ["snippet"],
+    id: [videoId],
+  });
+
+  const item = videoRes.data.items?.[0];
+  if (!item || !item.snippet) {
+    throw new Error(`Video ${videoId} not found on YouTube.`);
+  }
+
+  const existingSnippet = item.snippet;
+
+  const updateRes = await youtube.videos.update({
+    part: ["snippet"],
+    requestBody: {
+      id: videoId,
+      snippet: {
+        title: existingSnippet.title,
+        categoryId: existingSnippet.categoryId,
+        description: newDescription,
+        tags: existingSnippet.tags || [],
+        defaultLanguage: existingSnippet.defaultLanguage,
+        defaultAudioLanguage: existingSnippet.defaultAudioLanguage,
+      },
+    },
+  });
+
+  return updateRes.data;
+}
+
 module.exports = {
   syncCatalog,
   purgeNonPublicVideos,
@@ -868,5 +925,7 @@ module.exports = {
   getYoutubeClient,
   fetchExactPublishDate,
   updateYoutubeVideoTitle,
+  getYoutubeVideoSnippet,
+  updateYoutubeVideoDescription,
 };
 
