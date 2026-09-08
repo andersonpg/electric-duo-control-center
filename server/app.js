@@ -441,6 +441,57 @@ const handlePurgeNonPublic = async (req, res, next) => {
 };
 
 app.post("/api/catalog/purge-non-public", auth.requireAuth(), handlePurgeNonPublic);
+// ---------------------------------------------------------------------------
+// Database backup, download, and inspection (admin only)
+// ---------------------------------------------------------------------------
+const backup = require("./backup");
+
+app.get("/api/admin/database/describe", auth.requireAuth(), auth.requireAdmin(), (req, res, next) => {
+  try {
+    res.json(backup.describeDatabase());
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/admin/database/backups", auth.requireAuth(), auth.requireAdmin(), (req, res, next) => {
+  try {
+    res.json(backup.listBackups());
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/admin/database/backup", auth.requireAuth(), auth.requireAdmin(), async (req, res, next) => {
+  try {
+    const shareable = req.body?.shareable === true;
+    const result = shareable
+      ? await backup.createSharableBackup({ label: req.body?.label })
+      : await backup.createBackup({ label: req.body?.label });
+    backup.pruneBackups(parseInt(req.body?.keep || "10", 10));
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/admin/database/backups/:filename/download", auth.requireAuth(), auth.requireAdmin(), (req, res, next) => {
+  try {
+    const resolved = backup.resolveBackupPath(req.params.filename);
+    res.download(resolved, req.params.filename);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.delete("/api/admin/database/backups/:filename", auth.requireAuth(), auth.requireAdmin(), (req, res, next) => {
+  try {
+    res.json(backup.deleteBackup(req.params.filename));
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
 app.post("/api/admin/purge-non-public", auth.requireAuth(), auth.requireAdmin(), handlePurgeNonPublic);
 
 // Manually Add Unlisted Video

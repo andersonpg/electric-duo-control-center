@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.3.1] - 2026-09-08
+
+### Added
+- **Database Backup, Download & Inspection (Admin Settings → Catalog Maintenance)**:
+  - `POST /api/admin/database/backup` creates a snapshot via SQLite's online backup API rather than copying the file, so it is safe to run against a live WAL-mode database without capturing a torn state.
+  - **Shareable copy** option drops the `users` and `sessions` tables and vacuums, producing a file safe to hand to a third party for debugging.
+  - `GET /api/admin/database/backups/:filename/download` serves a backup, with filename validation rejecting path traversal, nested paths, and non-`.sqlite` extensions.
+  - `GET /api/admin/database/describe` returns row counts and the live category list with per-category video counts, so the state of the deployed database can be checked without downloading it.
+  - Automatic retention keeps the ten most recent backups. All routes are admin-only; backups are written to `data/backups/`, which is gitignored.
+- **Category Benchmark Entry & Derivation**:
+  - v2.3.0 moved per-category benchmarks onto `content_categories` and had the Video Audit read them, but provided no way to enter them, so they remained `NULL`. Added average CTR, average retention, and average view duration fields to each row in the Category Manager, saved on blur.
+  - **Derive from Analytics** fills retention and average view duration per category from measured per-video data over the last 365 days, weighted by views so a low-view video cannot swing the average.
+  - Click-through rate is excluded from derivation and labelled `(Studio)` in the UI, because impressions CTR has no YouTube Analytics API equivalent and can only be read from YouTube Studio.
+
+---
+
 ## [2.3.0] - 2026-09-08
 
 ### Removed
