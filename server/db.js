@@ -694,6 +694,35 @@ try {
     articleDb.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('livestream_mislabel_reset_v1', '1')").run();
   }
 
+  // -------------------------------------------------------------------------
+  // Scope the Mustang Mach-E category to genuine ownership content.
+  //
+  // 261 of 746 videos mention the Mach-E, spread across reviews, road trips,
+  // news and how-tos. Left as a general "all about the Mach-E" bucket it would
+  // absorb roughly a third of the library and recreate the overload that made
+  // the old Walkarounds/Reviews category useless for comparison.
+  //
+  // The category is kept, but narrowed: it is for content where being an owner
+  // is the point, not for anything that happens to feature the car. The
+  // previous description is preserved in app_settings so this is reversible.
+  // -------------------------------------------------------------------------
+  const MACHE_CATEGORY = "Mustang Mach-E Owner Content";
+  const MACHE_SCOPED_DESCRIPTION =
+    "Long-term Mustang Mach-E ownership: living-with-it updates, owner tips, maintenance, mods, and software or feature walkthroughs from an owner's perspective. NOT for reviews, road trips, comparisons, or news that merely feature a Mach-E.";
+
+  const macheScopeFlag = articleDb.prepare("SELECT value FROM app_settings WHERE key = 'mache_category_scoped_v1'").get();
+  if (!macheScopeFlag) {
+    const macheRow = articleDb.prepare("SELECT id, description FROM content_categories WHERE name = ?").get(MACHE_CATEGORY);
+    if (macheRow) {
+      articleDb.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('mache_category_previous_description', ?)")
+        .run(macheRow.description || "");
+      articleDb.prepare("UPDATE content_categories SET description = ? WHERE id = ?")
+        .run(MACHE_SCOPED_DESCRIPTION, macheRow.id);
+      console.log(`Scoped "${MACHE_CATEGORY}" to genuine ownership content.`);
+    }
+    articleDb.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('mache_category_scoped_v1', '1')").run();
+  }
+
   // Runs on every boot: an older seed list could reintroduce a bare "Other"
   // row after the rename, leaving two buckets meaning the same thing.
   const strayOther = articleDb.prepare("SELECT id FROM content_categories WHERE name = 'Other'").get();

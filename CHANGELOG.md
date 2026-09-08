@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.3.2] - 2026-09-08
+
+### Fixed
+- **Reset 241 Videos Wrongly Relabelled As Livestreams**:
+  - The v2.3.0 vocabulary migration renamed the `Other` category to `Livestreams & Channel Updates` based on its seeded description. That description was accurate in a local copy but not in production, where `Other` was a general dumping bucket holding 241 videos: charging network interviews, auto show coverage, solar payback, NACS explainers. Only two were actually livestreams.
+  - Renaming the bucket gave all 241 a confident, wrong label, which is worse than the honest `Other` they had before and is precisely the failure mode v2.3.0 set out to remove.
+  - Adds a guarded corrective migration (`livestream_mislabel_reset_v1`) returning those rows to an explicit unknown (`content_type = NULL`, `category_source = 'needs_review'`) so the classifier can place them properly. Manual assignments are untouched, and the change is recorded in `classification_runs` so it is reviewable and reversible via the existing rollback path.
+  - Verified against a copy of the production database: 241 rows reset, 61 manual rows preserved, 746 total unchanged, idempotent across repeated boots.
+
+### Changed
+- **Scoped the Mustang Mach-E Category to Genuine Ownership Content**:
+  - 261 of 746 videos mention the Mach-E, spread across reviews, road trips, news, and how-tos. As a general "all about the Mach-E" bucket the category would have absorbed roughly a third of the library, recreating the overload that made the old `Walkarounds/Reviews` category useless for comparison.
+  - Narrows the description to long-term ownership, owner tips, maintenance, mods, and owner-perspective software walkthroughs, explicitly excluding reviews, road trips, comparisons, and news that merely feature the car. Guarded by `mache_category_scoped_v1`, with the previous description preserved in `app_settings` so the change is reversible.
+  - Adds a general classifier rule: a vehicle- or brand-specific category is only correct when that vehicle or brand is the point of the video. If the video would still make sense with a different vehicle in it, it is classified by format instead. The rule is written generically so it applies to any future vehicle-specific category.
+  - Verified against production data: a deliberately hard set of 10 Mach-E videos distributed across 7 categories, with only the total-cost-of-ownership analysis and an owner-facing software feature remaining in the Mach-E bucket.
+
+---
+
 ## [2.3.1] - 2026-09-08
 
 ### Added

@@ -396,6 +396,7 @@ CLASSIFICATION RULES:
 - A journey with charging stops along a route belongs in the road trip category, even if a vehicle is being reviewed along the way. The journey is the spine of the video.
 - Instructional content that teaches a repeatable task belongs in the how-to category.
 - Use the sponsor category only when the video's primary purpose is a paid product feature, not when a sponsor is merely mentioned.
+- A vehicle-specific or brand-specific category is only correct when that vehicle or brand is the POINT of the video, not merely present in it. Apply this test: if the video would still make sense with a different vehicle in it, classify it by what the video DOES (review, road trip, news, how-to) rather than by which vehicle appears. A road trip in a given car is a road trip. A review of that car is a review.
 ${fallbackClause}
 - When two categories both fit, choose the one describing the video's main purpose, and lower your confidence.
 
