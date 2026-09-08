@@ -1351,6 +1351,64 @@ app.post("/api/videos/:videoId/generate-description", auth.requireAuth(), aiLimi
   }
 });
 
+// Helper to parse cleaned SRT text into cues with cue-level start and end times
+function parseSrtCues(srtText) {
+  if (!srtText || typeof srtText !== "string") return [];
+  const lines = srtText.split(/\r?\n/);
+  const cues = [];
+  let currentCue = null;
+  const timeRegex = /^\s*(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})\s*-->\s*(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const match = line.match(timeRegex);
+    if (match) {
+      if (currentCue && currentCue.text.trim()) {
+        currentCue.text = currentCue.text.trim();
+        cues.push(currentCue);
+      }
+      const startH = parseInt(match[1], 10);
+      const startM = parseInt(match[2], 10);
+      const startS = parseInt(match[3], 10);
+      const startMs = parseInt(match[4].padEnd(3, "0").slice(0, 3), 10);
+      const startSec = startH * 3600 + startM * 60 + startS + startMs / 1000;
+
+      const endH = parseInt(match[5], 10);
+      const endM = parseInt(match[6], 10);
+      const endS = parseInt(match[7], 10);
+      const endMs = parseInt(match[8].padEnd(3, "0").slice(0, 3), 10);
+      const endSec = endH * 3600 + endM * 60 + endS + endMs / 1000;
+
+      currentCue = {
+        startSec: Math.floor(startSec),
+        endSec: Math.ceil(endSec),
+        text: "",
+      };
+    } else if (currentCue) {
+      if (/^\s*\d+\s*$/.test(line) && i + 1 < lines.length && timeRegex.test(lines[i + 1])) {
+        continue;
+      }
+      const trimmed = line.trim();
+      if (!trimmed) {
+        if (currentCue.text.trim()) {
+          currentCue.text = currentCue.text.trim();
+          cues.push(currentCue);
+          currentCue = null;
+        }
+      } else {
+        currentCue.text += (currentCue.text ? " " : "") + trimmed;
+      }
+    }
+  }
+
+  if (currentCue && currentCue.text.trim()) {
+    currentCue.text = currentCue.text.trim();
+    cues.push(currentCue);
+  }
+
+  return cues;
+}
+
 // 9. Generate Gemini YouTube Video Chapters
 app.post("/api/videos/:videoId/generate-chapters", auth.requireAuth(), aiLimiter, async (req, res, next) => {
   try {
@@ -1369,8 +1427,73 @@ app.post("/api/videos/:videoId/generate-chapters", auth.requireAuth(), aiLimiter
       return res.status(400).json({ error: "Cleaned SRT transcript is empty. Please clean the transcript first." });
     }
 
-    const { parseDurationSec } = require("./channel-health");
-    const totalDurationSec = parseDurationSec(video.duration);
+    // Step 1: Parse the cleaned SRT into cues
+    const cues = parseSrtCues(transRow.cleaned_srt);
+    if (cues.length === 0) {
+      return res.status(400).json({ error: "Could not parse any caption cues from cleaned SRT transcript." });
+    }
+
+    // Step 6: Derive runtime from the transcript (last cue endSec), falling back to duration column
+    // Do not accept the 900 default from parseDurationSec.
+    let totalDurationSec = 0;
+    if (cues.length > 0 && cues[cues.length - 1].endSec > 0) {
+      totalDurationSec = Math.ceil(cues[cues.length - 1].endSec);
+    }
+    if (!totalDurationSec && video.duration) {
+      const match = String(video.duration).match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+      if (match) {
+        const h = parseInt(match[1] || "0", 10);
+        const m = parseInt(match[2] || "0", 10);
+        const s = parseInt(match[3] || "0", 10);
+        const sec = h * 3600 + m * 60 + s;
+        if (sec > 0) totalDurationSec = sec;
+      }
+    }
+    if (!totalDurationSec || totalDurationSec <= 0) {
+      return res.status(400).json({ error: "Unable to determine video runtime from transcript cues or video duration metadata." });
+    }
+
+    // Step 2: Condense the cues into indexed windows (fixed 30s blocks)
+    // If > 400 windows, widen window size until it fits rather than truncating
+    let windowSec = 30;
+    while (Math.ceil(totalDurationSec / windowSec) > 400) {
+      windowSec += 15;
+    }
+
+    const numWindows = Math.max(1, Math.ceil(totalDurationSec / windowSec));
+    const windows = [];
+    for (let i = 0; i < numWindows; i++) {
+      windows.push({
+        index: i,
+        windowStartSec: i * windowSec,
+        firstCueStartSec: null,
+        cues: [],
+        text: "",
+      });
+    }
+
+    for (const cue of cues) {
+      let winIdx = Math.floor(cue.startSec / windowSec);
+      if (winIdx >= numWindows) winIdx = numWindows - 1;
+      if (winIdx < 0) winIdx = 0;
+      const win = windows[winIdx];
+      win.cues.push(cue);
+      if (win.firstCueStartSec === null) {
+        win.firstCueStartSec = cue.startSec;
+      }
+    }
+
+    for (const win of windows) {
+      win.text = win.cues.map((c) => c.text).join(" ").trim().replace(/\s+/g, " ");
+    }
+
+    const windowsPromptText = windows
+      .map((w) => {
+        const displayTime = formatTimestamp(w.firstCueStartSec !== null ? w.firstCueStartSec : w.windowStartSec);
+        const content = w.text || "(no speech)";
+        return `[${w.index}] ${displayTime} — ${content}`;
+      })
+      .join("\n");
 
     const promptRow = articleDb.prepare("SELECT chapter_instructions FROM title_prompt_settings WHERE id = 1").get();
     const chapterPrompt = (promptRow && promptRow.chapter_instructions && promptRow.chapter_instructions.trim())
@@ -1392,11 +1515,12 @@ app.post("/api/videos/:videoId/generate-chapters", auth.requireAuth(), aiLimiter
       console.warn("Error reading default_model app setting:", e.message);
     }
 
+    // Step 3: Have the model return window indices, not seconds
     const formattedTotalRuntime = formatTimestamp(totalDurationSec);
     let userPrompt = `Video Title: "${video.working_title || video.title}"\n`;
     userPrompt += `Total Video Runtime: ${totalDurationSec} seconds (${formattedTotalRuntime})\n\n`;
-    userPrompt += `Cleaned SRT Transcript with Timestamps:\n${transRow.cleaned_srt.slice(0, 45000)}\n\n`;
-    userPrompt += `Generate 6 to 12 logical, chronological chapters with integer startSeconds and concise titles adhering to system rules. The first chapter MUST start at 0. Do NOT invent chapters past the total runtime (${totalDurationSec} seconds). Return as a JSON array matching the schema.`;
+    userPrompt += `Indexed Transcript Windows:\n${windowsPromptText}\n\n`;
+    userPrompt += `Generate 6 to 12 logical, chronological chapters with concise titles adhering to system rules. Each chapter must name the window index (startWindow) where that topic begins, chosen from the [index] numbers above. The first chapter must be window 0. Do NOT invent chapters past the last window index (${windows.length - 1}). Return as a JSON array matching the schema.`;
 
     const requestOptions = {
       model: configuredModel,
@@ -1409,16 +1533,16 @@ app.post("/api/videos/:videoId/generate-chapters", auth.requireAuth(), aiLimiter
           items: {
             type: "object",
             properties: {
-              startSeconds: {
+              startWindow: {
                 type: "integer",
-                description: "Start timestamp of chapter in seconds from start of video",
+                description: "Sequential integer index of the window where this chapter starts (from [index] in the list)",
               },
               title: {
                 type: "string",
                 description: "Short, scannable, non-clickbait chapter label",
               },
             },
-            required: ["startSeconds", "title"],
+            required: ["startWindow", "title"],
           },
         },
       },
@@ -1440,26 +1564,56 @@ app.post("/api/videos/:videoId/generate-chapters", auth.requireAuth(), aiLimiter
       throw new Error("Gemini AI failed to return valid chapter items. Response was: " + rawText.slice(0, 200));
     }
 
-    // Server-side validation rules:
-    // 1. Sort ascending by startSeconds
-    const sanitized = rawChapters
-      .map((ch) => ({
-        startSeconds: typeof ch.startSeconds === "number" ? Math.floor(ch.startSeconds) : parseInt(ch.startSeconds, 10) || 0,
-        title: (ch.title || "").trim(),
-      }))
-      .filter((ch) => ch.title.length > 0)
-      .sort((a, b) => a.startSeconds - b.startSeconds);
+    // Step 4: Map indices back to exact times server-side
+    // For each returned startWindow, look up that window and take the start time of its first cue
+    const mappedChapters = [];
+    for (const ch of rawChapters) {
+      const winIdx = typeof ch.startWindow === "number" ? Math.floor(ch.startWindow) : parseInt(ch.startWindow, 10);
+      if (isNaN(winIdx) || winIdx < 0 || winIdx >= windows.length) {
+        continue;
+      }
+      const title = (ch.title || "").trim();
+      if (!title) continue;
 
-    if (sanitized.length === 0) {
+      const win = windows[winIdx];
+      // Cue-level precision rather than snapping to a thirty-second grid
+      const startSeconds = (win.firstCueStartSec !== null) ? win.firstCueStartSec : win.windowStartSec;
+      // Step 7: Include in each returned chapter object a sourceExcerpt field holding the first ~100 characters of transcript text at that timestamp
+      const sourceExcerpt = (win.text || "").trim().slice(0, 100);
+
+      mappedChapters.push({
+        startWindow: winIdx,
+        startSeconds,
+        title,
+        sourceExcerpt,
+      });
+    }
+
+    // Sort ascending by startSeconds
+    mappedChapters.sort((a, b) => a.startSeconds - b.startSeconds);
+
+    if (mappedChapters.length === 0) {
       return res.status(422).json({ error: "Transcript was too short or sparse to derive valid chapters." });
     }
 
-    // 2. Force the first entry to 0
-    sanitized[0].startSeconds = 0;
+    // Step 5: Fix opening-chapter handling
+    // If first chapter resolves to within thirty seconds of zero, snap it to zero.
+    // Otherwise leave it where it is and prepend a separate 0:00 Intro chapter.
+    if (mappedChapters[0].startSeconds <= 30) {
+      mappedChapters[0].startSeconds = 0;
+    } else {
+      const introExcerpt = (windows[0] && windows[0].text ? windows[0].text : "").trim().slice(0, 100);
+      mappedChapters.unshift({
+        startWindow: 0,
+        startSeconds: 0,
+        title: "Intro",
+        sourceExcerpt: introExcerpt,
+      });
+    }
 
-    // 3. Drop any entry at or beyond video duration, and drop any within 10s of previous kept entry
+    // Drop any entry at or beyond video duration, and drop any within 10s of previous kept entry
     const survived = [];
-    for (const ch of sanitized) {
+    for (const ch of mappedChapters) {
       if (ch.startSeconds >= totalDurationSec) {
         continue;
       }
@@ -1474,7 +1628,7 @@ app.post("/api/videos/:videoId/generate-chapters", auth.requireAuth(), aiLimiter
       }
     }
 
-    // 4. If fewer than three survive, return 422
+    // If fewer than three survive, return 422
     if (survived.length < 3) {
       return res.status(422).json({
         error: "Transcript was too short or sparse to derive valid chapters.",
@@ -1485,6 +1639,7 @@ app.post("/api/videos/:videoId/generate-chapters", auth.requireAuth(), aiLimiter
       startSeconds: ch.startSeconds,
       timeFormatted: formatTimestamp(ch.startSeconds),
       title: ch.title,
+      sourceExcerpt: ch.sourceExcerpt || "",
     }));
 
     const chapterBlock = chapters

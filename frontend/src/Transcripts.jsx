@@ -134,6 +134,7 @@ export default function Transcripts({ currentUser, initialVideoId, onClearInitia
   const [isGeneratingDescription, setIsGeneratingDescription] = useState(false);
   const [isCopiedDescription, setIsCopiedDescription] = useState(false);
   const [generatedChapters, setGeneratedChapters] = useState("");
+  const [chapterList, setChapterList] = useState([]);
   const [isGeneratingChapters, setIsGeneratingChapters] = useState(false);
   const [isCopiedChapters, setIsCopiedChapters] = useState(false);
 
@@ -200,6 +201,7 @@ export default function Transcripts({ currentUser, initialVideoId, onClearInitia
     setEditTitleText(video.working_title || video.title || "");
     setGeneratedDescription("");
     setGeneratedChapters("");
+    setChapterList([]);
 
     // Load stored title suggestions
     if (video.title_suggestions) {
@@ -785,6 +787,7 @@ export default function Transcripts({ currentUser, initialVideoId, onClearInitia
       if (!res.ok) throw new Error(data.error || "Chapter generation failed");
 
       setGeneratedChapters(data.chapterBlock || "");
+      setChapterList(data.chapters || []);
       showToast(`Generated ${data.chapters?.length || 0} video chapters!`, "success");
     } catch (err) {
       showToast(err.message, "error");
@@ -1986,12 +1989,37 @@ I drove the maki to a super charger with fifty kilowatt hours..."
                       </div>
 
                       <textarea
-                        rows={12}
+                        rows={10}
                         value={generatedChapters}
                         onChange={(e) => setGeneratedChapters(e.target.value)}
                         placeholder={"0:00 Introduction\n1:15 Real-World Range Test\n..."}
                         className="w-full p-4 rounded-xl bg-slate-900/90 border border-slate-800 text-xs font-mono text-emerald-200 focus:outline-none focus:border-emerald-500 transition-colors leading-relaxed selection:bg-emerald-500 selection:text-slate-950"
                       />
+
+                      {/* Reviewable Chapter List with Source Excerpts */}
+                      {chapterList && chapterList.length > 0 && (
+                        <div className="bg-slate-900/60 border border-slate-800/90 rounded-xl p-3 flex flex-col gap-2 max-h-60 overflow-y-auto">
+                          <div className="flex items-center justify-between text-[10px] font-bold text-slate-400 uppercase tracking-wider pb-1 border-b border-slate-800/60">
+                            <span>Chapter Verification & Excerpts</span>
+                            <span className="text-slate-500 font-mono font-normal">{chapterList.length} chapters derived</span>
+                          </div>
+                          <div className="flex flex-col divide-y divide-slate-800/60">
+                            {chapterList.map((ch, idx) => (
+                              <div key={idx} className="py-2 first:pt-1 last:pb-0 flex flex-col gap-0.5">
+                                <div className="flex items-baseline gap-2">
+                                  <span className="text-xs font-mono font-bold text-emerald-400 shrink-0">{ch.timeFormatted}</span>
+                                  <span className="text-xs font-medium text-slate-200">{ch.title}</span>
+                                </div>
+                                {ch.sourceExcerpt && (
+                                  <p className="text-[11px] text-slate-500 italic pl-2 border-l-2 border-slate-700/60 leading-snug">
+                                    "{ch.sourceExcerpt}…"
+                                  </p>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
 
                       <div className="flex items-center justify-between flex-wrap gap-2 pt-1 border-t border-slate-800/80">
                         <span className="text-[11px] font-mono text-slate-500">

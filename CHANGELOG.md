@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.2.7] - 2026-09-07
+
+### Fixed
+- **Derived Chapter Timestamps (Cues & Indexed Windows Pipeline)**:
+  - Fixed hallucinated/estimated chapter timestamps by eliminating timestamp arithmetic requests to Gemini and removing the `.slice(0, 45000)` prompt truncation.
+  - **SRT Cue Parser**: Added `parseSrtCues` in `server/app.js` supporting comma and period millisecond separators to extract cue-level `{ startSec, endSec, text }`.
+  - **30-Second Indexed Windows**: Condenses full subtitle files into indexed 30-second windows (`[0] 0:00 — text...`, `[1] 0:30 — text...`), dynamically widening window sizes if videos exceed 400 windows so that entire transcripts are evaluated without truncation.
+  - **Window Index Schema**: Changed Gemini response schema to return `startWindow` integer indices rather than arithmetic `startSeconds`.
+  - **Server-Side Exact Cue Mapping**: Maps returned `startWindow` indices back to the exact start time of the first cue in that window, achieving cue-level precision.
+  - **Opening Chapter Snapping**: Chapters starting within 30 seconds of zero snap cleanly to `0:00`; otherwise, preserves the first chapter and prepends a dedicated `0:00 Intro` chapter.
+  - **Accurate Runtime Derivation**: Derives total duration from the end time of the last SRT cue instead of falling back to 900 seconds when the video metadata duration is NULL.
+  - **Reviewable Chapter Excerpts in UI**: Returned chapters now include a `sourceExcerpt` showing the first 100 characters of spoken dialogue at that timestamp, displayed in muted text beneath each chapter row in `frontend/src/Transcripts.jsx` for instant verification.
+
 ## [2.2.6] - 2026-09-07
 
 ### Added
