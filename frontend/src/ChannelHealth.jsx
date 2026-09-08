@@ -44,6 +44,7 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
   const [loading, setLoading] = useState(true);
   const [isSnapshotting, setIsSnapshotting] = useState(false);
   const [isReclassifying, setIsReclassifying] = useState(false);
+  const [isDerivingBenchmarks, setIsDerivingBenchmarks] = useState(false);
   const [classifyPreview, setClassifyPreview] = useState(null);
   const [narrative, setNarrative] = useState(null);
   const [narrativeError, setNarrativeError] = useState(null);
@@ -146,6 +147,52 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
       showToast("Error capturing snapshot: " + err.message, "error");
     } finally {
       setIsSnapshotting(false);
+    }
+  };
+
+  const handleSaveBenchmark = async (cat, patch) => {
+    const body = {
+      avg_ctr: cat.avg_ctr,
+      avg_retention: cat.avg_retention,
+      avg_view_duration: cat.avg_view_duration,
+      ...patch,
+    };
+    try {
+      const res = await fetch(`/api/channel-health/categories/${cat.id}/benchmarks`, {
+        method: "PUT",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        showToast(`Benchmarks saved for "${cat.name}".`);
+        loadCategories();
+      }
+    } catch (e) {
+      showToast("Could not save benchmarks: " + e.message, "error");
+    }
+  };
+
+  const handleDeriveBenchmarks = async () => {
+    setIsDerivingBenchmarks(true);
+    try {
+      const res = await fetch("/api/channel-health/categories/derive-benchmarks", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ periodDays: 365 }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast(`Derived retention for ${data.updated.length} categor${data.updated.length === 1 ? "y" : "ies"}. CTR still needs Studio.`);
+        loadCategories();
+      } else {
+        showToast(data.error || "Could not derive benchmarks.", "error");
+      }
+    } catch (e) {
+      showToast("Could not derive benchmarks: " + e.message, "error");
+    } finally {
+      setIsDerivingBenchmarks(false);
     }
   };
 
@@ -901,27 +948,93 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
             {/* Category List */}
             <div className="space-y-2.5">
               {categories.map((cat) => (
-                <div
-                  key={cat.id}
-                  className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex items-center justify-between gap-3"
-                >
-                  <div className="flex items-center gap-3">
-                    <span className="w-3.5 h-3.5 rounded-full shrink-0" style={{ backgroundColor: cat.color }}></span>
-                    <div>
-                      <div className="text-xs font-bold text-white">{cat.name}</div>
-                      <div className="text-[11px] text-slate-400">{cat.description}</div>
+                <div key={cat.id} className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex flex-col gap-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <span className="w-3.5 h-3.5 rounded-full shrink-0" style={{ backgroundColor: cat.color }}></span>
+                      <div>
+                        <div className="text-xs font-bold text-white">{cat.name}</div>
+                        <div className="text-[11px] text-slate-400">{cat.description}</div>
+                      </div>
                     </div>
+
+                    <button
+                      onClick={() => handleDeleteCategory(cat.id, cat.name)}
+                      className="p-1.5 rounded-lg bg-slate-900 hover:bg-red-950/60 text-slate-400 hover:text-red-300 border border-slate-800 transition-colors"
+                      title="Delete Category"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
                   </div>
 
-                  <button
-                    onClick={() => handleDeleteCategory(cat.id, cat.name)}
-                    className="p-1.5 rounded-lg bg-slate-900 hover:bg-red-950/60 text-slate-400 hover:text-red-300 border border-slate-800 transition-colors"
-                    title="Delete Category"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                  {/* Benchmarks. Retention and view duration can be derived from
+                      Analytics; CTR has no API equivalent and must come from Studio. */}
+                  <div className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-800/80">
+                    <label className="flex flex-col gap-1">
+                      <span className="text-[9px] uppercase tracking-wider text-slate-500 font-bold">
+                        Avg CTR % <span className="text-amber-500/80">(Studio)</span>
+                      </span>
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0"
+                        max="100"
+                        defaultValue={cat.avg_ctr ?? ""}
+                        placeholder="—"
+                        onBlur={(e) => handleSaveBenchmark(cat, { avg_ctr: e.target.value })}
+                        className="px-2 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-[11px] text-white focus:outline-none focus:border-cyan-500"
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1">
+                      <span className="text-[9px] uppercase tracking-wider text-slate-500 font-bold">Avg Retention %</span>
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0"
+                        max="100"
+                        defaultValue={cat.avg_retention ?? ""}
+                        placeholder="—"
+                        onBlur={(e) => handleSaveBenchmark(cat, { avg_retention: e.target.value })}
+                        className="px-2 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-[11px] text-white focus:outline-none focus:border-cyan-500"
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1">
+                      <span className="text-[9px] uppercase tracking-wider text-slate-500 font-bold">Avg View Duration</span>
+                      <input
+                        type="text"
+                        defaultValue={cat.avg_view_duration ?? ""}
+                        placeholder="8:15"
+                        onBlur={(e) => handleSaveBenchmark(cat, { avg_view_duration: e.target.value })}
+                        className="px-2 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-[11px] text-white focus:outline-none focus:border-cyan-500"
+                      />
+                    </label>
+                  </div>
+                  {cat.benchmarks_updated_at && (
+                    <div className="text-[9px] text-slate-600">
+                      Benchmarks updated {new Date(cat.benchmarks_updated_at).toLocaleDateString()}
+                    </div>
+                  )}
                 </div>
               ))}
+            </div>
+
+            {/* Auto-derive what the Analytics API actually exposes */}
+            <div className="bg-slate-950/70 p-4 rounded-2xl border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <div className="text-xs font-bold text-white mb-0.5">Derive benchmarks from Analytics</div>
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  Fills average retention and view duration per category from measured data, weighted by views.
+                  Click-through rate is not exposed by the YouTube Analytics API and must be typed in from Studio.
+                </p>
+              </div>
+              <button
+                onClick={handleDeriveBenchmarks}
+                disabled={isDerivingBenchmarks}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-cyan-950/60 hover:bg-cyan-900/60 text-cyan-300 text-xs font-semibold border border-cyan-500/30 transition-colors shrink-0 disabled:opacity-50"
+              >
+                {isDerivingBenchmarks ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                <span>{isDerivingBenchmarks ? "Deriving…" : "Derive from Analytics"}</span>
+              </button>
             </div>
 
             {/* Add Category Form */}

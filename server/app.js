@@ -2399,6 +2399,25 @@ app.put("/api/channel-health/categories/:id", auth.requireAuth(), (req, res, nex
   }
 });
 
+app.put("/api/channel-health/categories/:id/benchmarks", auth.requireAuth(), (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const cat = channelHealth.updateCategoryBenchmarks(id, req.body || {});
+    res.json({ success: true, category: cat });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/channel-health/categories/derive-benchmarks", auth.requireAuth(), async (req, res, next) => {
+  try {
+    const periodDays = parseInt(req.body?.periodDays || "365", 10);
+    res.json(await channelHealth.deriveCategoryBenchmarks(periodDays));
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.delete("/api/channel-health/categories/:id", auth.requireAuth(), (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);

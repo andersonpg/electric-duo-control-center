@@ -75,6 +75,109 @@ function updateCategory(id, { name, description, color }) {
   return { id, name: name.trim(), description, color };
 }
 
+// Benchmarks are entered by hand from YouTube Studio, or derived from measured
+// Analytics data where the API actually exposes the metric. Impressions and
+// impressions CTR have no Analytics API equivalent, so those stay manual.
+function updateCategoryBenchmarks(id, { avg_ctr, avg_retention, avg_view_duration, traffic_share } = {}) {
+  const existing = db.prepare("SELECT id FROM content_categories WHERE id = ?").get(id);
+  if (!existing) throw new Error("Category not found.");
+
+  const num = (x) => {
+    if (x === "" || x === null || x === undefined) return null;
+    const n = Number(x);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  db.prepare(`
+    UPDATE content_categories
+    SET avg_ctr = ?, avg_retention = ?, avg_view_duration = ?, traffic_share_json = ?,
+        benchmarks_updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(
+    num(avg_ctr),
+    num(avg_retention),
+    avg_view_duration && String(avg_view_duration).trim() ? String(avg_view_duration).trim() : null,
+    traffic_share ? JSON.stringify(traffic_share) : null,
+    id
+  );
+
+  return db.prepare("SELECT * FROM content_categories WHERE id = ?").get(id);
+}
+
+// Fill in the benchmarks the Analytics API can actually measure: average
+// percentage viewed and average view duration, aggregated per category over
+// the given window. CTR is left untouched because no API exposes it.
+async function deriveCategoryBenchmarks(periodDays = 365) {
+  const auth = getAuthenticatedClient();
+  if (!auth) {
+    return { success: false, error: "YouTube Analytics is not connected, so nothing can be derived." };
+  }
+
+  const now = new Date();
+  const endDate = now.toISOString().split("T")[0];
+  const startDate = new Date(now.getTime() - periodDays * 86400000).toISOString().split("T")[0];
+
+  const ytAnalytics = google.youtubeAnalytics({ version: "v2", auth });
+  const data = await queryAnalytics(ytAnalytics, {
+    ids: "channel==MINE",
+    startDate,
+    endDate,
+    dimensions: "video",
+    metrics: "views,averageViewDuration,averageViewPercentage",
+    sort: "-views",
+    maxResults: 200,
+  }, "category benchmark derivation");
+
+  if (!data || !data.rows || data.rows.length === 0) {
+    return { success: false, error: "No per-video analytics rows were returned for this window." };
+  }
+
+  const byVideo = new Map(data.rows.map((r) => [r[0], { views: r[1] || 0, avd: r[2] || 0, pct: r[3] || 0 }]));
+  const categories = getCategories();
+  const updated = [];
+
+  for (const cat of categories) {
+    const vids = db
+      .prepare("SELECT youtube_id FROM videos WHERE content_type = ? AND (privacy_status IS NULL OR privacy_status = 'public')")
+      .all(cat.name)
+      .map((r) => r.youtube_id)
+      .filter((id) => byVideo.has(id));
+
+    if (vids.length === 0) continue;
+
+    // Weight by views so one tiny video cannot swing a category average.
+    let totalViews = 0, wPct = 0, wAvd = 0;
+    vids.forEach((id) => {
+      const m = byVideo.get(id);
+      totalViews += m.views;
+      wPct += m.pct * m.views;
+      wAvd += m.avd * m.views;
+    });
+    if (totalViews <= 0) continue;
+
+    const avgPct = Number((wPct / totalViews).toFixed(1));
+    const avgAvdSec = Math.round(wAvd / totalViews);
+    const avdFormatted = `${Math.floor(avgAvdSec / 60)}:${String(avgAvdSec % 60).padStart(2, "0")}`;
+
+    db.prepare(`
+      UPDATE content_categories
+      SET avg_retention = ?, avg_view_duration = ?, benchmarks_updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(avgPct, avdFormatted, cat.id);
+
+    updated.push({ name: cat.name, sampleSize: vids.length, avgRetention: avgPct, avgViewDuration: avdFormatted });
+  }
+
+  return {
+    success: true,
+    periodDays,
+    startDate,
+    endDate,
+    updated,
+    note: "Impressions click-through rate is not exposed by the YouTube Analytics API and must still be entered by hand from YouTube Studio.",
+  };
+}
+
 function deleteCategory(id) {
   const cat = db.prepare("SELECT name FROM content_categories WHERE id = ?").get(id);
   if (!cat) throw new Error("Category not found.");
@@ -1173,6 +1276,8 @@ module.exports = {
   addCategory,
   updateCategory,
   deleteCategory,
+  updateCategoryBenchmarks,
+  deriveCategoryBenchmarks,
   getPlaylistMappings,
   savePlaylistMapping,
   deletePlaylistMapping,
