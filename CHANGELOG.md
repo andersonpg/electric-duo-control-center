@@ -7,6 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.3.0] - 2026-09-08
+
+### Removed
+- **Fabricated Video Audit Metrics (`server/audit.js`)**:
+  - Deleted `getCalibratedMetrics` and its `hashString` seed helper, which derived an entire analytics profile from a hash of the video ID. Because the values were deterministic they never changed between page loads and read as measured data.
+  - Impressions and impressions CTR had **no live-data branch at all**, so both were fabricated even when OAuth was connected, while the prompt header labelled the block `GROUND-TRUTH YOUTUBE STUDIO DATA`. Both are now `null` and reported as YouTube Studio only.
+  - Removed hash-derived card CTR, end-screen CTR, and the hardcoded geography (74/12/6/8) and device (58/26/14/2) splits, none of which were ever overridden by live data.
+  - Removed the hardcoded `searchTerms` fallback and the invented `estimated_rpm` and `seo_score` fields.
+  - Removed the synthetic 10-point retention curve with its fixed narrative labels ("30s Hook Gate", "Mid-video / Sponsor read"), which described the structure of a video nobody had watched.
+- **Fabricated Channel Health Metrics (`server/channel-health.js`)**:
+  - Removed the hardcoded `avgCtr = 5.3` and the impressions figure back-computed from it, which made the Impressions card a constant multiple of Views with an identical percent change by construction.
+  - Removed the hardcoded `suggestedShare.pctChange` of 1.5, the constant `ctr: 5.4` stamped on every top-performer row, and per-category CTR and retention assigned by pattern-matching the category name against strings.
+  - Removed the hardcoded `audienceShift.prior` object, which made every traffic-shift arrow a comparison against a literal.
+- **Heuristic Competitor Fallback (`server/competitor-comparison.js`)**:
+  - Removed `generateFallbackSummary`, which asserted specific strategic opinions about a competitor it had not examined whenever Gemini was unavailable. Failures now report honestly and leave the structured findings intact.
+
+### Fixed
+- **Category Vocabulary Mismatch (root cause of poor classification)**:
+  - `videos.content_type` held a legacy vocabulary (`Review`, `EV News`, `Road Trip / Vlog`, `How-To / Instructional`, `EV Review`) that matched **none** of the six `content_categories` rows, so the Channel Health category breakdown resolved to zero for every category.
+  - Added a guarded one-time migration (`category_vocabulary_v3_migrated`) mapping all 571 videos onto the live names, preserving manual assignments and quarantining unknown names as `needs_review`.
+  - Moved per-category benchmarks onto `content_categories` (`avg_ctr`, `avg_retention`, `avg_view_duration`, `traffic_share_json`) so they can never drift from the category name, replacing the `CATEGORY_BENCHMARKS` constant. Left `NULL` by design: a benchmark is only real once entered from YouTube Studio.
+  - Removed the keyword guesser in `syncRealChannelVideosScraper` that rewrote legacy names on every sync and mapped any title containing `"202"` to news, capturing most model-year reviews on an EV channel.
+  - Renamed the vague `Other` bucket to `Livestreams & Channel Updates` and flagged it `is_fallback` so it stops acting as an escape hatch; corrected the seed list so it is not recreated on boot.
+- **Silent Classifier Failures**:
+  - A thrown or unparseable Gemini batch previously fell through to a keyword ladder for all 25 videos while still incrementing the success counter, so the UI could report "reclassified 571 / 571" when the model contributed nothing.
+  - Model-assigned, playlist-assigned, and failed counts are now tracked separately and surfaced. Batches retry up to three times with backoff before being reported as failures.
+- **Mislabelled 30-Second Hook Drop**:
+  - `retentionCurve[2]` was read as the 30-second mark, but the live curve is keyed on `elapsedVideoTimeRatio` (percentage of video), making index 2 roughly 2% in: about 10 seconds on an 8-minute video and 48 seconds on a 40-minute one.
+  - Replaced with true interpolation to 30 seconds using the video's duration, returning `null` when no curve is available.
+- **Unpopulated View Counts**:
+  - `videos.view_count` was read in three places but never written, because the catalog sync omitted the `statistics` part from `videos.list`. All 571 rows were zero. The sync now requests and stores it.
+- **Silent Defaults Entering the Maths**:
+  - Unknown durations no longer default to `PT15M00S`, which sat above the long-form threshold and silently counted unknown-length videos (including Shorts) as long-form everywhere.
+  - Unknown subscriber counts no longer default to 24,800 (ours) and 100,000 (competitor), which fed an invented scale ratio to the model as fact.
+  - Missing view counts are no longer credited 1,500 (Channel Health) or 2,300 (Video Audit).
+  - The competitor scraper no longer invents `likeCount` and `commentCount` from view-count ratios.
+- **Shorts Threshold**:
+  - Corrected from 240s to 180s to match YouTube's current 3-minute Shorts definition, which had been silently excluding genuine short long-form videos from every figure on the page.
+- **Category Trajectory**:
+  - Now compares uploads this period against the prior period instead of testing lifetime total views against fixed 100,000 / 30,000 thresholds, under which a large old category could never show "down".
+
+### Added
+- **Editable AI Instructions for Competitor & Channel Health**:
+  - Extended `title_prompt_settings` with `competitor_instructions` and `channel_health_instructions`, pre-seeded with EV-tailored defaults and exposed as editable textareas with live counters in Admin Settings.
+  - The structured data block remains assembled in code for both, so a prompt edit cannot break the data injection.
+- **Channel Health AI Narrative & Report History**:
+  - `POST /api/channel-health/narrative`: generates a Gemini narrative from measured data only and archives it.
+  - `GET|DELETE /api/channel-health/reports[/:id]`: new `channel_health_reports` table storing the scorecard JSON plus narrative per run.
+  - The prompt receives an explicit list of unavailable metrics and is instructed never to estimate them.
+- **Three-Pass Classifier with Review Queue**:
+  - **Pass 1** resolves categories from `playlist_category_mappings` via `playlistItems.list` — deterministic, no AI call, and the highest-precision signal available.
+  - **Pass 2** calls Gemini with `responseSchema`, a category enum, `confidence`, and `reason` at temperature 0, in batches of 12 rather than 25.
+  - **Pass 3** routes anything below 0.7 confidence, unreturned, or failed to a review queue as `NULL` rather than guessing.
+  - Feeds real descriptions, tags, duration, and transcript openings. The scraper had been writing a placeholder description that only restated the title, so the model was effectively classifying on the title alone.
+  - Persists `classification_confidence` and `classification_reason` per video so a wrong call is diagnosable.
+- **Classification Dry Run, History & Rollback**:
+  - New `classification_runs` table records every run. `POST /api/channel-health/reclassify` accepts `dryRun` and previews proposed changes in a diff table before anything is written.
+  - `POST /api/channel-health/classification-runs/:id/rollback` restores prior values; `GET /api/channel-health/review-queue` lists unresolved videos.
+- **Append-Only Competitor Report History**:
+  - Reports no longer upsert by `competitor_channel_id`. Re-running against the same competitor previously overwrote and permanently destroyed the prior run.
+  - Added `report_label`, a 12-run retention policy per competitor, `GET /api/comparison/reports/:id/history`, and a **"What changed since the previous run"** section covering cadence shifts, new outliers, and topic movement.
+- **Richer Competitor Analysis Inputs**:
+  - Now passes `titlePatterns` (top-quartile keywords, average title length, percentage containing a number), which was computed and stored but never given to the model despite the prompt asking for packaging advice.
+  - Added engagement rate per 1,000 views, publish-day distribution, and video-age normalisation flagging outliers under 30 days as still accumulating.
+- **Data Provenance Throughout the UI**:
+  - Scorecard tiles, status pills, and metric cards render an em dash plus the reason when a metric is unavailable, instead of a plausible-looking number.
+  - The Video Audit modal shows a "Not Connected" badge, an explicit unavailable-metrics list, and suppresses the Discovery 2x2 quadrant when impressions and CTR are missing.
+
+---
+
 ## [2.2.8] - 2026-09-07
 
 ### Fixed
