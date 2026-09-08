@@ -554,7 +554,7 @@ const defaultCategories = [
   { name: "Walkarounds/Reviews", description: "Vehicle deep dives, first looks, and hardware reviews", color: "#8b5cf6" },
   { name: "How Tos/Guides", description: "Tutorials, charging adapter setups, and EV ownership guides", color: "#10b981" },
   { name: "Sponsor Content", description: "Dedicated sponsor segments and product spotlights", color: "#f59e0b" },
-  { name: "Other", description: "Livestreams, announcements, and channel updates", color: "#64748b" },
+  { name: "Livestreams & Channel Updates", description: "Livestreams, channel announcements, and channel updates only", color: "#64748b" },
 ];
 
 const insertCatStmt = articleDb.prepare("INSERT OR IGNORE INTO content_categories (name, description, color) VALUES (?, ?, ?)");
@@ -628,6 +628,19 @@ try {
     runCategoryMigration();
     articleDb.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('category_vocabulary_v3_migrated', '1')").run();
     console.log("Category vocabulary migration complete.");
+  }
+
+  // Runs on every boot: an older seed list could reintroduce a bare "Other"
+  // row after the rename, leaving two buckets meaning the same thing.
+  const strayOther = articleDb.prepare("SELECT id FROM content_categories WHERE name = 'Other'").get();
+  if (strayOther) {
+    const canonical = articleDb.prepare("SELECT id FROM content_categories WHERE name = 'Livestreams & Channel Updates'").get();
+    if (canonical) {
+      articleDb.prepare("UPDATE videos SET content_type = 'Livestreams & Channel Updates' WHERE content_type = 'Other'").run();
+      articleDb.prepare("DELETE FROM content_categories WHERE id = ?").run(strayOther.id);
+    } else {
+      articleDb.prepare("UPDATE content_categories SET name = 'Livestreams & Channel Updates', description = 'Livestreams, channel announcements, and channel updates only', is_fallback = 1 WHERE id = ?").run(strayOther.id);
+    }
   }
 } catch (e) {
   console.warn("Could not run category vocabulary migration:", e.message);
