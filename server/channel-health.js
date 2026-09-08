@@ -5,6 +5,12 @@ const { google } = require("googleapis");
 const db = require("./db").articleDb;
 const { getGeminiApiKey, DEFAULT_GEMINI_MODEL } = require("./gemini");
 const { isOAuthConnected, getAuthenticatedClient } = require("./youtube-analytics");
+const {
+  getChannelReachSummary,
+  getReachStatus,
+  ensureReachJob,
+  syncReachReports,
+} = require("./youtube-reach");
 
 // Helper to parse ISO duration "PT18M6S" into seconds
 function parseDurationSec(durationStr) {
@@ -944,13 +950,40 @@ async function getChannelHealthReport(periodDays = 28) {
     note: note || null,
   });
 
+  const currReach = getChannelReachSummary(startDateStr, endDateStr);
+  const priorReach = getChannelReachSummary(priorStartDateStr, startDateStr);
+  const reachStatus = getReachStatus();
+
+  let impressionsMetric;
+  let avgCtrMetric;
+
+  if (currReach && currReach.totalImpressions > 0) {
+    impressionsMetric = metric(
+      currReach.totalImpressions,
+      priorReach?.totalImpressions ?? null,
+      "Impressions"
+    );
+    avgCtrMetric = metric(
+      currReach.weightedCtr,
+      priorReach?.weightedCtr ?? null,
+      "Channel Avg CTR"
+    );
+  } else if (reachStatus.jobActive) {
+    const note = reachStatus.reportsIngested > 0
+      ? "No reach reports within this date range."
+      : "YouTube Reporting job active. Google is compiling the initial reach reports (24-48h).";
+    impressionsMetric = metric(null, null, "Impressions", note);
+    avgCtrMetric = metric(null, null, "Channel Avg CTR", note);
+  } else {
+    impressionsMetric = metric(null, null, "Impressions", "YouTube Reach reporting job not registered. Click to set up.");
+    avgCtrMetric = metric(null, null, "Channel Avg CTR", "YouTube Reach reporting job not registered. Click to set up.");
+  }
+
   const scorecard = {
     totalSubscribers: metric(totalSubscribers, null, "Total Subscribers"),
     views: metric(currViews, priorViews, "Total Views"),
-    // Impressions and CTR are YouTube Studio figures with no Analytics API
-    // equivalent. They stay unavailable rather than being derived from a guess.
-    impressions: metric(null, null, "Impressions", "Not exposed by the YouTube Analytics API. Read in YouTube Studio."),
-    avgCtr: metric(null, null, "Channel Avg CTR", "Not exposed by the YouTube Analytics API. Read in YouTube Studio."),
+    impressions: impressionsMetric,
+    avgCtr: avgCtrMetric,
     watchTimeHours: metric(currWatchHours, priorWatchHours, "Watch Time (Hours)"),
     suggestedShare: metric(
       trafficShare ? trafficShare.suggested : null,
@@ -1090,7 +1123,8 @@ async function getChannelHealthReport(periodDays = 28) {
 
   const unavailableMetrics = [];
   if (!isLive) unavailableMetrics.push("all YouTube Analytics metrics (not connected)");
-  unavailableMetrics.push("impressions", "impressions click-through rate");
+  if (!impressionsMetric.available) unavailableMetrics.push("impressions");
+  if (!avgCtrMetric.available) unavailableMetrics.push("impressions click-through rate");
   if (!trafficShare) unavailableMetrics.push("traffic sources");
   if (totalSubscribers == null) unavailableMetrics.push("subscriber count");
 
@@ -1112,6 +1146,7 @@ async function getChannelHealthReport(periodDays = 28) {
     uploadsPriorPeriod,
     unavailableMetrics,
     isLiveStudioData: isLive,
+    reachStatus,
     shortsThresholdSec: SHORTS_MAX_SEC,
   };
 }
@@ -1333,6 +1368,9 @@ module.exports = {
   listHealthReports,
   getHealthReportById,
   deleteHealthReport,
+  ensureReachJob,
+  syncReachReports,
+  getReachStatus,
   parseDurationSec,
   isLongForm,
   SHORTS_MAX_SEC,

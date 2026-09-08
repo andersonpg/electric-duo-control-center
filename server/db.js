@@ -246,6 +246,25 @@ articleDb.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
+  CREATE TABLE IF NOT EXISTS video_reach_daily (
+    date TEXT NOT NULL,
+    video_id TEXT NOT NULL,
+    impressions INTEGER NOT NULL DEFAULT 0,
+    impressions_ctr REAL NOT NULL DEFAULT 0.0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (date, video_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS reporting_ingested_reports (
+    report_id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    start_time TEXT,
+    end_time TEXT,
+    create_time TEXT,
+    row_count INTEGER DEFAULT 0,
+    ingested_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
   CREATE INDEX IF NOT EXISTS idx_videos_published_at ON videos(published_at DESC);
   CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
   CREATE INDEX IF NOT EXISTS idx_video_audits_updated ON video_audits(updated_at DESC);
@@ -253,6 +272,8 @@ articleDb.exec(`
   CREATE INDEX IF NOT EXISTS idx_video_snapshots_lookup ON video_snapshots(youtube_id, snapshot_date DESC);
   CREATE INDEX IF NOT EXISTS idx_competitor_reports_channel ON competitor_reports(competitor_channel_id, updated_at DESC);
   CREATE INDEX IF NOT EXISTS idx_competitor_videos_report ON competitor_videos(report_id, is_competitor);
+  CREATE INDEX IF NOT EXISTS idx_video_reach_date ON video_reach_daily(date);
+  CREATE INDEX IF NOT EXISTS idx_video_reach_video_id ON video_reach_daily(video_id);
 
 
   CREATE TABLE IF NOT EXISTS transcripts (

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.3.3] - 2026-09-08
+
+### Added
+- **YouTube Reporting API Reach Integration (`channel_reach_basic_a1`)**:
+  - Integrated Google's official reach report from the YouTube Reporting API (introduced January 15, 2026) to capture authentic impressions and impressions click-through rate.
+  - Automatically registers and manages the `channel_reach_basic_a1` background reporting job via existing OAuth credentials.
+  - Created `video_reach_daily` and `reporting_ingested_reports` database tables to store daily impressions and CTR per video.
+  - Added Reach sync pipeline (`server/youtube-reach.js`) with authenticated CSV download and deduplication.
+  - Populates Channel Health scorecard with real measured Impressions and view-weighted CTR, with clear compilation notices while initial batch reports compile.
+  - Added "Sync Reach" button directly to Channel Health action toolbar.
+
+---
+
 ## [2.3.2] - 2026-09-08
 
 ### Fixed

@@ -2400,6 +2400,32 @@ app.delete("/api/channel-health/reports/:id", auth.requireAuth(), (req, res, nex
   }
 });
 
+app.get("/api/channel-health/reach-status", auth.requireAuth(), (req, res, next) => {
+  try {
+    res.json(channelHealth.getReachStatus());
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/channel-health/ensure-reach-job", auth.requireAuth(), async (req, res, next) => {
+  try {
+    const result = await channelHealth.ensureReachJob();
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/channel-health/sync-reach", auth.requireAuth(), async (req, res, next) => {
+  try {
+    const result = await channelHealth.syncReachReports();
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/channel-health/snapshot", auth.requireAuth(), async (req, res, next) => {
   try {
     const periodDays = parseInt(req.body?.periodDays || "28", 10);

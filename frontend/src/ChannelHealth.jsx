@@ -49,6 +49,7 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
   const [narrative, setNarrative] = useState(null);
   const [narrativeError, setNarrativeError] = useState(null);
   const [isGeneratingNarrative, setIsGeneratingNarrative] = useState(false);
+  const [isSyncingReach, setIsSyncingReach] = useState(false);
 
   // Modals
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
@@ -147,6 +148,27 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
       showToast("Error capturing snapshot: " + err.message, "error");
     } finally {
       setIsSnapshotting(false);
+    }
+  };
+
+  const handleSyncReach = async () => {
+    setIsSyncingReach(true);
+    try {
+      const res = await fetch("/api/channel-health/sync-reach", {
+        method: "POST",
+        credentials: "same-origin",
+      });
+      const data = await res.json();
+      if (!data.success) {
+        showToast("Reach sync error: " + (data.error || "failed"), "error");
+      } else {
+        showToast(data.message || "Reach sync complete", "success");
+        loadData();
+      }
+    } catch (e) {
+      showToast("Reach sync failed: " + e.message, "error");
+    } finally {
+      setIsSyncingReach(false);
     }
   };
 
@@ -381,6 +403,17 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
           >
             <Camera className={`w-3.5 h-3.5 ${isSnapshotting ? "animate-spin" : ""}`} />
             <span>{isSnapshotting ? "Saving…" : "Pull Live Snapshot"}</span>
+          </button>
+
+          {/* Sync Reach (Reporting API) Button */}
+          <button
+            onClick={handleSyncReach}
+            disabled={isSyncingReach}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-purple-950/40 hover:bg-purple-900/50 text-purple-300 text-xs font-semibold border border-purple-500/30 transition-colors disabled:opacity-50"
+            title="Ingest Impressions & CTR reports from YouTube Reporting API"
+          >
+            <Compass className={`w-3.5 h-3.5 text-purple-400 ${isSyncingReach ? "animate-spin" : ""}`} />
+            <span>{isSyncingReach ? "Syncing Reach…" : "Sync Reach"}</span>
           </button>
 
           {/* Re-categorize Library Button */}
