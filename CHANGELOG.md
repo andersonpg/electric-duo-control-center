@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.2.8] - 2026-09-07
+
+### Fixed
+- **Verbatim Anchor Quotes & Exact Boundary Precision**:
+  - Replaced imprecise window snapping with server-side anchor quote resolution. The model returns 6 to 12 words copied verbatim from the transcript at the exact start of each section.
+  - Built a normalized transcript character-to-cue index mapping. Quotes match directly to their originating cue, achieving within-seconds boundary precision (e.g. 0:54 for Exterior, 3:56 for Frunk, 9:52 for Infotainment, 12:01 for Midgate).
+  - Implemented 6-word retry fallback and graceful degradation to `startWindow`, marking each chapter with `resolvedBy: "quote"` or `resolvedBy: "window"` in the UI.
+- **Tightened Fallback Windows**:
+  - Reduced fallback window size from 30s to 10s (`windowSec = 10`), and raised widening threshold from 400 to 1,200 windows for sharper model context and finer fallback grid.
+- **Dynamic Chapter Count Scaling**:
+  - Replaced fixed "6 to 12" instruction with a runtime-derived target (~1 chapter every 2 minutes, floor 8 for videos $\ge 15$ minutes, ceiling 20) passed explicitly to the model.
+- **Concrete Title Generation & Prompt Reset**:
+  - Reset `chapter_instructions` to a rewritten default demanding concrete nouns, figures, kW metrics, model names, and measurements while banning standalone generic labels ("Intro", "Tech", "Driving", "Conclusion").
+  - Executed a guarded one-time migration in `server/db.js` (`chapter_prompt_v2_migrated`) to update existing databases.
+- **Verification UI Resolution Badges**:
+  - Added resolution badges (`quote` vs `window`) and match summary stats ("X/Y resolved via quote") to the chapter verification list in `frontend/src/Transcripts.jsx`.
+
 ## [2.2.7] - 2026-09-07
 
 ### Fixed

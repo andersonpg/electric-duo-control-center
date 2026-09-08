@@ -1997,18 +1997,33 @@ I drove the maki to a super charger with fifty kilowatt hours..."
                       />
 
                       {/* Reviewable Chapter List with Source Excerpts */}
+                      {/* Reviewable Chapter List with Source Excerpts & Resolution Badge */}
                       {chapterList && chapterList.length > 0 && (
-                        <div className="bg-slate-900/60 border border-slate-800/90 rounded-xl p-3 flex flex-col gap-2 max-h-60 overflow-y-auto">
+                        <div className="bg-slate-900/60 border border-slate-800/90 rounded-xl p-3 flex flex-col gap-2 max-h-64 overflow-y-auto">
                           <div className="flex items-center justify-between text-[10px] font-bold text-slate-400 uppercase tracking-wider pb-1 border-b border-slate-800/60">
                             <span>Chapter Verification & Excerpts</span>
-                            <span className="text-slate-500 font-mono font-normal">{chapterList.length} chapters derived</span>
+                            <span className="text-slate-500 font-mono font-normal">
+                              {chapterList.filter((c) => c.resolvedBy === "quote").length}/{chapterList.length} resolved via quote
+                            </span>
                           </div>
                           <div className="flex flex-col divide-y divide-slate-800/60">
                             {chapterList.map((ch, idx) => (
                               <div key={idx} className="py-2 first:pt-1 last:pb-0 flex flex-col gap-0.5">
-                                <div className="flex items-baseline gap-2">
-                                  <span className="text-xs font-mono font-bold text-emerald-400 shrink-0">{ch.timeFormatted}</span>
-                                  <span className="text-xs font-medium text-slate-200">{ch.title}</span>
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="flex items-baseline gap-2 min-w-0">
+                                    <span className="text-xs font-mono font-bold text-emerald-400 shrink-0">{ch.timeFormatted}</span>
+                                    <span className="text-xs font-medium text-slate-200 truncate">{ch.title}</span>
+                                  </div>
+                                  <span
+                                    className={`text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded border shrink-0 ${
+                                      ch.resolvedBy === "quote"
+                                        ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                                        : "bg-amber-500/10 text-amber-400 border-amber-500/20"
+                                    }`}
+                                    title={ch.resolvedBy === "quote" ? "Resolved via verbatim quote match" : "Resolved via fallback window"}
+                                  >
+                                    {ch.resolvedBy || "window"}
+                                  </span>
                                 </div>
                                 {ch.sourceExcerpt && (
                                   <p className="text-[11px] text-slate-500 italic pl-2 border-l-2 border-slate-700/60 leading-snug">

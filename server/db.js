@@ -387,15 +387,25 @@ Description structure:
 2. Body: A concise, scannable summary covering what the video actually demonstrates — real-world charging speeds, range results, software quirks, build impressions, or highway test metrics. Keep paragraphs brief.
 3. Closing: A thought-provoking discussion prompt for the comments to drive engagement, followed by a call to subscribe to The Electric Duo for real-world EV ownership guides and honest tests.`;
 
-const DEFAULT_CHAPTER_PROMPT_INSTRUCTIONS = `You are a video chapter strategist for The Electric Duo. Generate 6 to 12 logical, chronological chapters based on the provided cleaned SRT transcript with exact timestamps.
+const DEFAULT_CHAPTER_PROMPT_INSTRUCTIONS = `You are a video chapter strategist for The Electric Duo. Generate logical, chronological chapters based on the indexed transcript windows.
 
-Chapter rules:
-1. The first chapter must start at 0:00.
-2. Generate between 6 and 12 chapters total.
-3. Keep labels short, scannable, descriptive, and non-clickbait (under 40 characters each).
-4. Each chapter must represent a meaningful transition, vehicle section, test phase, feature deep dive, or discussion topic.
-5. Every chapter must run at least 10 seconds.
-6. Chapter start timestamps must ascend chronologically and never exceed the video's total duration.`;
+Rules for Chapter Titles:
+1. Every title must contain at least one concrete noun, figure, or proper name taken directly from that section of the transcript (e.g., vehicle model names, specific feature names, measurements, kW charge rates, prices, range numbers, trim levels, or hardware components).
+2. Never use standalone generic labels. Words like "Intro", "Overview", "Tech", "Features", "Specs", "Interior", "Driving", "Final Thoughts", or "Conclusion" must NEVER appear alone; they may only appear when qualified by specific nouns or features (e.g., "Silverado EV Intro & Goal", not "Intro").
+3. Keep titles concise: between 2 and 7 words. Use ampersands (&) when joining two related subjects in the same section.
+4. Non-clickbait: accurate, scannable, viewer-focused labels that help EV buyers and owners find specific information.
+
+Title Examples (Weak vs. Strong):
+- Weak: "Frunk" ➔ Strong: "Frunk Space & 120V Power Outlet"
+- Weak: "Driving" ➔ Strong: "Driving Impressions & Sidewinder 4-Wheel Steering"
+- Weak: "Cabin Tech" ➔ Strong: "17-Inch Infotainment Screen & Drive Modes"
+- Weak: "Final Verdict" ➔ Strong: "Final Verdict, Pricing & Conclusion"
+
+Timestamp & Quote Requirements:
+- For each chapter, identify the exact point the section begins.
+- Provide "anchorQuote": 6 to 12 words copied VERBATIM from the transcript text at the exact moment this topic starts. Do not paraphrase or alter punctuation in the quote.
+- Provide "startWindow": the integer window index [index] where that section starts as a fallback.
+- The first chapter must begin at the very start of the video (window 0).`;
 
 try {
   const existingTitlePrompt = articleDb.prepare("SELECT instructions, thumbnail_instructions, description_instructions, chapter_instructions FROM title_prompt_settings WHERE id = 1").get();
@@ -415,8 +425,15 @@ try {
       articleDb.prepare("UPDATE title_prompt_settings SET chapter_instructions = ? WHERE id = 1").run(DEFAULT_CHAPTER_PROMPT_INSTRUCTIONS);
     }
   }
+
+  // One-time migration for chapter prompt v2 (guarded by app_settings flag)
+  const migrationFlag = articleDb.prepare("SELECT value FROM app_settings WHERE key = 'chapter_prompt_v2_migrated'").get();
+  if (!migrationFlag) {
+    articleDb.prepare("UPDATE title_prompt_settings SET chapter_instructions = ? WHERE id = 1").run(DEFAULT_CHAPTER_PROMPT_INSTRUCTIONS);
+    articleDb.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('chapter_prompt_v2_migrated', '1')").run();
+  }
 } catch (e) {
-  console.warn("Could not seed title_prompt_settings:", e.message);
+  console.warn("Could not seed or migrate title_prompt_settings:", e.message);
 }
 
 // Seed default categories

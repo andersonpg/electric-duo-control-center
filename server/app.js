@@ -1409,6 +1409,67 @@ function parseSrtCues(srtText) {
   return cues;
 }
 
+// Helpers for verbatim anchor quote resolution
+function normalizeQuoteText(str) {
+  if (!str) return "";
+  return str.toLowerCase().replace(/'/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function buildNormalizedTranscript(cues) {
+  let fullNormalizedText = "";
+  const charToCueIndex = [];
+  for (let i = 0; i < cues.length; i++) {
+    const cueNorm = normalizeQuoteText(cues[i].text);
+    if (!cueNorm) continue;
+    if (fullNormalizedText.length > 0) {
+      fullNormalizedText += " ";
+      charToCueIndex.push(i);
+    }
+    for (let j = 0; j < cueNorm.length; j++) {
+      charToCueIndex.push(i);
+    }
+    fullNormalizedText += cueNorm;
+  }
+  return { fullNormalizedText, charToCueIndex };
+}
+
+function resolveQuoteToCue(anchorQuote, preferredWindowSec, cues, fullText, charToCue) {
+  if (!anchorQuote || !fullText || charToCue.length === 0) return null;
+  const norm = normalizeQuoteText(anchorQuote);
+  if (!norm) return null;
+
+  function findBestMatch(needle) {
+    if (!needle || needle.length < 3) return null;
+    let pos = fullText.indexOf(needle);
+    if (pos === -1) return null;
+    let bestCueIdx = charToCue[pos];
+    let bestDiff = Math.abs(cues[bestCueIdx].startSec - preferredWindowSec);
+    while ((pos = fullText.indexOf(needle, pos + 1)) !== -1) {
+      const cueIdx = charToCue[pos];
+      const diff = Math.abs(cues[cueIdx].startSec - preferredWindowSec);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestCueIdx = cueIdx;
+      }
+    }
+    return bestCueIdx;
+  }
+
+  // 1. Try full verbatim quote
+  let matchedCueIdx = findBestMatch(norm);
+  if (matchedCueIdx !== null) return matchedCueIdx;
+
+  // 2. Retry with first six words of the quote
+  const words = norm.split(/\s+/).filter(Boolean);
+  if (words.length >= 6) {
+    const sixWords = words.slice(0, 6).join(" ");
+    matchedCueIdx = findBestMatch(sixWords);
+    if (matchedCueIdx !== null) return matchedCueIdx;
+  }
+
+  return null;
+}
+
 // 9. Generate Gemini YouTube Video Chapters
 app.post("/api/videos/:videoId/generate-chapters", auth.requireAuth(), aiLimiter, async (req, res, next) => {
   try {
@@ -1433,7 +1494,7 @@ app.post("/api/videos/:videoId/generate-chapters", auth.requireAuth(), aiLimiter
       return res.status(400).json({ error: "Could not parse any caption cues from cleaned SRT transcript." });
     }
 
-    // Step 6: Derive runtime from the transcript (last cue endSec), falling back to duration column
+    // Derive runtime from the transcript (last cue endSec), falling back to duration column
     // Do not accept the 900 default from parseDurationSec.
     let totalDurationSec = 0;
     if (cues.length > 0 && cues[cues.length - 1].endSec > 0) {
@@ -1453,11 +1514,10 @@ app.post("/api/videos/:videoId/generate-chapters", auth.requireAuth(), aiLimiter
       return res.status(400).json({ error: "Unable to determine video runtime from transcript cues or video duration metadata." });
     }
 
-    // Step 2: Condense the cues into indexed windows (fixed 30s blocks)
-    // If > 400 windows, widen window size until it fits rather than truncating
-    let windowSec = 30;
-    while (Math.ceil(totalDurationSec / windowSec) > 400) {
-      windowSec += 15;
+    // Fix 2: Tighten fallback windows to 10 seconds, raise threshold to 1200 windows
+    let windowSec = 10;
+    while (Math.ceil(totalDurationSec / windowSec) > 1200) {
+      windowSec += 5;
     }
 
     const numWindows = Math.max(1, Math.ceil(totalDurationSec / windowSec));
@@ -1515,12 +1575,28 @@ app.post("/api/videos/:videoId/generate-chapters", auth.requireAuth(), aiLimiter
       console.warn("Error reading default_model app setting:", e.message);
     }
 
-    // Step 3: Have the model return window indices, not seconds
+    // Fix 3: Scale chapter count to runtime (~1 chapter per 2 min, floor 8 for >=15m, ceiling 20)
+    const durationMin = totalDurationSec / 60;
+    let targetChapterCount = Math.round(durationMin / 2);
+    if (durationMin >= 15) {
+      targetChapterCount = Math.max(8, targetChapterCount);
+    } else {
+      targetChapterCount = Math.max(4, targetChapterCount);
+    }
+    targetChapterCount = Math.min(20, targetChapterCount);
+
     const formattedTotalRuntime = formatTimestamp(totalDurationSec);
     let userPrompt = `Video Title: "${video.working_title || video.title}"\n`;
     userPrompt += `Total Video Runtime: ${totalDurationSec} seconds (${formattedTotalRuntime})\n\n`;
-    userPrompt += `Indexed Transcript Windows:\n${windowsPromptText}\n\n`;
-    userPrompt += `Generate 6 to 12 logical, chronological chapters with concise titles adhering to system rules. Each chapter must name the window index (startWindow) where that topic begins, chosen from the [index] numbers above. The first chapter must be window 0. Do NOT invent chapters past the last window index (${windows.length - 1}). Return as a JSON array matching the schema.`;
+    userPrompt += `Indexed Transcript Windows (10-second blocks):\n${windowsPromptText}\n\n`;
+    userPrompt += `Generate exactly ${targetChapterCount} logical, chronological chapters adhering strictly to system rules.
+
+For each chapter:
+1. "title": 2 to 7 words. Must contain at least one concrete noun, figure, measurement, or proper name (e.g. model name, kW charging rate, price, range, trim level, component). Never use standalone generic labels like "Intro", "Tech", "Driving", or "Conclusion" alone.
+2. "anchorQuote": 6 to 12 words copied VERBATIM from the transcript text at the exact point this topic begins. Do not paraphrase.
+3. "startWindow": integer index of the window [index] where the section begins as a fallback.
+
+The first chapter must begin at the very start of the video (window 0). Do NOT invent chapters past the last window index (${windows.length - 1}). Return as a JSON array matching the schema.`;
 
     const requestOptions = {
       model: configuredModel,
@@ -1533,16 +1609,20 @@ app.post("/api/videos/:videoId/generate-chapters", auth.requireAuth(), aiLimiter
           items: {
             type: "object",
             properties: {
+              title: {
+                type: "string",
+                description: "Descriptive chapter title containing concrete nouns, figures, or proper names (2 to 7 words)",
+              },
+              anchorQuote: {
+                type: "string",
+                description: "6 to 12 words copied verbatim from the transcript at the exact point the chapter topic begins",
+              },
               startWindow: {
                 type: "integer",
                 description: "Sequential integer index of the window where this chapter starts (from [index] in the list)",
               },
-              title: {
-                type: "string",
-                description: "Short, scannable, non-clickbait chapter label",
-              },
             },
-            required: ["startWindow", "title"],
+            required: ["title", "anchorQuote", "startWindow"],
           },
         },
       },
@@ -1564,28 +1644,46 @@ app.post("/api/videos/:videoId/generate-chapters", auth.requireAuth(), aiLimiter
       throw new Error("Gemini AI failed to return valid chapter items. Response was: " + rawText.slice(0, 200));
     }
 
-    // Step 4: Map indices back to exact times server-side
-    // For each returned startWindow, look up that window and take the start time of its first cue
+    // Fix 1: Build normalized full transcript for quote matching
+    const { fullNormalizedText, charToCueIndex } = buildNormalizedTranscript(cues);
+
     const mappedChapters = [];
     for (const ch of rawChapters) {
-      const winIdx = typeof ch.startWindow === "number" ? Math.floor(ch.startWindow) : parseInt(ch.startWindow, 10);
-      if (isNaN(winIdx) || winIdx < 0 || winIdx >= windows.length) {
-        continue;
-      }
       const title = (ch.title || "").trim();
       if (!title) continue;
 
-      const win = windows[winIdx];
-      // Cue-level precision rather than snapping to a thirty-second grid
-      const startSeconds = (win.firstCueStartSec !== null) ? win.firstCueStartSec : win.windowStartSec;
-      // Step 7: Include in each returned chapter object a sourceExcerpt field holding the first ~100 characters of transcript text at that timestamp
-      const sourceExcerpt = (win.text || "").trim().slice(0, 100);
+      const winIdx = typeof ch.startWindow === "number" ? Math.floor(ch.startWindow) : parseInt(ch.startWindow, 10);
+      const validWinIdx = !isNaN(winIdx) && winIdx >= 0 && winIdx < windows.length;
+      const win = validWinIdx ? windows[winIdx] : windows[0];
+      const preferredWindowSec = win.firstCueStartSec !== null ? win.firstCueStartSec : win.windowStartSec;
+
+      // Fix 1: Attempt verbatim anchor quote resolution
+      const matchedCueIdx = resolveQuoteToCue(ch.anchorQuote, preferredWindowSec, cues, fullNormalizedText, charToCueIndex);
+
+      let startSeconds;
+      let resolvedBy;
+      let sourceExcerpt;
+
+      if (matchedCueIdx !== null) {
+        // Quote hit: cue-level precision
+        startSeconds = cues[matchedCueIdx].startSec;
+        resolvedBy = "quote";
+        const nextCue = cues[matchedCueIdx + 1];
+        sourceExcerpt = (cues[matchedCueIdx].text + (nextCue ? " " + nextCue.text : "")).trim().slice(0, 100);
+      } else {
+        // Quote miss: fall back to startWindow
+        if (!validWinIdx) continue;
+        startSeconds = preferredWindowSec;
+        resolvedBy = "window";
+        sourceExcerpt = (win.text || "").trim().slice(0, 100);
+      }
 
       mappedChapters.push({
-        startWindow: winIdx,
+        startWindow: validWinIdx ? winIdx : 0,
         startSeconds,
         title,
         sourceExcerpt,
+        resolvedBy,
       });
     }
 
@@ -1596,18 +1694,20 @@ app.post("/api/videos/:videoId/generate-chapters", auth.requireAuth(), aiLimiter
       return res.status(422).json({ error: "Transcript was too short or sparse to derive valid chapters." });
     }
 
-    // Step 5: Fix opening-chapter handling
+    // Step 5: Opening-chapter handling
     // If first chapter resolves to within thirty seconds of zero, snap it to zero.
     // Otherwise leave it where it is and prepend a separate 0:00 Intro chapter.
     if (mappedChapters[0].startSeconds <= 30) {
       mappedChapters[0].startSeconds = 0;
     } else {
       const introExcerpt = (windows[0] && windows[0].text ? windows[0].text : "").trim().slice(0, 100);
+      const defaultModelName = (video.working_title || video.title || "Vehicle").split(/[:\-|]/)[0].trim();
       mappedChapters.unshift({
         startWindow: 0,
         startSeconds: 0,
-        title: "Intro",
+        title: `${defaultModelName} Overview & Intro`,
         sourceExcerpt: introExcerpt,
+        resolvedBy: "window",
       });
     }
 
@@ -1640,6 +1740,7 @@ app.post("/api/videos/:videoId/generate-chapters", auth.requireAuth(), aiLimiter
       timeFormatted: formatTimestamp(ch.startSeconds),
       title: ch.title,
       sourceExcerpt: ch.sourceExcerpt || "",
+      resolvedBy: ch.resolvedBy || "window",
     }));
 
     const chapterBlock = chapters
