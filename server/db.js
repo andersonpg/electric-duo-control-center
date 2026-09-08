@@ -630,6 +630,70 @@ try {
     console.log("Category vocabulary migration complete.");
   }
 
+  // -------------------------------------------------------------------------
+  // Corrective migration: undo the "Other" -> "Livestreams & Channel Updates"
+  // relabel for videos that were never livestreams.
+  //
+  // The v3 vocabulary migration renamed the "Other" category on the assumption
+  // that it only held livestreams and channel updates, which was true of the
+  // seeded description but not of the live data. In production "Other" was a
+  // general dumping bucket holding 241 videos: interviews, event coverage,
+  // solar payback, charging network explainers. Renaming it gave every one of
+  // them a confident, wrong label, which is worse than the honest "Other" they
+  // had before.
+  //
+  // These rows are returned to an explicit unknown so the classifier can place
+  // them properly. Manual assignments are never touched. The change is recorded
+  // in classification_runs so it can be reviewed and rolled back.
+  // -------------------------------------------------------------------------
+  const livestreamResetFlag = articleDb.prepare("SELECT value FROM app_settings WHERE key = 'livestream_mislabel_reset_v1'").get();
+  if (!livestreamResetFlag) {
+    const affected = articleDb.prepare(`
+      SELECT youtube_id, title, content_type FROM videos
+      WHERE content_type = 'Livestreams & Channel Updates'
+        AND COALESCE(category_source, '') = 'migrated'
+    `).all();
+
+    if (affected.length > 0) {
+      const runReset = articleDb.transaction(() => {
+        const stmt = articleDb.prepare(`
+          UPDATE videos
+          SET content_type = NULL,
+              category_source = 'needs_review',
+              classification_confidence = NULL,
+              classification_reason = 'Reset: was in the legacy "Other" bucket, relabelled in error as a livestream'
+          WHERE youtube_id = ?
+        `);
+        affected.forEach((v) => stmt.run(v.youtube_id));
+
+        const changes = affected.map((v) => ({
+          youtube_id: v.youtube_id,
+          title: v.title,
+          from: v.content_type,
+          to: null,
+          source: "needs_review",
+          confidence: null,
+          reason: "Corrective reset of the Other -> Livestreams relabel",
+        }));
+
+        articleDb.prepare(`
+          INSERT INTO classification_runs (mode, total, by_playlist, by_ai, needs_review, failed_batches, total_batches, changes_json, error)
+          VALUES ('applied', ?, 0, 0, ?, 0, 0, ?, ?)
+        `).run(
+          affected.length,
+          affected.length,
+          JSON.stringify(changes),
+          "Corrective migration: undo the Other -> Livestreams & Channel Updates relabel"
+        );
+      });
+
+      runReset();
+      console.log(`Reset ${affected.length} video(s) mislabelled as livestreams; they are queued for reclassification.`);
+    }
+
+    articleDb.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('livestream_mislabel_reset_v1', '1')").run();
+  }
+
   // Runs on every boot: an older seed list could reintroduce a bare "Other"
   // row after the rename, leaving two buckets meaning the same thing.
   const strayOther = articleDb.prepare("SELECT id FROM content_categories WHERE name = 'Other'").get();
