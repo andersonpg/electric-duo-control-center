@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Renaming the bucket gave all 241 a confident, wrong label, which is worse than the honest `Other` they had before and is precisely the failure mode v2.3.0 set out to remove.
   - Adds a guarded corrective migration (`livestream_mislabel_reset_v1`) returning those rows to an explicit unknown (`content_type = NULL`, `category_source = 'needs_review'`) so the classifier can place them properly. Manual assignments are untouched, and the change is recorded in `classification_runs` so it is reviewable and reversible via the existing rollback path.
   - Verified against a copy of the production database: 241 rows reset, 61 manual rows preserved, 746 total unchanged, idempotent across repeated boots.
+- **Fail Fast and Notify Immediately on AI API Access Errors**:
+  - When batch classification encounters an API access error (quota exhaustion, rate limits, 401/403, or authentication failures), the process halts immediately and returns a descriptive error rather than looping through subsequent batches. Surfaced directly via instant toast notifications and detailed preview banner alerts.
 
 ### Changed
 - **Scoped the Mustang Mach-E Category to Genuine Ownership Content**:

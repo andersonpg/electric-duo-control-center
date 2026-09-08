@@ -249,6 +249,9 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
 
       if (dryRun) {
         setClassifyPreview(data);
+        if (data.failedBatches > 0) {
+          showToast(`Warning: ${data.failedBatches} batch(es) failed${data.lastError ? `: ${data.lastError}` : ""}`, "error");
+        }
       } else {
         setClassifyPreview(null);
         const parts = [
@@ -824,6 +827,11 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
                       {classifyPreview.failedBatches > 0 && (
                         <span className="text-red-300">
                           <b>{classifyPreview.failedBatches}</b> of {classifyPreview.totalBatches} batches failed
+                          {classifyPreview.lastError && (
+                            <span className="block text-red-400/90 font-mono text-[10px] mt-0.5 max-w-md truncate" title={classifyPreview.lastError}>
+                              {classifyPreview.lastError}
+                            </span>
+                          )}
                         </span>
                       )}
                     </div>

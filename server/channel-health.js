@@ -412,6 +412,29 @@ VIDEOS:
 ${chunk.map((v, i) => buildVideoBlock(v, i)).join("\n\n")}`;
 }
 
+function formatApiError(err) {
+  if (!err) return "Unknown error";
+  let msg = err.message || "";
+  try {
+    const parsed = JSON.parse(msg);
+    if (parsed.error && parsed.error.message) {
+      msg = parsed.error.message;
+    }
+  } catch (e) {}
+  return msg;
+}
+
+function isApiAccessError(err) {
+  if (!err) return false;
+  const msg = err.message || "";
+  return (
+    err.status === 401 ||
+    err.status === 403 ||
+    err.status === 429 ||
+    /quota|resource_exhausted|rate_limit|rate limit|api_key|api key|permission_denied|unauthenticated|billing/i.test(msg)
+  );
+}
+
 async function classifyChunk(ai, modelName, ctx, chunk) {
   const prompt = buildClassifierPrompt(ctx, chunk);
 
@@ -579,6 +602,20 @@ async function bulkReclassifyLibrary(options = {}) {
       }
 
       if (!result) {
+        const cleanErr = formatApiError(lastError);
+        stats.lastError = cleanErr;
+
+        if (isApiAccessError(lastError)) {
+          console.error(`[Classifier] Gemini API access error on batch ${stats.totalBatches}:`, cleanErr);
+          return {
+            success: false,
+            error: `Gemini API access error on ${modelName}: ${cleanErr}`,
+            apiAccessError: true,
+            failedBatches: stats.failedBatches + 1,
+            totalBatches: Math.ceil(remaining.length / CLASSIFY_BATCH_SIZE),
+          };
+        }
+
         // A failed batch is reported as failed. It is never silently replaced
         // with keyword guesses.
         stats.failedBatches++;
@@ -591,7 +628,7 @@ async function bulkReclassifyLibrary(options = {}) {
             to: null,
             source: "needs_review",
             confidence: null,
-            reason: `Classification failed: ${lastError ? lastError.message.slice(0, 120) : "unknown error"}`,
+            reason: `Classification failed: ${cleanErr.slice(0, 120)}`,
           });
         });
         continue;
