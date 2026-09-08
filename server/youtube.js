@@ -129,7 +129,7 @@ async function fetchExactPublishDate(vId) {
 // Helper to convert seconds to ISO 8601 duration "PT18M34S"
 function secondsToIsoDuration(seconds) {
   const total = parseInt(seconds, 10);
-  if (isNaN(total) || total <= 0) return "PT15M00S";
+  if (isNaN(total) || total <= 0) return null;
   const hrs = Math.floor(total / 3600);
   const mins = Math.floor((total % 3600) / 60);
   const secs = total % 60;
@@ -141,10 +141,10 @@ function secondsToIsoDuration(seconds) {
 
 // Convert "18:06", "1:24:10", or "0:45" to ISO 8601 duration "PT18M6S"
 function formatDurationToIso(timeStr) {
-  if (!timeStr || typeof timeStr !== "string") return "PT15M00S";
+  if (!timeStr || typeof timeStr !== "string") return null;
   if (timeStr.startsWith("PT")) return timeStr;
   const parts = timeStr.trim().split(":").map((p) => parseInt(p, 10));
-  if (parts.some((n) => isNaN(n))) return "PT15M00S";
+  if (parts.some((n) => isNaN(n))) return null;
 
   if (parts.length === 2) {
     const [min, sec] = parts;
@@ -153,7 +153,7 @@ function formatDurationToIso(timeStr) {
     const [hr, min, sec] = parts;
     return `PT${hr}H${min}M${sec}S`;
   }
-  return "PT15M00S";
+  return null;
 }
 
 // Extract exact video duration directly from YouTube watch page without quota usage
@@ -267,8 +267,8 @@ async function syncCatalogViaYouTubeApi(mode = "delta") {
   const uploadsPlaylistId = await getUploadsPlaylistId(channelId);
 
   const insertVideoStmt = db.prepare(`
-    INSERT INTO videos (youtube_id, title, description, published_at, thumbnail_url, duration, privacy_status)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO videos (youtube_id, title, description, published_at, thumbnail_url, duration, privacy_status, tags_json, view_count, description_is_placeholder)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
     ON CONFLICT(youtube_id) DO UPDATE SET
       title = excluded.title,
       description = excluded.description,
@@ -276,6 +276,9 @@ async function syncCatalogViaYouTubeApi(mode = "delta") {
       published_at = excluded.published_at,
       duration = excluded.duration,
       privacy_status = excluded.privacy_status,
+      tags_json = excluded.tags_json,
+      view_count = COALESCE(excluded.view_count, videos.view_count),
+      description_is_placeholder = 0,
       last_synced_at = CURRENT_TIMESTAMP
   `);
 
@@ -303,9 +306,13 @@ async function syncCatalogViaYouTubeApi(mode = "delta") {
     let durationMap = {};
     let realPublishDateMap = {};
     let privacyMap = {};
+    // videos.view_count was read in three places but never written, because the
+    // sync did not request the statistics part. Without it every view-based
+    // ranking fell back to zero.
+    let statsMap = {};
     try {
       const videosRes = await youtube.videos.list({
-        part: "snippet,contentDetails,status",
+        part: "snippet,contentDetails,status,statistics",
         id: videoIds.join(","),
       });
 
@@ -315,6 +322,12 @@ async function syncCatalogViaYouTubeApi(mode = "delta") {
         if (v.snippet?.publishedAt) {
           realPublishDateMap[v.id] = v.snippet.publishedAt;
         }
+        const st = v.statistics || {};
+        statsMap[v.id] = {
+          viewCount: st.viewCount != null ? parseInt(st.viewCount, 10) : null,
+          likeCount: st.likeCount != null ? parseInt(st.likeCount, 10) : null,
+          commentCount: st.commentCount != null ? parseInt(st.commentCount, 10) : null,
+        };
       });
     } catch (e) {
       console.warn("Could not fetch detailed video batch in syncCatalogViaYouTubeApi:", e.message);
@@ -343,11 +356,15 @@ async function syncCatalogViaYouTubeApi(mode = "delta") {
       const description = snippet.description;
       const publishedAt = realPublishDateMap[vId] || snippet.publishedAt || item.contentDetails.videoPublishedAt || new Date().toISOString();
       const thumbnailUrl = `https://img.youtube.com/vi/${vId}/maxresdefault.jpg`;
-      const duration = durationMap[vId] || "PT15M00S";
+      // A missing duration stays null. Defaulting it to 15 minutes silently
+      // pushed unknown-length videos past the long-form filter everywhere.
+      const duration = durationMap[vId] || null;
+      const tagsJson = Array.isArray(snippet.tags) && snippet.tags.length > 0 ? JSON.stringify(snippet.tags) : null;
 
       const exists = checkExistsStmt.get(vId);
 
-      insertVideoStmt.run(vId, title, description, publishedAt, thumbnailUrl, duration, privacyStatus);
+      const stats = statsMap[vId] || {};
+      insertVideoStmt.run(vId, title, description, publishedAt, thumbnailUrl, duration, privacyStatus, tagsJson, stats.viewCount ?? null);
 
       if (!exists) {
         newCount++;
@@ -531,12 +548,14 @@ async function syncRealChannelVideosScraper(mode = "delta") {
 
   const allVideoIds = Array.from(videoIds);
 
+  // The scraper cannot see the real description, so it writes a placeholder and
+  // flags it. It no longer guesses a category: an unclassified video is queued
+  // for the classifier instead of being given a keyword-derived wrong answer.
   const insertVideoStmt = db.prepare(`
-    INSERT INTO videos (youtube_id, title, description, published_at, thumbnail_url, duration, content_type, privacy_status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'public')
+    INSERT INTO videos (youtube_id, title, description, published_at, thumbnail_url, duration, privacy_status, description_is_placeholder, category_source)
+    VALUES (?, ?, ?, ?, ?, ?, 'public', 1, 'unclassified')
     ON CONFLICT(youtube_id) DO UPDATE SET
       title = excluded.title,
-      description = excluded.description,
       thumbnail_url = excluded.thumbnail_url,
       published_at = COALESCE(excluded.published_at, videos.published_at),
       privacy_status = COALESCE(videos.privacy_status, 'public'),
@@ -573,19 +592,10 @@ async function syncRealChannelVideosScraper(mode = "delta") {
             publishedAt = (await fetchExactPublishDate(vId)) || new Date().toISOString();
           }
 
-          let contentType = "Review";
-          const lowerTitle = title.toLowerCase();
-          if (lowerTitle.includes("how to") || lowerTitle.includes("guide") || lowerTitle.includes("setup")) {
-            contentType = "How-To / Instructional";
-          } else if (lowerTitle.includes("news") || lowerTitle.includes("update") || lowerTitle.includes("202")) {
-            contentType = "EV News";
-          } else if (lowerTitle.includes("trip") || lowerTitle.includes("road") || lowerTitle.includes("vlog") || lowerTitle.includes("journey")) {
-            contentType = "Road Trip / Vlog";
-          }
+          // A missing duration stays null rather than defaulting to 15 minutes.
+          const duration = (await fetchVideoDurationDirect(vId)) || null;
 
-          let duration = (await fetchVideoDurationDirect(vId)) || "PT15M00S";
-
-          insertVideoStmt.run(vId, title, description, publishedAt, thumbnailUrl, duration, contentType);
+          insertVideoStmt.run(vId, title, description, publishedAt, thumbnailUrl, duration);
 
           if (!exists) {
             newCount++;
@@ -749,7 +759,7 @@ async function addManualVideo(urlOrId, forcedPrivacy = "unlisted") {
   let description = "";
   let publishedAt = new Date().toISOString();
   let thumbnailUrl = `https://img.youtube.com/vi/${vId}/maxresdefault.jpg`;
-  let duration = "PT15M00S";
+  let duration = null;
   let privacyStatus = forcedPrivacy;
 
   // 1. Try YouTube Data API if client is available

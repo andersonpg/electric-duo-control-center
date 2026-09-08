@@ -110,7 +110,7 @@ articleDb.exec(`
     published_at DATETIME NOT NULL,
     thumbnail_url TEXT,
     duration TEXT,
-    content_type TEXT DEFAULT 'Review',
+    content_type TEXT DEFAULT NULL,
     custom_notes TEXT,
     status TEXT DEFAULT 'unprocessed',
     wp_post_id INTEGER,
@@ -146,6 +146,12 @@ articleDb.exec(`
     name TEXT NOT NULL UNIQUE,
     description TEXT,
     color TEXT DEFAULT '#06b6d4',
+    avg_ctr REAL,
+    avg_retention REAL,
+    avg_view_duration TEXT,
+    traffic_share_json TEXT,
+    benchmarks_updated_at DATETIME,
+    is_fallback INTEGER DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
@@ -248,6 +254,7 @@ articleDb.exec(`
   CREATE INDEX IF NOT EXISTS idx_competitor_reports_channel ON competitor_reports(competitor_channel_id, updated_at DESC);
   CREATE INDEX IF NOT EXISTS idx_competitor_videos_report ON competitor_videos(report_id, is_competitor);
 
+
   CREATE TABLE IF NOT EXISTS transcripts (
     video_id TEXT PRIMARY KEY REFERENCES videos(youtube_id) ON DELETE CASCADE,
     raw_srt TEXT NOT NULL,
@@ -264,12 +271,41 @@ articleDb.exec(`
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
+  CREATE TABLE IF NOT EXISTS classification_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mode TEXT NOT NULL DEFAULT 'applied',
+    total INTEGER DEFAULT 0,
+    by_playlist INTEGER DEFAULT 0,
+    by_ai INTEGER DEFAULT 0,
+    needs_review INTEGER DEFAULT 0,
+    failed_batches INTEGER DEFAULT 0,
+    total_batches INTEGER DEFAULT 0,
+    changes_json TEXT NOT NULL DEFAULT '[]',
+    error TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS channel_health_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    period_days INTEGER NOT NULL,
+    period_start DATE,
+    period_end DATE,
+    is_live_studio_data INTEGER DEFAULT 0,
+    report_json TEXT NOT NULL,
+    narrative TEXT,
+    label TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
   CREATE TABLE IF NOT EXISTS youtube_description_backups (
     video_id TEXT PRIMARY KEY REFERENCES videos(youtube_id) ON DELETE CASCADE,
     previous_description TEXT,
     pushed_block TEXT NOT NULL,
     pushed_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE INDEX IF NOT EXISTS idx_classification_runs_created ON classification_runs(created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_channel_health_reports_created ON channel_health_reports(period_days, created_at DESC);
 `);
 
 function addColumnIfNotExists(targetDb, table, column, definition) {
@@ -298,7 +334,26 @@ addColumnIfNotExists(articleDb, "videos", "caption_status", "TEXT DEFAULT 'none'
 addColumnIfNotExists(articleDb, "videos", "title_suggestions", "TEXT");
 addColumnIfNotExists(articleDb, "videos", "youtube_title", "TEXT");
 
+// Classification provenance and real YouTube metadata (see FIX_CLASSIFIER_AND_FABRICATED_DATA.md A.2/A.4)
+addColumnIfNotExists(articleDb, "videos", "tags_json", "TEXT");
+addColumnIfNotExists(articleDb, "videos", "classification_confidence", "REAL");
+addColumnIfNotExists(articleDb, "videos", "classification_reason", "TEXT");
+addColumnIfNotExists(articleDb, "videos", "description_is_placeholder", "INTEGER DEFAULT 1");
+
+// Per-category benchmarks live on the category row so they can never drift from the name.
+// Deliberately left NULL: a benchmark is only real once entered from YouTube Studio.
+addColumnIfNotExists(articleDb, "content_categories", "avg_ctr", "REAL");
+addColumnIfNotExists(articleDb, "content_categories", "avg_retention", "REAL");
+addColumnIfNotExists(articleDb, "content_categories", "avg_view_duration", "TEXT");
+addColumnIfNotExists(articleDb, "content_categories", "traffic_share_json", "TEXT");
+addColumnIfNotExists(articleDb, "content_categories", "benchmarks_updated_at", "DATETIME");
+addColumnIfNotExists(articleDb, "content_categories", "is_fallback", "INTEGER DEFAULT 0");
+
+addColumnIfNotExists(articleDb, "competitor_reports", "report_label", "TEXT");
+
 addColumnIfNotExists(articleDb, "title_prompt_settings", "thumbnail_instructions", "TEXT");
+addColumnIfNotExists(articleDb, "title_prompt_settings", "competitor_instructions", "TEXT");
+addColumnIfNotExists(articleDb, "title_prompt_settings", "channel_health_instructions", "TEXT");
 addColumnIfNotExists(articleDb, "title_prompt_settings", "description_instructions", "TEXT");
 addColumnIfNotExists(articleDb, "title_prompt_settings", "chapter_instructions", "TEXT");
 
@@ -407,6 +462,53 @@ Timestamp & Quote Requirements:
 - Provide "startWindow": the integer window index [index] where that section starts as a fallback.
 - The first chapter must begin at the very start of the video (window 0).`;
 
+const DEFAULT_COMPETITOR_PROMPT_INSTRUCTIONS = `You are a YouTube growth strategist advising "The Electric Duo" — Patrick and Liv, a two-person EV channel. You have been handed a structured comparison against one competitor channel. Write to Patrick directly.
+
+Your job is to find things we can act on in the next 30 days. A takeaway we cannot execute with two people, one camera setup, and our current subscriber base is not a takeaway.
+
+STRUCTURE:
+
+1. BOTTOM LINE — 2-3 sentences. The single most important pattern in this competitor's results, and what it implies for us.
+
+2. WHAT TO LEARN — 2 to 4 items. For each one: name the pattern, name the specific video or videos that show it, explain the mechanism (why this made someone click or keep watching), and give one concrete thing we could do on a video in the next month.
+
+3. WHAT NOT TO COPY — 2 to 3 items. Each must name the specific reason it will not transfer: audience scale, a one-time news event, production resources we do not have, or a format that conflicts with our channel. If a video is flagged with a scale-advantage replicability flag, treat it with suspicion.
+
+4. WHERE WE ARE ALREADY AHEAD — 1 to 2 sentences. Something our own numbers show we do better, or that we should keep doing rather than change.
+
+5. CONFIDENCE AND BLIND SPOTS — 2 to 3 sentences. State plainly what this analysis cannot see. We have no retention, click-through, or impression data for the competitor. Everything here is inferred from public view counts and packaging. Say so, and name any conclusion above that is weaker than the others.
+
+RULES:
+- Ground every claim in the data block provided. Never invent a number, a video title, or a date.
+- If the data is too thin to support a section, say the data is too thin. Do not fill space.
+- Multipliers are relative to each channel's own baseline. Never compare our raw view counts to theirs and never suggest we should be hitting their absolute numbers.
+- Use a number only when the number itself is the point. At most one per bullet.
+- Plain, direct prose. No memo headers, no ASCII tables, no closing summary paragraph.
+- Do not congratulate, hedge, or pad. If something is not working, say it is not working.`;
+
+const DEFAULT_CHANNEL_HEALTH_PROMPT_INSTRUCTIONS = `You are a YouTube channel analyst reviewing "The Electric Duo" — Patrick and Liv, a two-person EV channel. You have this channel's own analytics for the reporting period below, plus the prior period for comparison. Write to Patrick directly.
+
+Your job is to say what changed, whether it matters, and what to do about it. Distinguish clearly between normal fluctuation and a real signal.
+
+STRUCTURE:
+
+1. HEADLINE — 2-3 sentences. Is the channel up, flat, or down this period, and what is driving it? Name the one metric that matters most right now.
+
+2. WHAT'S WORKING — 2 to 3 items, each tied to a specific video or category. Say what the pattern is and what it suggests we should do more of.
+
+3. WHAT NEEDS ATTENTION — 2 to 3 items. Be specific and unsentimental. Name the video or category, the metric that is soft, and the most likely cause. If a video underperformed on views but held retention, say so — that is a packaging problem, not a content problem, and the reverse is also true.
+
+4. THIS PERIOD'S ONE EXPERIMENT — a single, concrete thing to try on the next upload, and the metric that would tell us within two weeks whether it worked.
+
+5. DATA CONFIDENCE — 1 to 3 sentences. State which figures are measured and which are unavailable. Never present an unavailable figure as measured.
+
+RULES:
+- A short period is a small sample. Do not read a trend into two videos.
+- Distinguish a metric moving because performance changed from a metric moving because the upload count changed.
+- Never invent a number, a video title, or a date. If something is missing, say it is missing.
+- Compare against our own prior period only. Do not reference other channels' absolute numbers.
+- Plain, direct prose. No memo headers, no ASCII tables, no closing pep talk.`;
+
 try {
   const existingTitlePrompt = articleDb.prepare("SELECT instructions, thumbnail_instructions, description_instructions, chapter_instructions FROM title_prompt_settings WHERE id = 1").get();
   if (!existingTitlePrompt) {
@@ -424,6 +526,15 @@ try {
     if (!existingTitlePrompt.chapter_instructions || !existingTitlePrompt.chapter_instructions.trim()) {
       articleDb.prepare("UPDATE title_prompt_settings SET chapter_instructions = ? WHERE id = 1").run(DEFAULT_CHAPTER_PROMPT_INSTRUCTIONS);
     }
+  }
+
+  // Seed the competitor + channel health narrative instructions if blank.
+  const promptRow = articleDb.prepare("SELECT competitor_instructions, channel_health_instructions FROM title_prompt_settings WHERE id = 1").get() || {};
+  if (!promptRow.competitor_instructions || !promptRow.competitor_instructions.trim()) {
+    articleDb.prepare("UPDATE title_prompt_settings SET competitor_instructions = ? WHERE id = 1").run(DEFAULT_COMPETITOR_PROMPT_INSTRUCTIONS);
+  }
+  if (!promptRow.channel_health_instructions || !promptRow.channel_health_instructions.trim()) {
+    articleDb.prepare("UPDATE title_prompt_settings SET channel_health_instructions = ? WHERE id = 1").run(DEFAULT_CHANNEL_HEALTH_PROMPT_INSTRUCTIONS);
   }
 
   // One-time migration for chapter prompt v2 (guarded by app_settings flag)
@@ -451,8 +562,81 @@ defaultCategories.forEach((cat) => {
   insertCatStmt.run(cat.name, cat.description, cat.color);
 });
 
+// ---------------------------------------------------------------------------
+// One-time migration: unify the category vocabulary.
+//
+// The videos table historically carried a different set of names ("Review",
+// "EV News", "Road Trip / Vlog", "How-To / Instructional") than
+// content_categories. Nothing matched, so every category breakdown resolved to
+// zero and audit benchmarks silently fell back to a single default. This maps
+// the legacy names onto the live vocabulary and quarantines anything unknown.
+// ---------------------------------------------------------------------------
+const LEGACY_CATEGORY_MAP = {
+  "Review": "Walkarounds/Reviews",
+  "EV Review": "Walkarounds/Reviews",
+  "Reviews": "Walkarounds/Reviews",
+  "EV News": "News/Quick Charge",
+  "News": "News/Quick Charge",
+  "Road Trip / Vlog": "Road Trip/Travel Series",
+  "Road Trip/Vlog": "Road Trip/Travel Series",
+  "How-To / Instructional": "How Tos/Guides",
+  "How-To/Instructional": "How Tos/Guides",
+  "Other": "Livestreams & Channel Updates",
+};
+
+try {
+  const catMigrationFlag = articleDb.prepare("SELECT value FROM app_settings WHERE key = 'category_vocabulary_v3_migrated'").get();
+  if (!catMigrationFlag) {
+    const runCategoryMigration = articleDb.transaction(() => {
+      // Rename the vague "Other" bucket so it stops acting as a dumping ground.
+      const otherRow = articleDb.prepare("SELECT id FROM content_categories WHERE name = 'Other'").get();
+      const newOtherRow = articleDb.prepare("SELECT id FROM content_categories WHERE name = 'Livestreams & Channel Updates'").get();
+      if (otherRow && !newOtherRow) {
+        articleDb.prepare("UPDATE content_categories SET name = 'Livestreams & Channel Updates', description = 'Livestreams, channel announcements, and channel updates only' WHERE id = ?").run(otherRow.id);
+      } else if (otherRow && newOtherRow) {
+        articleDb.prepare("DELETE FROM content_categories WHERE id = ?").run(otherRow.id);
+      }
+
+      // Mark the fallback category so code can recognise it without hardcoding a string.
+      articleDb.prepare("UPDATE content_categories SET is_fallback = 1 WHERE name = 'Livestreams & Channel Updates'").run();
+
+      const validNames = new Set(articleDb.prepare("SELECT name FROM content_categories").all().map((c) => c.name));
+
+      // Remap legacy names, preserving manual assignments as manual.
+      const updateStmt = articleDb.prepare(
+        "UPDATE videos SET content_type = ?, category_source = CASE WHEN category_source = 'manual' THEN 'manual' ELSE 'migrated' END WHERE content_type = ?"
+      );
+      for (const [legacy, current] of Object.entries(LEGACY_CATEGORY_MAP)) {
+        if (validNames.has(current)) updateStmt.run(current, legacy);
+      }
+
+      // Anything still not matching a live category becomes an explicit unknown
+      // rather than a confident wrong answer.
+      const stragglers = articleDb.prepare(
+        "SELECT DISTINCT content_type FROM videos WHERE content_type IS NOT NULL AND content_type != ''"
+      ).all().map((r) => r.content_type).filter((n) => !validNames.has(n));
+
+      if (stragglers.length > 0) {
+        const clearStmt = articleDb.prepare(
+          "UPDATE videos SET content_type = NULL, category_source = 'needs_review' WHERE content_type = ?"
+        );
+        stragglers.forEach((n) => clearStmt.run(n));
+        console.warn(`Category migration: quarantined ${stragglers.length} unknown category name(s) for review: ${stragglers.join(", ")}`);
+      }
+    });
+
+    runCategoryMigration();
+    articleDb.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('category_vocabulary_v3_migrated', '1')").run();
+    console.log("Category vocabulary migration complete.");
+  }
+} catch (e) {
+  console.warn("Could not run category vocabulary migration:", e.message);
+}
+
 // Compatibility layer
 controlDb.controlDb = controlDb;
 controlDb.articleDb = articleDb;
+controlDb.DEFAULT_COMPETITOR_PROMPT_INSTRUCTIONS = DEFAULT_COMPETITOR_PROMPT_INSTRUCTIONS;
+controlDb.DEFAULT_CHANNEL_HEALTH_PROMPT_INSTRUCTIONS = DEFAULT_CHANNEL_HEALTH_PROMPT_INSTRUCTIONS;
 
 module.exports = controlDb;

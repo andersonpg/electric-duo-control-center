@@ -127,6 +127,8 @@ export default function AdminSettings({ currentUser }) {
   const [thumbnailInstructions, setThumbnailInstructions] = useState("");
   const [descriptionInstructions, setDescriptionInstructions] = useState("");
   const [chapterInstructions, setChapterInstructions] = useState("");
+  const [competitorInstructions, setCompetitorInstructions] = useState("");
+  const [channelHealthInstructions, setChannelHealthInstructions] = useState("");
   const [loadingPrompt, setLoadingPrompt] = useState(false);
   const [isSavingPrompt, setIsSavingPrompt] = useState(false);
   const [promptLastUpdated, setPromptLastUpdated] = useState("");
@@ -641,6 +643,8 @@ export default function AdminSettings({ currentUser }) {
         setThumbnailInstructions(data.thumbnail_instructions || "");
         setDescriptionInstructions(data.description_instructions || "");
         setChapterInstructions(data.chapter_instructions || "");
+        setCompetitorInstructions(data.competitor_instructions || "");
+        setChannelHealthInstructions(data.channel_health_instructions || "");
         setPromptLastUpdated(data.updated_at || "");
       }
     } catch (e) {
@@ -743,6 +747,8 @@ export default function AdminSettings({ currentUser }) {
           thumbnail_instructions: thumbnailInstructions,
           description_instructions: descriptionInstructions,
           chapter_instructions: chapterInstructions,
+          competitor_instructions: competitorInstructions,
+          channel_health_instructions: channelHealthInstructions,
         }),
       });
       const data = await res.json();
@@ -1564,6 +1570,56 @@ export default function AdminSettings({ currentUser }) {
                 />
                 <span className="text-xs text-slate-500 font-mono">
                   {chapterInstructions.length} characters · {chapterInstructions.split(/\s+/).filter(Boolean).length} words
+                </span>
+              </div>
+
+              {/* Competitor Comparison Narrative Instructions */}
+              <div className="pt-4 border-t border-slate-800 flex flex-col gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-500/10 text-purple-400 border border-purple-500/20 uppercase tracking-widest">
+                    Competitor
+                  </span>
+                  <h4 className="text-sm font-bold text-white">Competitor Comparison Instructions</h4>
+                </div>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Instructions given to Gemini when writing the executive narrative on a competitor report. The
+                  structured data block (outliers, cadence, topics, packaging, engagement) is assembled in code and
+                  appended automatically, so editing this cannot break the analysis.
+                </p>
+                <textarea
+                  value={competitorInstructions}
+                  onChange={(e) => setCompetitorInstructions(e.target.value)}
+                  rows={12}
+                  className="w-full p-4 rounded-2xl bg-slate-950 border border-slate-800 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors leading-relaxed selection:bg-cyan-500 selection:text-slate-950"
+                  placeholder="Enter competitor comparison narrative instructions..."
+                />
+                <span className="text-xs text-slate-500 font-mono">
+                  {competitorInstructions.length} characters · {competitorInstructions.split(/\s+/).filter(Boolean).length} words
+                </span>
+              </div>
+
+              {/* Channel Health Narrative Instructions */}
+              <div className="pt-4 border-t border-slate-800 flex flex-col gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 uppercase tracking-widest">
+                    Channel Health
+                  </span>
+                  <h4 className="text-sm font-bold text-white">Channel Health Narrative Instructions</h4>
+                </div>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Instructions given to Gemini when writing the Channel Health narrative. The scorecard, category
+                  breakdown, top and bottom performers, and an explicit list of unavailable metrics are appended
+                  automatically.
+                </p>
+                <textarea
+                  value={channelHealthInstructions}
+                  onChange={(e) => setChannelHealthInstructions(e.target.value)}
+                  rows={12}
+                  className="w-full p-4 rounded-2xl bg-slate-950 border border-slate-800 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors leading-relaxed selection:bg-cyan-500 selection:text-slate-950"
+                  placeholder="Enter channel health narrative instructions..."
+                />
+                <span className="text-xs text-slate-500 font-mono">
+                  {channelHealthInstructions.length} characters · {channelHealthInstructions.split(/\s+/).filter(Boolean).length} words
                 </span>
               </div>
 

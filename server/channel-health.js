@@ -170,17 +170,264 @@ function getVideoCatalog({ page = 1, limit = 50, search = "", category = "" }) {
   };
 }
 
-// 5. Bulk AI Re-classification
-async function bulkReclassifyLibrary() {
-  const categories = getCategories();
-  const categoryNames = categories.map((c) => c.name);
-  const categoryDescriptions = categories.map((c) => `- "${c.name}": ${c.description || ""}`).join("\n");
+// ---------------------------------------------------------------------------
+// 5. Library classification
+//
+// Three passes, most reliable first:
+//   1. Playlist membership  — deterministic, no AI, 100% precision.
+//   2. Gemini classification — structured output with a confidence score.
+//   3. Review queue         — anything low-confidence or failed is left NULL
+//                             and flagged, never keyword-guessed.
+//
+// A run is recorded in classification_runs so it can be previewed (dry run)
+// and rolled back.
+// ---------------------------------------------------------------------------
 
-  const videos = db.prepare("SELECT youtube_id, title, description, duration, content_type, category_source FROM videos WHERE (privacy_status IS NULL OR privacy_status = 'public') AND category_source != 'manual'").all();
-  if (!videos || videos.length === 0) {
-    return { reclassified: 0, total: 0, message: "No non-manual videos to reclassify." };
+const MIN_CLASSIFY_CONFIDENCE = 0.7;
+const CLASSIFY_BATCH_SIZE = 12;
+const CLASSIFY_MAX_ATTEMPTS = 3;
+
+function getCategoryContext() {
+  const categories = getCategories();
+  return {
+    categories,
+    names: categories.map((c) => c.name),
+    descriptions: categories.map((c) => `- "${c.name}": ${c.description || "(no description)"}`).join("\n"),
+    fallbackName: (categories.find((c) => c.is_fallback) || {}).name || null,
+  };
+}
+
+// Resolve category from playlist membership. Highest-precision signal available
+// and it costs no AI call, so it runs before anything else.
+async function resolvePlaylistCategories(validNames) {
+  const mappings = getPlaylistMappings().filter((m) => validNames.includes(m.category));
+  const resolved = new Map();
+  if (mappings.length === 0) return { resolved, playlistsChecked: 0, error: null };
+
+  let youtube;
+  try {
+    const { getYoutubeClient } = require("./youtube");
+    youtube = getYoutubeClient();
+  } catch (e) {
+    return { resolved, playlistsChecked: 0, error: `YouTube client unavailable: ${e.message}` };
+  }
+  if (!youtube) return { resolved, playlistsChecked: 0, error: "YouTube client unavailable." };
+
+  let checked = 0;
+  let firstError = null;
+
+  for (const mapping of mappings) {
+    let pageToken = null;
+    try {
+      do {
+        const res = await youtube.playlistItems.list({
+          part: "contentDetails",
+          playlistId: mapping.playlist_id,
+          maxResults: 50,
+          pageToken: pageToken || undefined,
+        });
+        (res.data.items || []).forEach((item) => {
+          const vId = item.contentDetails && item.contentDetails.videoId;
+          // First mapped playlist to claim a video wins, so mappings are ordered
+          // by recency in getPlaylistMappings().
+          if (vId && !resolved.has(vId)) resolved.set(vId, mapping.category);
+        });
+        pageToken = res.data.nextPageToken;
+      } while (pageToken);
+      checked++;
+    } catch (e) {
+      if (!firstError) firstError = `Playlist ${mapping.playlist_id}: ${e.message}`;
+      console.warn(`Could not read playlist ${mapping.playlist_id}:`, e.message);
+    }
   }
 
+  return { resolved, playlistsChecked: checked, error: firstError };
+}
+
+function buildVideoBlock(v, idx) {
+  const parts = [`[${idx + 1}] ID: ${v.youtube_id}`, `    Title: "${v.title}"`];
+
+  const durSec = parseDurationSec(v.duration);
+  if (durSec != null) {
+    parts.push(`    Duration: ${Math.floor(durSec / 60)}:${String(durSec % 60).padStart(2, "0")}`);
+  }
+
+  if (v.tags_json) {
+    try {
+      const tags = JSON.parse(v.tags_json);
+      if (Array.isArray(tags) && tags.length > 0) {
+        parts.push(`    Tags: ${tags.slice(0, 15).join(", ")}`);
+      }
+    } catch (e) {
+      /* ignore malformed tags */
+    }
+  }
+
+  // The scraper writes a synthesised description that merely restates the title.
+  // Feeding it back adds no signal, so it is skipped when flagged as placeholder.
+  if (v.description && !v.description_is_placeholder) {
+    parts.push(`    Description: "${v.description.substring(0, 500).replace(/\s+/g, " ").trim()}"`);
+  }
+
+  if (v.transcript_opening) {
+    parts.push(`    Transcript opening: "${v.transcript_opening.substring(0, 400).replace(/\s+/g, " ").trim()}"`);
+  }
+
+  return parts.join("\n");
+}
+
+function buildClassifierPrompt(ctx, chunk) {
+  const fallbackClause = ctx.fallbackName
+    ? `- "${ctx.fallbackName}" is ONLY for livestreams, channel announcements, and channel updates. Do NOT use it as a fallback for videos you are unsure about. If you are unsure, pick the best fit and lower your confidence instead.`
+    : `- If you are unsure, pick the best fit and lower your confidence. Do not invent a category.`;
+
+  return `You are classifying videos from "The Electric Duo", a two-person EV channel run by Patrick and Liv, into exactly one content category each.
+
+CATEGORIES — you must use one of these names exactly:
+${ctx.descriptions}
+
+CLASSIFICATION RULES:
+- Decide from what the video IS, not from a single keyword. A model year in the title does not make a video news. A review of a 2024 vehicle is a review.
+- A vehicle deep dive, first look, walkaround, test drive, or hardware review belongs in the reviews category, even when it mentions news, price, or a model year.
+- A dated news roundup or a reaction to an industry announcement belongs in the news category.
+- A journey with charging stops along a route belongs in the road trip category, even if a vehicle is being reviewed along the way. The journey is the spine of the video.
+- Instructional content that teaches a repeatable task belongs in the how-to category.
+- Use the sponsor category only when the video's primary purpose is a paid product feature, not when a sponsor is merely mentioned.
+${fallbackClause}
+- When two categories both fit, choose the one describing the video's main purpose, and lower your confidence.
+
+For each video return:
+- youtube_id: exactly as given
+- category: exactly one of the category names above
+- confidence: 0.0 to 1.0, how certain you are
+- reason: at most 12 words naming the specific evidence you used
+
+Classify every video in the list. Never omit one. Never invent an ID.
+
+VIDEOS:
+${chunk.map((v, i) => buildVideoBlock(v, i)).join("\n\n")}`;
+}
+
+async function classifyChunk(ai, modelName, ctx, chunk) {
+  const prompt = buildClassifierPrompt(ctx, chunk);
+
+  const response = await ai.models.generateContent({
+    model: modelName,
+    contents: prompt,
+    config: {
+      temperature: 0,
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            youtube_id: { type: "string" },
+            category: { type: "string", enum: ctx.names },
+            confidence: { type: "number" },
+            reason: { type: "string" },
+          },
+          required: ["youtube_id", "category", "confidence"],
+        },
+      },
+    },
+  });
+
+  let raw = (response.text || "").trim();
+  raw = raw.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/, "").trim();
+  const parsed = JSON.parse(raw);
+  if (!Array.isArray(parsed)) throw new Error("Model did not return an array.");
+
+  const byId = new Map();
+  const requestedIds = new Set(chunk.map((v) => v.youtube_id));
+
+  parsed.forEach((item, idx) => {
+    if (!item || typeof item !== "object") return;
+    // Prefer the returned id, but fall back to positional order when the model
+    // echoes an index or mangles the id. Never accept an id we did not ask for.
+    let id = typeof item.youtube_id === "string" ? item.youtube_id.trim() : null;
+    if (!id || !requestedIds.has(id)) {
+      id = chunk[idx] ? chunk[idx].youtube_id : null;
+    }
+    if (!id || !requestedIds.has(id)) return;
+    if (!ctx.names.includes(item.category)) return;
+
+    const confidence = Number.isFinite(item.confidence) ? Math.max(0, Math.min(1, item.confidence)) : 0;
+    byId.set(id, {
+      category: item.category,
+      confidence,
+      reason: typeof item.reason === "string" ? item.reason.slice(0, 200) : null,
+    });
+  });
+
+  const missing = chunk.filter((v) => !byId.has(v.youtube_id)).map((v) => v.youtube_id);
+  return { byId, missing };
+}
+
+async function bulkReclassifyLibrary(options = {}) {
+  const dryRun = options.dryRun === true;
+  const onlyUnclassified = options.onlyUnclassified === true;
+
+  const ctx = getCategoryContext();
+  if (ctx.names.length === 0) {
+    return { success: false, message: "No content categories are defined." };
+  }
+
+  const baseQuery = `
+    SELECT v.youtube_id, v.title, v.description, v.description_is_placeholder, v.duration,
+           v.tags_json, v.content_type, v.category_source,
+           SUBSTR(COALESCE(t.plain_text, t.cleaned_srt, t.raw_srt), 1, 400) AS transcript_opening
+    FROM videos v
+    LEFT JOIN transcripts t ON t.video_id = v.youtube_id
+    WHERE (v.privacy_status IS NULL OR v.privacy_status = 'public')
+      AND COALESCE(v.category_source, '') != 'manual'
+      ${onlyUnclassified ? "AND (v.content_type IS NULL OR v.content_type = '' OR COALESCE(v.category_source,'') IN ('unclassified','needs_review'))" : ""}
+  `;
+
+  let videos;
+  try {
+    videos = db.prepare(baseQuery).all();
+  } catch (e) {
+    // Fall back if the transcripts table uses different column names.
+    console.warn("Transcript join unavailable for classification:", e.message);
+    videos = db.prepare(`
+      SELECT youtube_id, title, description, description_is_placeholder, duration,
+             tags_json, content_type, category_source, NULL AS transcript_opening
+      FROM videos
+      WHERE (privacy_status IS NULL OR privacy_status = 'public')
+        AND COALESCE(category_source, '') != 'manual'
+    `).all();
+  }
+
+  if (!videos || videos.length === 0) {
+    return { success: true, total: 0, message: "No non-manual videos to classify." };
+  }
+
+  const changes = [];
+  const stats = { byPlaylist: 0, byAi: 0, needsReview: 0, unchanged: 0, failedBatches: 0, totalBatches: 0 };
+
+  // --- Pass 1: playlist membership (deterministic) ---
+  const playlistResult = await resolvePlaylistCategories(ctx.names);
+  const remaining = [];
+  for (const v of videos) {
+    const playlistCategory = playlistResult.resolved.get(v.youtube_id);
+    if (playlistCategory) {
+      stats.byPlaylist++;
+      changes.push({
+        youtube_id: v.youtube_id,
+        title: v.title,
+        from: v.content_type,
+        to: playlistCategory,
+        source: "playlist",
+        confidence: 1,
+        reason: "Member of a mapped playlist",
+      });
+    } else {
+      remaining.push(v);
+    }
+  }
+
+  // --- Pass 2: Gemini classification with structured output ---
   const apiKey = getGeminiApiKey();
   const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
 
@@ -192,73 +439,190 @@ async function bulkReclassifyLibrary() {
     console.warn("Could not read default_model in channel-health:", e.message);
   }
 
-  const updateStmt = db.prepare("UPDATE videos SET content_type = ?, category_source = 'ai_inferred' WHERE youtube_id = ?");
-  let reclassifiedCount = 0;
+  if (!ai && remaining.length > 0) {
+    remaining.forEach((v) => {
+      stats.needsReview++;
+      changes.push({
+        youtube_id: v.youtube_id,
+        title: v.title,
+        from: v.content_type,
+        to: null,
+        source: "needs_review",
+        confidence: null,
+        reason: "Gemini API key not configured",
+      });
+    });
+  }
 
-  for (let i = 0; i < videos.length; i += 25) {
-    const chunk = videos.slice(i, i + 25);
-    const videoListText = chunk.map((v, idx) => `[${idx + 1}] ID: ${v.youtube_id} | Title: "${v.title}" | Desc: "${(v.description || "").substring(0, 150)}"`).join("\n");
+  if (ai) {
+    for (let i = 0; i < remaining.length; i += CLASSIFY_BATCH_SIZE) {
+      const chunk = remaining.slice(i, i + CLASSIFY_BATCH_SIZE);
+      stats.totalBatches++;
 
-    let classifiedMap = {};
+      let result = null;
+      let lastError = null;
+      for (let attempt = 1; attempt <= CLASSIFY_MAX_ATTEMPTS; attempt++) {
+        try {
+          result = await classifyChunk(ai, modelName, ctx, chunk);
+          break;
+        } catch (err) {
+          lastError = err;
+          console.warn(`Classification batch ${stats.totalBatches} attempt ${attempt} failed:`, err.message);
+          if (attempt < CLASSIFY_MAX_ATTEMPTS) {
+            await new Promise((r) => setTimeout(r, 500 * attempt));
+          }
+        }
+      }
 
-    if (ai) {
-      const prompt = `You are an expert YouTube content classifier for "The Electric Duo" (EV enthusiast channel).
-Categorize each of the following videos into EXACTLY ONE of these categories:
-${categoryDescriptions}
-
-VIDEOS TO CLASSIFY:
-${videoListText}
-
-Return a JSON array of objects with "youtube_id" and "category" (MUST match one of: ${categoryNames.map((n) => `"${n}"`).join(", ")}).
-Return ONLY valid JSON.`;
-
-      try {
-        const response = await ai.models.generateContent({
-          model: modelName,
-          contents: prompt,
+      if (!result) {
+        // A failed batch is reported as failed. It is never silently replaced
+        // with keyword guesses.
+        stats.failedBatches++;
+        chunk.forEach((v) => {
+          stats.needsReview++;
+          changes.push({
+            youtube_id: v.youtube_id,
+            title: v.title,
+            from: v.content_type,
+            to: null,
+            source: "needs_review",
+            confidence: null,
+            reason: `Classification failed: ${lastError ? lastError.message.slice(0, 120) : "unknown error"}`,
+          });
         });
+        continue;
+      }
 
-        let raw = response.text || "";
-        raw = raw.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/, "").trim();
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) {
-          parsed.forEach((item) => {
-            if (item.youtube_id && categoryNames.includes(item.category)) {
-              classifiedMap[item.youtube_id] = item.category;
-            }
+      for (const v of chunk) {
+        const hit = result.byId.get(v.youtube_id);
+        if (!hit) {
+          stats.needsReview++;
+          changes.push({
+            youtube_id: v.youtube_id,
+            title: v.title,
+            from: v.content_type,
+            to: null,
+            source: "needs_review",
+            confidence: null,
+            reason: "Model returned no classification for this video",
+          });
+        } else if (hit.confidence < MIN_CLASSIFY_CONFIDENCE) {
+          stats.needsReview++;
+          changes.push({
+            youtube_id: v.youtube_id,
+            title: v.title,
+            from: v.content_type,
+            to: null,
+            source: "needs_review",
+            confidence: hit.confidence,
+            reason: `Low confidence (${hit.confidence.toFixed(2)}): ${hit.reason || "no reason given"}`,
+          });
+        } else {
+          stats.byAi++;
+          changes.push({
+            youtube_id: v.youtube_id,
+            title: v.title,
+            from: v.content_type,
+            to: hit.category,
+            source: "ai_inferred",
+            confidence: hit.confidence,
+            reason: hit.reason,
           });
         }
-      } catch (err) {
-        console.warn("AI bulk classification chunk error:", err.message);
       }
-    }
-
-    for (const v of chunk) {
-      let matchedCategory = classifiedMap[v.youtube_id];
-      if (!matchedCategory) {
-        const lowerTitle = (v.title || "").toLowerCase();
-        if (lowerTitle.includes("quick charge") || lowerTitle.includes("news") || lowerTitle.includes("update") || lowerTitle.includes("202")) {
-          matchedCategory = categoryNames.includes("News/Quick Charge") ? "News/Quick Charge" : categoryNames[0];
-        } else if (lowerTitle.includes("road trip") || lowerTitle.includes("trip") || lowerTitle.includes("route 66") || lowerTitle.includes("travel")) {
-          matchedCategory = categoryNames.includes("Road Trip/Travel Series") ? "Road Trip/Travel Series" : categoryNames[0];
-        } else if (lowerTitle.includes("how to") || lowerTitle.includes("guide") || lowerTitle.includes("setup") || lowerTitle.includes("adapter") || lowerTitle.includes("tips")) {
-          matchedCategory = categoryNames.includes("How Tos/Guides") ? "How Tos/Guides" : categoryNames[0];
-        } else if (lowerTitle.includes("sponsor") || lowerTitle.includes("sponsored") || lowerTitle.includes("partner")) {
-          matchedCategory = categoryNames.includes("Sponsor Content") ? "Sponsor Content" : categoryNames[0];
-        } else if (lowerTitle.includes("review") || lowerTitle.includes("walkaround") || lowerTitle.includes("test") || lowerTitle.includes("first look") || lowerTitle.includes("drive")) {
-          matchedCategory = categoryNames.includes("Walkarounds/Reviews") ? "Walkarounds/Reviews" : categoryNames[0];
-        } else {
-          matchedCategory = categoryNames.includes("Other") ? "Other" : categoryNames[0];
-        }
-      }
-
-      updateStmt.run(matchedCategory, v.youtube_id);
-      reclassifiedCount++;
     }
   }
 
-  return { reclassified: reclassifiedCount, total: videos.length, success: true };
+  stats.unchanged = changes.filter((c) => c.from === c.to).length;
+
+  // --- Persist ---
+  const runStmt = db.prepare(`
+    INSERT INTO classification_runs (mode, total, by_playlist, by_ai, needs_review, failed_batches, total_batches, changes_json, error)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  if (dryRun) {
+    const info = runStmt.run(
+      "dry_run", videos.length, stats.byPlaylist, stats.byAi, stats.needsReview,
+      stats.failedBatches, stats.totalBatches, JSON.stringify(changes), playlistResult.error
+    );
+    return {
+      success: true,
+      dryRun: true,
+      runId: info.lastInsertRowid,
+      total: videos.length,
+      ...stats,
+      playlistsChecked: playlistResult.playlistsChecked,
+      changes,
+      message: `Preview only. Nothing was written.`,
+    };
+  }
+
+  const applyStmt = db.prepare(
+    "UPDATE videos SET content_type = ?, category_source = ?, classification_confidence = ?, classification_reason = ? WHERE youtube_id = ?"
+  );
+  const applyAll = db.transaction(() => {
+    for (const c of changes) {
+      applyStmt.run(c.to, c.source, c.confidence, c.reason, c.youtube_id);
+    }
+  });
+  applyAll();
+
+  const info = runStmt.run(
+    "applied", videos.length, stats.byPlaylist, stats.byAi, stats.needsReview,
+    stats.failedBatches, stats.totalBatches, JSON.stringify(changes), playlistResult.error
+  );
+
+  return {
+    success: true,
+    dryRun: false,
+    runId: info.lastInsertRowid,
+    total: videos.length,
+    ...stats,
+    playlistsChecked: playlistResult.playlistsChecked,
+    // Kept for API compatibility with the existing UI toast.
+    reclassified: stats.byPlaylist + stats.byAi,
+    message: `${stats.byPlaylist} from playlists, ${stats.byAi} from AI, ${stats.needsReview} need review.`,
+  };
 }
+
+// Roll a classification run back to the values recorded before it ran.
+function rollbackClassificationRun(runId) {
+  const run = db.prepare("SELECT * FROM classification_runs WHERE id = ?").get(runId);
+  if (!run) throw new Error("Classification run not found.");
+  if (run.mode !== "applied") throw new Error("Only an applied run can be rolled back.");
+
+  const changes = JSON.parse(run.changes_json || "[]");
+  const restoreStmt = db.prepare(
+    "UPDATE videos SET content_type = ?, category_source = 'rolled_back', classification_confidence = NULL, classification_reason = NULL WHERE youtube_id = ?"
+  );
+  const restoreAll = db.transaction(() => {
+    changes.forEach((c) => restoreStmt.run(c.from, c.youtube_id));
+  });
+  restoreAll();
+
+  return { success: true, restored: changes.length, runId };
+}
+
+function listClassificationRuns(limit = 20) {
+  return db.prepare(`
+    SELECT id, mode, total, by_playlist, by_ai, needs_review, failed_batches, total_batches, error, created_at
+    FROM classification_runs ORDER BY created_at DESC LIMIT ?
+  `).all(limit);
+}
+
+// Videos the classifier could not confidently place.
+function getReviewQueue(limit = 200) {
+  return db.prepare(`
+    SELECT youtube_id, title, content_type, category_source, classification_confidence, classification_reason, published_at, thumbnail_url
+    FROM videos
+    WHERE (privacy_status IS NULL OR privacy_status = 'public')
+      AND COALESCE(category_source, '') IN ('needs_review', 'unclassified')
+    ORDER BY published_at DESC
+    LIMIT ?
+  `).all(limit);
+}
+
 
 // 6. Non-Destructive Snapshot Capture Engine
 async function captureSnapshot(periodDays = 28) {
@@ -301,278 +665,299 @@ function calcPctChange(curr, prev) {
   return Number((((curr - prev) / prev) * 100).toFixed(1));
 }
 
-// 7. Get Channel Health Report using Live YouTube Studio Analytics API (Excluding < 4 min Shorts)
+// ---------------------------------------------------------------------------
+// 7. Channel Health Report
+//
+// Every figure is measured or null. Impressions and impressions CTR are not
+// exposed by the YouTube Analytics API, so they are reported as unavailable
+// rather than back-computed from an assumed click-through rate.
+// ---------------------------------------------------------------------------
+
+// YouTube reclassified Shorts as up to 3 minutes in late 2024. The old 4-minute
+// threshold silently dropped genuine short long-form videos from every metric.
+const SHORTS_MAX_SEC = 180;
+
+function isLongForm(video) {
+  const sec = parseDurationSec(video.duration);
+  // Unknown duration is not evidence of long-form. It is excluded and counted.
+  if (sec == null) return false;
+  return sec > SHORTS_MAX_SEC;
+}
+
+async function queryAnalytics(ytAnalytics, params, label) {
+  try {
+    const res = await ytAnalytics.reports.query(params);
+    return res.data || null;
+  } catch (err) {
+    console.warn(`YouTube Analytics query failed (${label}):`, err.message);
+    return null;
+  }
+}
+
+function summariseTraffic(rows) {
+  if (!rows || rows.length === 0) return null;
+  const total = rows.reduce((s, r) => s + (r[1] || 0), 0);
+  if (total <= 0) return null;
+
+  let browse = 0, suggested = 0, search = 0, other = 0;
+  rows.forEach((r) => {
+    const type = String(r[0]);
+    const v = r[1] || 0;
+    if (type.includes("BROWSE") || type.includes("HOME") || type.includes("SUBSCRIBER")) browse += v;
+    else if (type.includes("SUGGESTED") || type.includes("RELATED")) suggested += v;
+    else if (type.includes("SEARCH")) search += v;
+    else other += v;
+  });
+
+  const pct = (n) => Number(((n / total) * 100).toFixed(1));
+  return { browse: pct(browse), suggested: pct(suggested), search: pct(search), other: pct(other) };
+}
+
 async function getChannelHealthReport(periodDays = 28) {
   const categories = getCategories();
-  const allVideos = db.prepare("SELECT * FROM videos WHERE (privacy_status IS NULL OR privacy_status = 'public') ORDER BY view_count DESC, published_at DESC").all();
-  
-  // EXCLUDE SHORTS (< 4 minutes / 240 seconds)
-  const longFormVideos = allVideos.filter((v) => parseDurationSec(v.duration) >= 240);
+  const allVideos = db
+    .prepare("SELECT * FROM videos WHERE (privacy_status IS NULL OR privacy_status = 'public') ORDER BY view_count DESC, published_at DESC")
+    .all();
+
+  const longFormVideos = allVideos.filter(isLongForm);
+  const unknownDurationCount = allVideos.filter((v) => parseDurationSec(v.duration) == null).length;
   const videoMap = new Map(longFormVideos.map((v) => [v.youtube_id, v]));
 
   const auth = getAuthenticatedClient();
-  let liveReport = null;
-  let priorLiveReport = null;
-  let topVideosLive = null;
-  let trafficLive = null;
-  let totalSubscribers = 24700;
 
   const now = new Date();
   const endDateStr = now.toISOString().split("T")[0];
   const startDateStr = new Date(now.getTime() - periodDays * 86400000).toISOString().split("T")[0];
   const priorStartDateStr = new Date(now.getTime() - 2 * periodDays * 86400000).toISOString().split("T")[0];
 
+  let liveReport = null;
+  let priorLiveReport = null;
+  let topVideosLive = null;
+  let trafficLive = null;
+  let priorTrafficLive = null;
+  let totalSubscribers = null;
+
   if (auth) {
+    const ytAnalytics = google.youtubeAnalytics({ version: "v2", auth });
+    const ytData = google.youtube({ version: "v3", auth });
+
     try {
-      const ytAnalytics = google.youtubeAnalytics({ version: "v2", auth });
-      const ytData = google.youtube({ version: "v3", auth });
-
-      // Fetch Channel Total Subscribers
-      try {
-        const chRes = await ytData.channels.list({ part: "statistics", mine: true });
-        if (chRes.data?.items?.[0]?.statistics?.subscriberCount) {
-          totalSubscribers = parseInt(chRes.data.items[0].statistics.subscriberCount, 10);
-        }
-      } catch (e) {
-        console.warn("Could not fetch channel subscriber count:", e.message);
-      }
-
-      // Current Period Live Channel Query
-      const currRes = await ytAnalytics.reports.query({
-        ids: "channel==MINE",
-        startDate: startDateStr,
-        endDate: endDateStr,
-        metrics: "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained,subscribersLost",
-      });
-
-      // Prior Period Live Channel Query
-      const priorRes = await ytAnalytics.reports.query({
-        ids: "channel==MINE",
-        startDate: priorStartDateStr,
-        endDate: startDateStr,
-        metrics: "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained,subscribersLost",
-      });
-
-      // Top Videos in this Period
-      const topRes = await ytAnalytics.reports.query({
-        ids: "channel==MINE",
-        startDate: startDateStr,
-        endDate: endDateStr,
-        dimensions: "video",
-        metrics: "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage",
-        sort: "-views",
-        maxResults: 30,
-      });
-
-      // Traffic Sources in this Period
-      const trafficRes = await ytAnalytics.reports.query({
-        ids: "channel==MINE",
-        startDate: startDateStr,
-        endDate: endDateStr,
-        dimensions: "insightTrafficSourceType",
-        metrics: "views",
-        sort: "-views",
-      });
-
-      if (currRes.data?.rows?.[0]) liveReport = currRes.data.rows[0];
-      if (priorRes.data?.rows?.[0]) priorLiveReport = priorRes.data.rows[0];
-      if (topRes.data?.rows) topVideosLive = topRes.data.rows;
-      if (trafficRes.data?.rows) trafficLive = trafficRes.data.rows;
-    } catch (err) {
-      console.warn("YouTube Analytics API Query error:", err.message);
+      const chRes = await ytData.channels.list({ part: "statistics", mine: true });
+      const count = chRes.data?.items?.[0]?.statistics?.subscriberCount;
+      if (count) totalSubscribers = parseInt(count, 10);
+    } catch (e) {
+      console.warn("Could not fetch channel subscriber count:", e.message);
     }
+
+    const coreMetrics = "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained,subscribersLost";
+
+    const [curr, prior, top, traffic, priorTraffic] = await Promise.all([
+      queryAnalytics(ytAnalytics, { ids: "channel==MINE", startDate: startDateStr, endDate: endDateStr, metrics: coreMetrics }, "current period"),
+      queryAnalytics(ytAnalytics, { ids: "channel==MINE", startDate: priorStartDateStr, endDate: startDateStr, metrics: coreMetrics }, "prior period"),
+      queryAnalytics(ytAnalytics, {
+        ids: "channel==MINE", startDate: startDateStr, endDate: endDateStr,
+        dimensions: "video", metrics: "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage",
+        sort: "-views", maxResults: 50,
+      }, "top videos"),
+      queryAnalytics(ytAnalytics, {
+        ids: "channel==MINE", startDate: startDateStr, endDate: endDateStr,
+        dimensions: "insightTrafficSourceType", metrics: "views", sort: "-views",
+      }, "traffic sources"),
+      // The prior-period traffic split used to be a hardcoded object, which made
+      // every shift arrow meaningless. It is now measured.
+      queryAnalytics(ytAnalytics, {
+        ids: "channel==MINE", startDate: priorStartDateStr, endDate: startDateStr,
+        dimensions: "insightTrafficSourceType", metrics: "views", sort: "-views",
+      }, "prior traffic sources"),
+    ]);
+
+    if (curr?.rows?.[0]) liveReport = curr.rows[0];
+    if (prior?.rows?.[0]) priorLiveReport = prior.rows[0];
+    if (top?.rows) topVideosLive = top.rows;
+    if (traffic?.rows) trafficLive = traffic.rows;
+    if (priorTraffic?.rows) priorTrafficLive = priorTraffic.rows;
   }
 
   const isLive = !!liveReport;
 
-  // 1. Scorecard Metrics
-  let currViews, currWatchHours, currNetSubs, currAvgDurationSec, currAvgRetention;
-  let priorViews, priorWatchHours, priorNetSubs, priorAvgRetention;
+  // ---- 1. Scorecard (measured only) ----
+  const currViews = isLive ? liveReport[0] ?? null : null;
+  const currWatchHours = isLive && liveReport[1] != null ? Number((liveReport[1] / 60).toFixed(1)) : null;
+  const currAvgRetention = isLive && liveReport[3] != null ? Number(liveReport[3].toFixed(1)) : null;
+  const currNetSubs = isLive && liveReport[4] != null && liveReport[5] != null ? liveReport[4] - liveReport[5] : null;
 
-  if (isLive) {
-    currViews = liveReport[0] || 0;
-    currWatchHours = Number(((liveReport[1] || 0) / 60).toFixed(1));
-    currAvgDurationSec = liveReport[2] || 0;
-    currAvgRetention = Number((liveReport[3] || 0).toFixed(1));
-    currNetSubs = (liveReport[4] || 0) - (liveReport[5] || 0);
+  const priorViews = priorLiveReport ? priorLiveReport[0] ?? null : null;
+  const priorWatchHours = priorLiveReport && priorLiveReport[1] != null ? Number((priorLiveReport[1] / 60).toFixed(1)) : null;
+  const priorAvgRetention = priorLiveReport && priorLiveReport[3] != null ? Number(priorLiveReport[3].toFixed(1)) : null;
+  const priorNetSubs = priorLiveReport && priorLiveReport[4] != null && priorLiveReport[5] != null ? priorLiveReport[4] - priorLiveReport[5] : null;
 
-    if (priorLiveReport) {
-      priorViews = priorLiveReport[0] || 0;
-      priorWatchHours = Number(((priorLiveReport[1] || 0) / 60).toFixed(1));
-      priorNetSubs = (priorLiveReport[4] || 0) - (priorLiveReport[5] || 0);
-      priorAvgRetention = Number((priorLiveReport[3] || 0).toFixed(1));
-    } else {
-      priorViews = Math.round(currViews * 0.92);
-      priorWatchHours = Math.round(currWatchHours * 0.92);
-      priorNetSubs = Math.round(currNetSubs * 0.9);
-      priorAvgRetention = currAvgRetention;
-    }
-  } else {
-    // Fallback: Long-form catalog rollups
-    const currCutoff = new Date(now.getTime() - periodDays * 86400000);
-    const priorCutoff = new Date(now.getTime() - 2 * periodDays * 86400000);
+  const trafficShare = summariseTraffic(trafficLive);
+  const priorTrafficShare = summariseTraffic(priorTrafficLive);
 
-    const cVids = longFormVideos.filter((v) => new Date(v.published_at) >= currCutoff);
-    const pVids = longFormVideos.filter((v) => new Date(v.published_at) >= priorCutoff && new Date(v.published_at) < currCutoff);
+  const metric = (value, prior, label, note) => ({
+    value,
+    prior,
+    pctChange: value != null && prior != null ? calcPctChange(value, prior) : null,
+    label,
+    available: value != null,
+    note: note || null,
+  });
 
-    currViews = cVids.reduce((sum, v) => sum + (v.view_count || 1500), 0);
-    if (currViews === 0) currViews = Math.round((longFormVideos.reduce((s, v) => s + (v.view_count || 1500), 0) / 365) * periodDays);
-    currWatchHours = Math.round(currViews * 0.12);
-    currNetSubs = Math.round(currViews * 0.0035);
-    currAvgRetention = 48.2;
-
-    priorViews = pVids.reduce((sum, v) => sum + (v.view_count || 1500), 0);
-    if (priorViews === 0) priorViews = Math.round(currViews * 0.94);
-    priorWatchHours = Math.round(priorViews * 0.12);
-    priorNetSubs = Math.round(priorViews * 0.0035);
-    priorAvgRetention = 48.0;
-  }
-
-  // Calculate Impressions and Suggested Video Share
-  const avgCtr = 5.3;
-  const currImpressions = Math.round(currViews / (avgCtr / 100));
-  const priorImpressions = Math.round(priorViews / (avgCtr / 100));
-
-  let suggestedSharePct = 28.4;
-  let trafficShare = { browse: 54, suggested: 28, search: 12, other: 6 };
-
-  if (trafficLive && trafficLive.length > 0) {
-    const totalTrafficViews = trafficLive.reduce((s, r) => s + (r[1] || 0), 0);
-    if (totalTrafficViews > 0) {
-      let b = 0, sug = 0, sea = 0, oth = 0;
-      trafficLive.forEach((r) => {
-        const type = String(r[0]);
-        const v = r[1] || 0;
-        if (type.includes("BROWSE") || type.includes("HOME")) b += v;
-        else if (type.includes("SUGGESTED") || type.includes("RELATED")) sug += v;
-        else if (type.includes("SEARCH")) sea += v;
-        else oth += v;
-      });
-      const calcSuggested = Number(((sug / totalTrafficViews) * 100).toFixed(1));
-      if (calcSuggested > 0) suggestedSharePct = calcSuggested;
-
-      trafficShare = {
-        browse: Math.round((b / totalTrafficViews) * 100),
-        suggested: Math.round((sug / totalTrafficViews) * 100),
-        search: Math.round((sea / totalTrafficViews) * 100),
-        other: Math.max(1, 100 - Math.round((b / totalTrafficViews) * 100) - Math.round((sug / totalTrafficViews) * 100) - Math.round((sea / totalTrafficViews) * 100)),
-      };
-    }
-  }
-
-  // LOGICAL 8-CARD SCORECARD ORDER:
-  // 1. Total Subscribers -> 2. Views -> 3. Impressions -> 4. Avg CTR -> 5. Watch Hours -> 6. Suggested Share % -> 7. Avg Retention % -> 8. Net Subscribers
   const scorecard = {
-    totalSubscribers: { value: totalSubscribers, label: "Total Subscribers" },
-    views: { value: currViews, pctChange: calcPctChange(currViews, priorViews), label: "Total Views" },
-    impressions: { value: currImpressions, pctChange: calcPctChange(currImpressions, priorImpressions), label: "Impressions" },
-    avgCtr: { value: avgCtr, pctChange: 0.0, label: "Channel Avg CTR" },
-    watchTimeHours: { value: currWatchHours, pctChange: calcPctChange(currWatchHours, priorWatchHours), label: "Watch Time (Hours)" },
-    suggestedShare: { value: suggestedSharePct, pctChange: 1.5, label: "Suggested Video Share" },
-    avgRetention: { value: currAvgRetention, pctChange: calcPctChange(currAvgRetention, priorAvgRetention), label: "Avg % Viewed" },
-    netSubs: { value: currNetSubs, pctChange: calcPctChange(currNetSubs, priorNetSubs), label: "Net Subscribers" },
+    totalSubscribers: metric(totalSubscribers, null, "Total Subscribers"),
+    views: metric(currViews, priorViews, "Total Views"),
+    // Impressions and CTR are YouTube Studio figures with no Analytics API
+    // equivalent. They stay unavailable rather than being derived from a guess.
+    impressions: metric(null, null, "Impressions", "Not exposed by the YouTube Analytics API. Read in YouTube Studio."),
+    avgCtr: metric(null, null, "Channel Avg CTR", "Not exposed by the YouTube Analytics API. Read in YouTube Studio."),
+    watchTimeHours: metric(currWatchHours, priorWatchHours, "Watch Time (Hours)"),
+    suggestedShare: metric(
+      trafficShare ? trafficShare.suggested : null,
+      priorTrafficShare ? priorTrafficShare.suggested : null,
+      "Suggested Video Share"
+    ),
+    avgRetention: metric(currAvgRetention, priorAvgRetention, "Avg % Viewed"),
+    netSubs: metric(currNetSubs, priorNetSubs, "Net Subscribers"),
     periodDays,
+    periodStart: startDateStr,
     asOfDate: endDateStr,
   };
 
-  // 2. Dynamic Category Breakdown (Long-form Only)
+  // ---- 2. Per-video live metrics, keyed for reuse ----
+  const liveByVideo = new Map();
+  if (topVideosLive) {
+    topVideosLive.forEach((row) => {
+      liveByVideo.set(row[0], {
+        views: row[1] || 0,
+        watchMinutes: row[2] || 0,
+        avgViewDuration: row[3] || 0,
+        retentionRate: row[4] != null ? Number(row[4].toFixed(1)) : null,
+      });
+    });
+  }
+
+  const formatVideo = (v) => {
+    const live = liveByVideo.get(v.youtube_id);
+    return {
+      youtubeId: v.youtube_id,
+      title: v.title,
+      category: v.content_type,
+      categorySource: v.category_source || "unclassified",
+      classificationConfidence: v.classification_confidence ?? null,
+      publishedAt: v.published_at || "",
+      thumbnailUrl: v.thumbnail_url || `https://img.youtube.com/vi/${v.youtube_id}/maxresdefault.jpg`,
+      views: live ? live.views : v.view_count ?? null,
+      viewsSource: live ? "analytics_period" : v.view_count != null ? "catalog_lifetime" : "unavailable",
+      // Real measured retention, no constant substitute.
+      retentionRate: live ? live.retentionRate : null,
+      watchHours: live ? Math.round(live.watchMinutes / 60) : null,
+      ctr: null,
+      duration: v.duration || null,
+    };
+  };
+
+  // ---- 3. Category breakdown from measured data ----
+  const periodStartMs = new Date(startDateStr).getTime();
+  const priorStartMs = new Date(priorStartDateStr).getTime();
+
   const categoryStats = categories.map((cat) => {
     const catVideos = longFormVideos.filter((v) => v.content_type === cat.name);
-    const count = catVideos.length;
-    const catViews = catVideos.reduce((sum, v) => sum + (v.view_count || 0), 0);
+    const withLive = catVideos.map(formatVideo);
 
-    const catAvgCtr = cat.name.includes("News") ? 5.8 : cat.name.includes("Review") ? 6.2 : cat.name.includes("Road") ? 4.9 : 5.1;
-    const catAvgRetention = cat.name.includes("Road") ? 54 : cat.name.includes("How To") ? 52 : 46;
+    const measuredRetentions = withLive.map((v) => v.retentionRate).filter((r) => r != null);
+    const avgRetention = measuredRetentions.length > 0
+      ? Number((measuredRetentions.reduce((a, b) => a + b, 0) / measuredRetentions.length).toFixed(1))
+      : null;
+
+    const periodViews = withLive
+      .filter((v) => liveByVideo.has(v.youtubeId))
+      .reduce((s, v) => s + (v.views || 0), 0);
+
+    // Trajectory now compares this period's uploads against the prior period's,
+    // instead of testing lifetime views against a fixed threshold.
+    const currUploads = catVideos.filter((v) => new Date(v.published_at).getTime() >= periodStartMs).length;
+    const priorUploads = catVideos.filter((v) => {
+      const t = new Date(v.published_at).getTime();
+      return t >= priorStartMs && t < periodStartMs;
+    }).length;
+
+    let trajectory = "unknown";
+    if (isLive && (currUploads > 0 || priorUploads > 0)) {
+      if (currUploads > priorUploads) trajectory = "up";
+      else if (currUploads < priorUploads) trajectory = "down";
+      else trajectory = "flat";
+    }
 
     return {
       id: cat.id,
       name: cat.name,
       description: cat.description,
       color: cat.color,
-      videoCount: count,
-      totalViews: catViews,
-      avgCtr: catAvgCtr,
-      avgRetention: catAvgRetention,
-      trajectory: catViews > 100000 ? "up" : catViews > 30000 ? "flat" : "down",
+      videoCount: catVideos.length,
+      totalViews: catVideos.reduce((s, v) => s + (v.view_count || 0), 0),
+      periodViews: isLive ? periodViews : null,
+      uploadsThisPeriod: currUploads,
+      uploadsPriorPeriod: priorUploads,
+      // Benchmarks are user-entered from Studio; null means not yet entered.
+      avgCtr: cat.avg_ctr ?? null,
+      benchmarkRetention: cat.avg_retention ?? null,
+      avgRetention,
+      retentionSampleSize: measuredRetentions.length,
+      trajectory,
     };
   });
 
-  // 3. Top Performers & Underperformers (Excluding < 4 min Shorts)
-  let topByViews = [];
-  let topByWatchTime = [];
-  let bottomUnderperformers = [];
-
-  if (topVideosLive && topVideosLive.length > 0) {
-    const formattedLive = [];
-    topVideosLive.forEach((row) => {
-      const vId = row[0];
-      const views = row[1] || 0;
-      const watchMinutes = row[2] || 0;
-      const retention = Number((row[4] || 0).toFixed(1));
-      const meta = videoMap.get(vId);
-
-      // Only include if in longForm catalog (>= 4 min) or meta is longForm
-      if (meta && parseDurationSec(meta.duration) >= 240) {
-        formattedLive.push({
-          youtubeId: vId,
-          title: meta.title || `Video ${vId}`,
-          category: meta.content_type || "Other",
-          categorySource: meta.category_source || "ai_inferred",
-          publishedAt: meta.published_at || "",
-          thumbnailUrl: meta.thumbnail_url || `https://img.youtube.com/vi/${vId}/maxresdefault.jpg`,
-          views,
-          ctr: 5.4,
-          retentionRate: retention > 0 ? retention : 48,
-          watchHours: Math.round(watchMinutes / 60),
-          duration: meta.duration || "PT15M",
-        });
-      }
-    });
-
-    topByViews = [...formattedLive].sort((a, b) => b.views - a.views).slice(0, 5);
-    topByWatchTime = [...formattedLive].sort((a, b) => b.watchHours - a.watchHours).slice(0, 5);
-    bottomUnderperformers = [...formattedLive].sort((a, b) => a.views - b.views).slice(0, 5);
+  // ---- 4. Top / bottom performers ----
+  let ranked = [];
+  if (isLive && liveByVideo.size > 0) {
+    ranked = longFormVideos.filter((v) => liveByVideo.has(v.youtube_id)).map(formatVideo);
+  } else {
+    ranked = longFormVideos.map(formatVideo);
   }
 
-  if (topByViews.length === 0) {
-    const formatted = longFormVideos.map((v) => ({
-      youtubeId: v.youtube_id,
-      title: v.title,
-      category: v.content_type,
-      categorySource: v.category_source || "ai_inferred",
-      publishedAt: v.published_at,
-      thumbnailUrl: v.thumbnail_url || `https://img.youtube.com/vi/${v.youtube_id}/maxresdefault.jpg`,
-      views: v.view_count || 0,
-      ctr: 5.2,
-      retentionRate: 48,
-      watchHours: Math.round((v.view_count || 0) * 0.12),
-      duration: v.duration,
-    }));
+  const byViews = [...ranked].filter((v) => v.views != null && v.views > 0);
+  const topByViews = [...byViews].sort((a, b) => b.views - a.views).slice(0, 5);
+  const bottomUnderperformers = [...byViews].filter((v) => v.views > 0).sort((a, b) => a.views - b.views).slice(0, 5);
+  const topByWatchTime = [...ranked].filter((v) => v.watchHours != null).sort((a, b) => b.watchHours - a.watchHours).slice(0, 5);
 
-    topByViews = [...formatted].sort((a, b) => b.views - a.views).slice(0, 5);
-    topByWatchTime = [...formatted].sort((a, b) => b.watchHours - a.watchHours).slice(0, 5);
-    bottomUnderperformers = [...formatted].filter((v) => v.views > 0).sort((a, b) => a.views - b.views).slice(0, 5);
-  }
-
-  // 4. Flags for Review
-  const pendingAiCount = longFormVideos.filter((v) => v.category_source === "ai_inferred").length;
-  const underperformingVideos = bottomUnderperformers.slice(0, 5);
-  const decliningCategories = categoryStats.filter((c) => c.trajectory === "down");
+  // ---- 5. Flags ----
+  const needsReviewCount = allVideos.filter((v) => ["needs_review", "unclassified"].includes(v.category_source)).length;
+  const lowConfidenceCount = allVideos.filter(
+    (v) => v.classification_confidence != null && v.classification_confidence < MIN_CLASSIFY_CONFIDENCE
+  ).length;
+  const uncategorisedCount = longFormVideos.filter((v) => !v.content_type).length;
 
   const flags = {
-    pendingAiCount,
-    underperformingCount: underperformingVideos.length,
-    underperformingVideos,
-    decliningCategories,
+    pendingAiCount: allVideos.filter((v) => v.category_source === "ai_inferred").length,
+    needsReviewCount,
+    lowConfidenceCount,
+    uncategorisedCount,
+    unknownDurationCount,
+    underperformingCount: bottomUnderperformers.length,
+    underperformingVideos: bottomUnderperformers,
+    decliningCategories: categoryStats.filter((c) => c.trajectory === "down"),
   };
 
   const audienceShift = {
     current: trafficShare,
-    prior: { browse: 52, suggested: 30, search: 12, other: 6 },
-    browseShift: 2,
-    suggestedShift: -2,
-    searchShift: 0,
+    prior: priorTrafficShare,
+    available: !!(trafficShare && priorTrafficShare),
+    browseShift: trafficShare && priorTrafficShare ? Number((trafficShare.browse - priorTrafficShare.browse).toFixed(1)) : null,
+    suggestedShift: trafficShare && priorTrafficShare ? Number((trafficShare.suggested - priorTrafficShare.suggested).toFixed(1)) : null,
+    searchShift: trafficShare && priorTrafficShare ? Number((trafficShare.search - priorTrafficShare.search).toFixed(1)) : null,
   };
+
+  const unavailableMetrics = [];
+  if (!isLive) unavailableMetrics.push("all YouTube Analytics metrics (not connected)");
+  unavailableMetrics.push("impressions", "impressions click-through rate");
+  if (!trafficShare) unavailableMetrics.push("traffic sources");
+  if (totalSubscribers == null) unavailableMetrics.push("subscriber count");
+
+  const uploadsThisPeriod = longFormVideos.filter((v) => new Date(v.published_at).getTime() >= periodStartMs).length;
+  const uploadsPriorPeriod = longFormVideos.filter((v) => {
+    const t = new Date(v.published_at).getTime();
+    return t >= priorStartMs && t < periodStartMs;
+  }).length;
 
   return {
     scorecard,
@@ -582,9 +967,206 @@ async function getChannelHealthReport(periodDays = 28) {
     bottomUnderperformers,
     flags,
     audienceShift,
+    uploadsThisPeriod,
+    uploadsPriorPeriod,
+    unavailableMetrics,
     isLiveStudioData: isLive,
+    shortsThresholdSec: SHORTS_MAX_SEC,
   };
 }
+
+// ---------------------------------------------------------------------------
+// 8. Channel health narrative (Gemini), instructions editable in Admin Settings
+// ---------------------------------------------------------------------------
+function getChannelHealthInstructions() {
+  try {
+    const row = db.prepare("SELECT channel_health_instructions FROM title_prompt_settings WHERE id = 1").get();
+    if (row && row.channel_health_instructions && row.channel_health_instructions.trim()) {
+      return row.channel_health_instructions.trim();
+    }
+  } catch (e) {
+    console.warn("Could not read channel health instructions:", e.message);
+  }
+  return require("./db").DEFAULT_CHANNEL_HEALTH_PROMPT_INSTRUCTIONS || "";
+}
+
+function buildHealthDataBlock(report) {
+  const s = report.scorecard;
+  const line = (m) => {
+    if (!m || !m.available) return `- ${m ? m.label : "Metric"}: UNAVAILABLE${m && m.note ? ` (${m.note})` : ""}`;
+    const change = m.pctChange != null ? ` (${m.pctChange >= 0 ? "+" : ""}${m.pctChange}% vs prior period)` : "";
+    return `- ${m.label}: ${typeof m.value === "number" ? m.value.toLocaleString() : m.value}${change}`;
+  };
+
+  const parts = [];
+  parts.push(`REPORTING PERIOD: ${s.periodStart} to ${s.asOfDate} (${s.periodDays} days), compared against the ${s.periodDays} days before it.`);
+  parts.push(`DATA SOURCE: ${report.isLiveStudioData ? "YouTube Analytics API (measured)" : "YouTube Analytics is NOT connected — almost no performance data is available"}`);
+  parts.push("");
+  parts.push("SCORECARD:");
+  ["totalSubscribers", "views", "impressions", "avgCtr", "watchTimeHours", "suggestedShare", "avgRetention", "netSubs"].forEach((k) => {
+    parts.push(line(s[k]));
+  });
+
+  parts.push("");
+  parts.push(`UPLOADS: ${report.uploadsThisPeriod} long-form videos this period vs ${report.uploadsPriorPeriod} in the prior period.`);
+
+  if (report.audienceShift.available) {
+    const a = report.audienceShift;
+    parts.push("");
+    parts.push("TRAFFIC SOURCES (this period vs prior, percentage points):");
+    parts.push(`- Browse: ${a.current.browse}% (${a.browseShift >= 0 ? "+" : ""}${a.browseShift})`);
+    parts.push(`- Suggested: ${a.current.suggested}% (${a.suggestedShift >= 0 ? "+" : ""}${a.suggestedShift})`);
+    parts.push(`- Search: ${a.current.search}% (${a.searchShift >= 0 ? "+" : ""}${a.searchShift})`);
+  }
+
+  const catsWithData = report.categoryStats.filter((c) => c.videoCount > 0);
+  if (catsWithData.length > 0) {
+    parts.push("");
+    parts.push("CATEGORY BREAKDOWN:");
+    catsWithData.forEach((c) => {
+      const bits = [`${c.videoCount} videos in catalog`, `${c.uploadsThisPeriod} published this period (prior: ${c.uploadsPriorPeriod})`];
+      if (c.avgRetention != null) bits.push(`measured avg retention ${c.avgRetention}% across ${c.retentionSampleSize} videos`);
+      parts.push(`- ${c.name}: ${bits.join(", ")}`);
+    });
+  }
+
+  if (report.topByViews.length > 0) {
+    const lifetime = report.topByViews[0].viewsSource === "catalog_lifetime";
+    parts.push("");
+    parts.push(lifetime
+      ? "TOP VIDEOS BY LIFETIME CATALOG VIEWS (not period views — YouTube Analytics is not connected, so these are all-time totals from the last catalog sync and say nothing about this period):"
+      : "TOP VIDEOS THIS PERIOD:");
+    report.topByViews.forEach((v, i) => {
+      const bits = [`${(v.views || 0).toLocaleString()} views`];
+      if (v.retentionRate != null) bits.push(`${v.retentionRate}% retention`);
+      if (v.watchHours != null) bits.push(`${v.watchHours} watch hours`);
+      parts.push(`  ${i + 1}. "${v.title}" [${v.category || "Unclassified"}] — ${bits.join(", ")}`);
+    });
+  }
+
+  if (report.bottomUnderperformers.length > 0) {
+    const lifetime = report.bottomUnderperformers[0].viewsSource === "catalog_lifetime";
+    parts.push("");
+    parts.push(lifetime
+      ? "LOWEST VIDEOS BY LIFETIME CATALOG VIEWS (not period views):"
+      : "LOWEST PERFORMING VIDEOS THIS PERIOD:");
+    report.bottomUnderperformers.forEach((v, i) => {
+      const bits = [`${(v.views || 0).toLocaleString()} views`];
+      if (v.retentionRate != null) bits.push(`${v.retentionRate}% retention`);
+      parts.push(`  ${i + 1}. "${v.title}" [${v.category || "Unclassified"}] — ${bits.join(", ")}`);
+    });
+  }
+
+  parts.push("");
+  parts.push("METRICS THAT ARE NOT AVAILABLE — do NOT estimate, infer, or invent these:");
+  report.unavailableMetrics.forEach((m) => parts.push(`- ${m}`));
+
+  if (report.flags.uncategorisedCount > 0 || report.flags.needsReviewCount > 0) {
+    parts.push("");
+    parts.push(`DATA QUALITY: ${report.flags.uncategorisedCount} long-form videos have no category, and ${report.flags.needsReviewCount} are awaiting classification review. Category figures above are incomplete by that amount.`);
+  }
+
+  return parts.join("\n");
+}
+
+async function generateHealthNarrative(report) {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    return { narrative: null, error: "Gemini API key is not configured." };
+  }
+
+  let modelName = DEFAULT_GEMINI_MODEL;
+  try {
+    const row = db.prepare("SELECT value FROM app_settings WHERE key = 'default_model'").get();
+    if (row && row.value) modelName = row.value;
+  } catch (e) {
+    /* use default */
+  }
+
+  const prompt = `${getChannelHealthInstructions()}
+
+ABSOLUTE RULE ON DATA:
+Every number you cite must appear in the block below. Never estimate, extrapolate, or invent a metric listed as unavailable. If an analysis needs a number you do not have, say plainly that it is not available and what to check in YouTube Studio.
+
+CHANNEL DATA:
+${buildHealthDataBlock(report)}`;
+
+  try {
+    const ai = new GoogleGenAI({ apiKey });
+    const response = await ai.models.generateContent({ model: modelName, contents: prompt });
+    const text = (response.text || "").trim();
+    if (!text) return { narrative: null, error: "Model returned an empty response." };
+    return { narrative: text, error: null };
+  } catch (err) {
+    console.warn("Channel health narrative failed:", err.message);
+    return { narrative: null, error: err.message };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 9. Channel health report history
+// ---------------------------------------------------------------------------
+function saveHealthReport(report, narrative, label) {
+  const info = db.prepare(`
+    INSERT INTO channel_health_reports (period_days, period_start, period_end, is_live_studio_data, report_json, narrative, label)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    report.scorecard.periodDays,
+    report.scorecard.periodStart,
+    report.scorecard.asOfDate,
+    report.isLiveStudioData ? 1 : 0,
+    JSON.stringify(report),
+    narrative || null,
+    label || null
+  );
+  return info.lastInsertRowid;
+}
+
+function listHealthReports(limit = 50) {
+  return db.prepare(`
+    SELECT id, period_days, period_start, period_end, is_live_studio_data, label, created_at,
+           CASE WHEN narrative IS NULL THEN 0 ELSE 1 END AS has_narrative
+    FROM channel_health_reports
+    ORDER BY created_at DESC LIMIT ?
+  `).all(limit);
+}
+
+function getHealthReportById(id) {
+  const row = db.prepare("SELECT * FROM channel_health_reports WHERE id = ?").get(id);
+  if (!row) return null;
+  return {
+    id: row.id,
+    periodDays: row.period_days,
+    periodStart: row.period_start,
+    periodEnd: row.period_end,
+    isLiveStudioData: !!row.is_live_studio_data,
+    label: row.label,
+    createdAt: row.created_at,
+    narrative: row.narrative,
+    report: JSON.parse(row.report_json),
+  };
+}
+
+function deleteHealthReport(id) {
+  return db.prepare("DELETE FROM channel_health_reports WHERE id = ?").run(id);
+}
+
+// Run a report, generate the narrative, and archive both.
+async function runAndSaveHealthReport(periodDays = 28, options = {}) {
+  const report = await getChannelHealthReport(periodDays);
+  let narrative = null;
+  let narrativeError = null;
+
+  if (options.withNarrative !== false) {
+    const result = await generateHealthNarrative(report);
+    narrative = result.narrative;
+    narrativeError = result.error;
+  }
+
+  const id = saveHealthReport(report, narrative, options.label);
+  return { id, report, narrative, narrativeError };
+}
+
 
 module.exports = {
   getCategories,
@@ -598,7 +1180,17 @@ module.exports = {
   batchOverrideVideoCategories,
   getVideoCatalog,
   bulkReclassifyLibrary,
+  rollbackClassificationRun,
+  listClassificationRuns,
+  getReviewQueue,
   captureSnapshot,
   getChannelHealthReport,
+  generateHealthNarrative,
+  runAndSaveHealthReport,
+  listHealthReports,
+  getHealthReportById,
+  deleteHealthReport,
   parseDurationSec,
+  isLongForm,
+  SHORTS_MAX_SEC,
 };

@@ -1006,8 +1006,8 @@ app.delete("/api/terms", auth.requireAuth(), (req, res, next) => {
 // 1. Get Title, Thumbnail, Description & Chapter Prompt Instructions
 app.get("/api/title-prompt-settings", auth.requireAuth(), (req, res, next) => {
   try {
-    const row = articleDb.prepare("SELECT instructions, thumbnail_instructions, description_instructions, chapter_instructions, updated_at FROM title_prompt_settings WHERE id = 1").get();
-    res.json(row || { instructions: "", thumbnail_instructions: "", description_instructions: "", chapter_instructions: "", updated_at: null });
+    const row = articleDb.prepare("SELECT instructions, thumbnail_instructions, description_instructions, chapter_instructions, competitor_instructions, channel_health_instructions, updated_at FROM title_prompt_settings WHERE id = 1").get();
+    res.json(row || { instructions: "", thumbnail_instructions: "", description_instructions: "", chapter_instructions: "", competitor_instructions: "", channel_health_instructions: "", updated_at: null });
   } catch (error) {
     next(error);
   }
@@ -1016,25 +1016,29 @@ app.get("/api/title-prompt-settings", auth.requireAuth(), (req, res, next) => {
 // 2. Update Title, Thumbnail, Description & Chapter Prompt Instructions
 app.put("/api/title-prompt-settings", auth.requireAuth(), (req, res, next) => {
   try {
-    const { instructions, thumbnail_instructions, description_instructions, chapter_instructions } = req.body || {};
-    const current = articleDb.prepare("SELECT instructions, thumbnail_instructions, description_instructions, chapter_instructions FROM title_prompt_settings WHERE id = 1").get() || {};
+    const { instructions, thumbnail_instructions, description_instructions, chapter_instructions, competitor_instructions, channel_health_instructions } = req.body || {};
+    const current = articleDb.prepare("SELECT instructions, thumbnail_instructions, description_instructions, chapter_instructions, competitor_instructions, channel_health_instructions FROM title_prompt_settings WHERE id = 1").get() || {};
     const newInstructions = typeof instructions === "string" ? instructions : (current.instructions || "");
     const newThumbnail = typeof thumbnail_instructions === "string" ? thumbnail_instructions : (current.thumbnail_instructions || "");
     const newDescription = typeof description_instructions === "string" ? description_instructions : (current.description_instructions || "");
     const newChapter = typeof chapter_instructions === "string" ? chapter_instructions : (current.chapter_instructions || "");
+    const newCompetitor = typeof competitor_instructions === "string" ? competitor_instructions : (current.competitor_instructions || "");
+    const newHealth = typeof channel_health_instructions === "string" ? channel_health_instructions : (current.channel_health_instructions || "");
 
     articleDb.prepare(`
-      INSERT INTO title_prompt_settings (id, instructions, thumbnail_instructions, description_instructions, chapter_instructions, updated_at)
-      VALUES (1, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      INSERT INTO title_prompt_settings (id, instructions, thumbnail_instructions, description_instructions, chapter_instructions, competitor_instructions, channel_health_instructions, updated_at)
+      VALUES (1, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
       ON CONFLICT(id) DO UPDATE SET
         instructions = excluded.instructions,
         thumbnail_instructions = excluded.thumbnail_instructions,
         description_instructions = excluded.description_instructions,
         chapter_instructions = excluded.chapter_instructions,
+        competitor_instructions = excluded.competitor_instructions,
+        channel_health_instructions = excluded.channel_health_instructions,
         updated_at = CURRENT_TIMESTAMP
-    `).run(newInstructions, newThumbnail, newDescription, newChapter);
+    `).run(newInstructions, newThumbnail, newDescription, newChapter, newCompetitor, newHealth);
 
-    const updated = articleDb.prepare("SELECT instructions, thumbnail_instructions, description_instructions, chapter_instructions, updated_at FROM title_prompt_settings WHERE id = 1").get();
+    const updated = articleDb.prepare("SELECT instructions, thumbnail_instructions, description_instructions, chapter_instructions, competitor_instructions, channel_health_instructions, updated_at FROM title_prompt_settings WHERE id = 1").get();
     res.json({ success: true, ok: true, ...updated });
   } catch (error) {
     next(error);
@@ -2305,6 +2309,46 @@ app.get("/api/channel-health/report", auth.requireAuth(), async (req, res, next)
   }
 });
 
+app.post("/api/channel-health/narrative", auth.requireAuth(), aiLimiter, async (req, res, next) => {
+  try {
+    const periodDays = parseInt(req.body?.periodDays || "28", 10);
+    const result = await channelHealth.runAndSaveHealthReport(periodDays, {
+      withNarrative: true,
+      label: req.body?.label || null,
+    });
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/channel-health/reports", auth.requireAuth(), (req, res, next) => {
+  try {
+    res.json(channelHealth.listHealthReports(parseInt(req.query.limit || "50", 10)));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/channel-health/reports/:id", auth.requireAuth(), (req, res, next) => {
+  try {
+    const report = channelHealth.getHealthReportById(parseInt(req.params.id, 10));
+    if (!report) return res.status(404).json({ error: "Report not found." });
+    res.json(report);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/channel-health/reports/:id", auth.requireAuth(), (req, res, next) => {
+  try {
+    channelHealth.deleteHealthReport(parseInt(req.params.id, 10));
+    res.json({ success: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/channel-health/snapshot", auth.requireAuth(), async (req, res, next) => {
   try {
     const periodDays = parseInt(req.body?.periodDays || "28", 10);
@@ -2367,8 +2411,35 @@ app.delete("/api/channel-health/categories/:id", auth.requireAuth(), (req, res, 
 
 app.post("/api/channel-health/reclassify", auth.requireAuth(), async (req, res, next) => {
   try {
-    const result = await channelHealth.bulkReclassifyLibrary();
+    const result = await channelHealth.bulkReclassifyLibrary({
+      dryRun: req.body?.dryRun === true,
+      onlyUnclassified: req.body?.onlyUnclassified === true,
+    });
     res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/channel-health/classification-runs", auth.requireAuth(), (req, res, next) => {
+  try {
+    res.json(channelHealth.listClassificationRuns(parseInt(req.query.limit || "20", 10)));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/channel-health/classification-runs/:id/rollback", auth.requireAuth(), (req, res, next) => {
+  try {
+    res.json(channelHealth.rollbackClassificationRun(parseInt(req.params.id, 10)));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/channel-health/review-queue", auth.requireAuth(), (req, res, next) => {
+  try {
+    res.json(channelHealth.getReviewQueue(parseInt(req.query.limit || "200", 10)));
   } catch (error) {
     next(error);
   }
@@ -2484,12 +2555,25 @@ app.post("/api/comparison/generate", auth.requireAuth(), aiLimiter, async (req, 
     }
     const result = await competitorComparison.generateComparisonReport(
       channelUrl.trim(),
-      ourCtr || 5.0,
-      ourAvd || 48.0
+      ourCtr || null,
+      ourAvd || null,
+      req.body?.label || null
     );
     res.json({ success: true, ...result });
   } catch (error) {
     console.error("Comparison report generation failed:", error);
+    next(error);
+  }
+});
+
+// 3b. All runs for one competitor (append-only history)
+app.get("/api/comparison/reports/:id/history", auth.requireAuth(), (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const report = competitorComparison.getReportById(id);
+    if (!report) return res.status(404).json({ error: "Report not found" });
+    res.json(competitorComparison.listReportHistory(report.competitorChannelId));
+  } catch (error) {
     next(error);
   }
 });
@@ -2505,8 +2589,9 @@ app.post("/api/comparison/reports/:id/refresh", auth.requireAuth(), async (req, 
     const { ourCtr, ourAvd } = req.body || {};
     const result = await competitorComparison.generateComparisonReport(
       report.competitorChannelId,
-      ourCtr || report.analysis?.benchmarks?.ourCtr || 5.0,
-      ourAvd || report.analysis?.benchmarks?.ourAvd || 48.0
+      ourCtr || report.analysis?.benchmarks?.ourCtr || null,
+      ourAvd || report.analysis?.benchmarks?.ourAvd || null,
+      req.body?.label || null
     );
     res.json({ success: true, ...result });
   } catch (error) {

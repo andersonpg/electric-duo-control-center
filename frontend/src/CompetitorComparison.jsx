@@ -444,7 +444,19 @@ export default function CompetitorComparison({ currentUser }) {
           };
         });
       } else {
-        showToast("Summary regeneration error: " + (data.error || "Failed"), "error");
+        showToast("Summary regeneration failed: " + (data.executiveSummaryError || data.error || "unknown error"), "error");
+        setActiveReport((prev) =>
+          prev
+            ? {
+                ...prev,
+                analysis: {
+                  ...prev.analysis,
+                  executiveSummary: null,
+                  executiveSummaryError: data.executiveSummaryError || data.error || null,
+                },
+              }
+            : prev
+        );
       }
     } catch (err) {
       showToast("Regeneration error: " + err.message, "error");
@@ -768,9 +780,15 @@ export default function CompetitorComparison({ currentUser }) {
                 ) : analysis.executiveSummary ? (
                   <MarkdownExecutiveSummary content={analysis.executiveSummary} />
                 ) : (
-                  <div className="text-center py-12 text-slate-400 text-xs flex flex-col items-center gap-3">
-                    <div className="w-8 h-8 rounded-full border-2 border-cyan-400 border-t-transparent animate-spin" />
-                    <span>Generating YouTube growth consultant debrief…</span>
+                  <div className="rounded-2xl border border-amber-500/30 bg-amber-950/20 p-5 flex items-start gap-3">
+                    <Info className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                    <div>
+                      <div className="text-xs font-bold text-amber-200 mb-1">Narrative not available</div>
+                      <p className="text-xs text-amber-200/80 leading-relaxed">
+                        {analysis.executiveSummaryError ||
+                          "The narrative could not be generated. The structured findings in the other tabs are unaffected."}
+                      </p>
+                    </div>
                   </div>
                 )}
               </div>

@@ -6,49 +6,159 @@ const db = require("./db").articleDb;
 const { getYoutubeClient, getYoutubeChannelId } = require("./youtube");
 const { getGeminiApiKey } = require("./gemini");
 
-// Helper to generate an expert YouTube Growth Consultant narrative debrief
-async function generateExecutiveSummary({ duoChannel, competitorChannel, benchmarks, outlierProfiles, underperformers, sideBySide }) {
-  const duoSubs = duoChannel.subscriberCount || duoChannel.subscribers || 24800;
-  const compSubs = competitorChannel.subscriberCount || competitorChannel.subscribers || 100000;
+// How many runs to keep per competitor before pruning the oldest.
+const MAX_REPORTS_PER_COMPETITOR = 12;
 
-  const apiKey = getGeminiApiKey();
-  if (!apiKey) {
-    return generateFallbackSummary({ duoChannel, competitorChannel, duoSubs, compSubs, outlierProfiles, underperformers, sideBySide });
+// ---------------------------------------------------------------------------
+// Executive narrative.
+//
+// Instructions are editable in Admin Settings (title_prompt_settings.
+// competitor_instructions). The structured data block stays assembled in code
+// so a prompt edit can never break the data injection.
+// ---------------------------------------------------------------------------
+function getCompetitorInstructions() {
+  try {
+    const row = db.prepare("SELECT competitor_instructions FROM title_prompt_settings WHERE id = 1").get();
+    if (row && row.competitor_instructions && row.competitor_instructions.trim()) {
+      return row.competitor_instructions.trim();
+    }
+  } catch (e) {
+    console.warn("Could not read competitor instructions:", e.message);
+  }
+  return require("./db").DEFAULT_COMPETITOR_PROMPT_INSTRUCTIONS || "";
+}
+
+function buildCompetitorDataBlock({ duoChannel, competitorChannel, outlierProfiles, underperformers, sideBySide, previousReport }) {
+  const parts = [];
+
+  const duoSubs = duoChannel.subscriberCount ?? duoChannel.subscribers ?? null;
+  const compSubs = competitorChannel.subscriberCount ?? competitorChannel.subscribers ?? null;
+
+  parts.push(`CHANNELS: "The Electric Duo" (${duoSubs != null ? duoSubs.toLocaleString() + " subscribers" : "subscriber count unavailable"}) vs "${competitorChannel.title}" (${compSubs != null ? compSubs.toLocaleString() + " subscribers" : "subscriber count unavailable"}).`);
+
+  if (sideBySide.subscribers.ratio != null) {
+    parts.push(`Scale ratio: the competitor is ~${sideBySide.subscribers.ratio}x our size.`);
+  } else {
+    parts.push(`Scale ratio: UNAVAILABLE — subscriber counts could not be resolved for both channels.`);
   }
 
-  const prompt = `You are a YouTube growth consultant who has just reviewed two EV channels — "The Electric Duo" (Patrick & Liv, ~${duoSubs.toLocaleString()} subscribers) and "${competitorChannel.title}" (~${compSubs.toLocaleString()} subscribers).
+  parts.push("");
+  parts.push(`UPLOAD CADENCE: Duo ${sideBySide.cadence.duo.monthlyAvg} videos/month (avg length ${sideBySide.avgDuration.duo.formatted}) vs Competitor ${sideBySide.cadence.competitor.monthlyAvg} videos/month (avg length ${sideBySide.avgDuration.competitor.formatted}).`);
 
-You have the structured analysis below. Write your findings as if you're talking directly to the creator (Patrick & Liv): direct, opinionated, conversational, and grounded.
+  // Packaging patterns were previously computed and then never passed to the model.
+  if (sideBySide.titlePatterns) {
+    const tp = sideBySide.titlePatterns;
+    parts.push("");
+    parts.push("TITLE PACKAGING (top view quartile of each channel):");
+    parts.push(`- Duo: avg title length ${tp.duo.avgLength} chars, ${tp.duo.hasNumberPct}% contain a number. Frequent words: ${tp.duo.topKeywords.map((k) => k.word).slice(0, 8).join(", ") || "none"}`);
+    parts.push(`- Competitor: avg title length ${tp.competitor.avgLength} chars, ${tp.competitor.hasNumberPct}% contain a number. Frequent words: ${tp.competitor.topKeywords.map((k) => k.word).slice(0, 8).join(", ") || "none"}`);
+  }
 
-STRUCTURE YOUR FINDINGS EXACTLY AS FOLLOWS:
+  if (sideBySide.engagement) {
+    const e = sideBySide.engagement;
+    parts.push("");
+    parts.push("ENGAGEMENT RATE (per 1,000 views — separates packaging wins from content wins):");
+    parts.push(`- Duo: ${e.duo.likesPer1k} likes, ${e.duo.commentsPer1k} comments`);
+    parts.push(`- Competitor: ${e.competitor.likesPer1k} likes, ${e.competitor.commentsPer1k} comments`);
+  }
 
-1. A 2-3 sentence bottom line — what's the single biggest thing this competitor does that's worth learning from, and why.
+  if (sideBySide.publishTiming) {
+    const pt = sideBySide.publishTiming;
+    parts.push("");
+    parts.push("PUBLISH TIMING (top view quartile):");
+    parts.push(`- Duo most common day: ${pt.duo.topDay || "n/a"}`);
+    parts.push(`- Competitor most common day: ${pt.competitor.topDay || "n/a"}`);
+  }
 
-2. "What to learn from them" — 2-4 specific, concrete takeaways, each explained in plain language (why it worked, not just that it worked). Reference specific videos by title when useful, but don't dump the underlying numbers into the sentence — the reasoning should read like insight, not a citation.
+  parts.push("");
+  parts.push("STATISTICAL OUTLIERS (>= 3.0x that channel's own baseline):");
+  if (!outlierProfiles || outlierProfiles.length === 0) {
+    parts.push("  None found in the period analysed.");
+  } else {
+    outlierProfiles.slice(0, 6).forEach((o, idx) => {
+      const bits = [`${o.multiplier}x baseline`];
+      if (o.ageDays != null) bits.push(`${o.ageDays} days old`);
+      if (o.stillAccumulating) bits.push("STILL ACCUMULATING — views not yet settled");
+      if (o.engagement) bits.push(`${o.engagement.likesPer1k} likes/1k views`);
+      parts.push(`  ${idx + 1}. "${o.title}" (${bits.join(", ")})`);
+      parts.push(`     Replicability: ${(o.replicabilityFlags || []).map((f) => f.label).join(", ") || "none flagged"}`);
+      parts.push(`     Packaging: ${o.packagingDiff?.keyDiffSummary || "no packaging difference identified"}`);
+    });
+  }
 
-3. "What NOT to copy" — 2-3 things that worked for them but likely won't transfer (scale advantages, a format that doesn't fit our channel, a one-off news event, resources we don't have). Be specific about WHY it won't transfer, not just that it's flagged.
+  parts.push("");
+  parts.push("UNDERPERFORMERS / ANTI-PATTERNS (< 0.6x that channel's own baseline):");
+  if (!underperformers || underperformers.length === 0) {
+    parts.push("  None found in the period analysed.");
+  } else {
+    underperformers.slice(0, 4).forEach((u, idx) => {
+      parts.push(`  ${idx + 1}. "${u.title}" (${u.multiplier}x baseline) — ${u.antiPatternDiagnosis}`);
+    });
+  }
 
-4. One honest caveat or blind spot in this analysis itself (e.g. "we can't see their retention data, so this is packaging-only evidence").
+  parts.push("");
+  parts.push("TOPIC DISTRIBUTION:");
+  sideBySide.topics.duo.forEach((t) => {
+    const compMatch = sideBySide.topics.competitor.find((c) => c.name === t.name) || { pct: 0 };
+    parts.push(`- ${t.name}: Duo ${t.pct}% vs Competitor ${compMatch.pct}%`);
+  });
 
-WRITING RULES:
-- Write like you're explaining it to a smart friend over coffee, not filing a dense corporate report.
-- Avoid restating percentages, view counts, or multipliers in every sentence — use them sparingly, only where the number itself is the point (e.g. "this got 4x their normal views" is fine once).
-- Do NOT invent numbers — reference the findings already calculated below.
-- Do NOT include any email/memo headers like "TO:", "FROM:", "DATE:", "SUBJECT:", or "+---+---+" ASCII tables.
+  // Change over time is more actionable than a single snapshot.
+  if (previousReport) {
+    parts.push("");
+    parts.push(`CHANGE SINCE THE PREVIOUS RUN (${previousReport.createdAt}):`);
+    const prev = previousReport.analysis;
+    if (prev?.sideBySide?.cadence) {
+      parts.push(`- Competitor cadence then: ${prev.sideBySide.cadence.competitor.monthlyAvg}/month, now: ${sideBySide.cadence.competitor.monthlyAvg}/month.`);
+    }
+    const prevTitles = new Set((prev?.outlierProfiles || []).map((o) => o.title));
+    const newOutliers = (outlierProfiles || []).filter((o) => !prevTitles.has(o.title));
+    if (newOutliers.length > 0) {
+      parts.push(`- New outliers since last run: ${newOutliers.map((o) => `"${o.title}"`).join(", ")}`);
+    } else {
+      parts.push("- No new outliers since the last run.");
+    }
+    if (prev?.sideBySide?.topics?.competitor) {
+      const shifts = sideBySide.topics.competitor
+        .map((t) => {
+          const before = (prev.sideBySide.topics.competitor.find((p) => p.name === t.name) || { pct: 0 }).pct;
+          return { name: t.name, delta: t.pct - before };
+        })
+        .filter((x) => Math.abs(x.delta) >= 5);
+      if (shifts.length > 0) {
+        parts.push(`- Competitor topic shifts (percentage points): ${shifts.map((x) => `${x.name} ${x.delta >= 0 ? "+" : ""}${x.delta}`).join(", ")}`);
+      }
+    }
+  } else {
+    parts.push("");
+    parts.push("CHANGE SINCE PREVIOUS RUN: this is the first report for this competitor, so no comparison is available.");
+  }
 
-STRUCTURED ANALYSIS DATA FOR CONTEXT:
-- Scale Ratio: Competitor is ~${sideBySide.subscribers.ratio}x our size.
-- Upload Cadence: Duo ${sideBySide.cadence.duo.monthlyAvg} videos/mo (avg length: ${sideBySide.avgDuration.duo.formatted}) vs Competitor ${sideBySide.cadence.competitor.monthlyAvg} videos/mo (avg length: ${sideBySide.avgDuration.competitor.formatted}).
-- Statistical Outliers (≥ 3.0x baseline):
-${(outlierProfiles || []).slice(0, 6).map((o, idx) => `  ${idx + 1}. "${o.title}" (Multiplier: ${o.multiplier}x, Replicability: ${o.replicabilityFlags.map(f => f.label).join(", ")}, Diff: ${o.packagingDiff?.keyDiffSummary || "High packaging clarity"})`).join("\n")}
-- Underperformers / Anti-patterns (< 0.6x baseline):
-${(underperformers || []).slice(0, 4).map((u, idx) => `  ${idx + 1}. "${u.title}" (Multiplier: ${u.multiplier}x, Diagnosis: ${u.antiPatternDiagnosis})`).join("\n")}
-- Topic Distribution:
-${sideBySide.topics.duo.map(t => {
-  const compMatch = sideBySide.topics.competitor.find(c => c.name === t.name) || { pct: 0 };
-  return `  • ${t.name}: Duo ${t.pct}% vs Competitor ${compMatch.pct}%`;
-}).join("\n")}
-`;
+  parts.push("");
+  parts.push("WHAT THIS ANALYSIS CANNOT SEE — never estimate or invent these for the competitor:");
+  parts.push("- Their retention, average percentage viewed, impressions, and click-through rate.");
+  parts.push("- Their traffic sources and subscriber conversion.");
+  parts.push("- Anything about videos outside the period analysed.");
+
+  return parts.join("\n");
+}
+
+async function generateExecutiveSummary({ duoChannel, competitorChannel, benchmarks, outlierProfiles, underperformers, sideBySide, previousReport }) {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    return {
+      summary: null,
+      error: "Gemini API key is not configured, so the narrative could not be generated.",
+    };
+  }
+
+  const prompt = `${getCompetitorInstructions()}
+
+ABSOLUTE RULE ON DATA:
+Every number and video title you cite must appear in the block below. Never estimate, extrapolate, or invent a figure. Where the data says a value is unavailable, say so rather than guessing.
+
+STRUCTURED ANALYSIS DATA:
+${buildCompetitorDataBlock({ duoChannel, competitorChannel, outlierProfiles, underperformers, sideBySide, previousReport })}`;
 
   const candidateModels = [
     "gemini-3.7-flash",
@@ -57,15 +167,12 @@ ${sideBySide.topics.duo.map(t => {
     "gemini-3.1-flash-lite",
   ];
 
+  let lastError = null;
   try {
     const ai = new GoogleGenAI({ apiKey });
     for (const mod of candidateModels) {
       try {
-        const response = await ai.models.generateContent({
-          model: mod,
-          contents: prompt,
-        });
-
+        const response = await ai.models.generateContent({ model: mod, contents: prompt });
         if (response && response.text) {
           let text = response.text.trim();
           text = text.replace(/^#\s*EXECUTIVE BRIEFING[^\n]*\n+/i, "");
@@ -74,38 +181,26 @@ ${sideBySide.topics.duo.map(t => {
           text = text.replace(/^\*\*DATE:\*\*[^\n]*\n+/im, "");
           text = text.replace(/^\*\*SUBJECT:\*\*[^\n]*\n+/im, "");
           text = text.replace(/^---\s*\n+/m, "");
-          return text.trim();
+          return { summary: text.trim(), error: null, model: mod };
         }
       } catch (modErr) {
+        lastError = modErr;
         console.warn(`Model ${mod} attempt failed:`, modErr.message);
       }
     }
   } catch (err) {
-    console.warn("Narrative summary failed, falling back to heuristic summary:", err.message);
+    lastError = err;
+    console.warn("Narrative summary failed:", err.message);
   }
 
-  return generateFallbackSummary({ duoChannel, competitorChannel, duoSubs, compSubs, outlierProfiles, underperformers, sideBySide });
+  // No heuristic fallback. The previous version asserted strategic opinions about
+  // a channel it had not examined; an honest failure is more useful.
+  return {
+    summary: null,
+    error: `The narrative could not be generated${lastError ? `: ${lastError.message}` : "."}. The structured findings below are unaffected.`,
+  };
 }
 
-function generateFallbackSummary({ duoChannel, competitorChannel, duoSubs, compSubs, outlierProfiles, underperformers, sideBySide }) {
-  const topOutlier = outlierProfiles[0];
-  const topUnderperformer = underperformers[0];
-
-  return `## Bottom Line
-The single biggest thing ${competitorChannel.title} does that's worth learning from is their relentless clarity around vehicle specifications and immediate real-world pricing. They don't make viewers guess what a video is about—the packaging hooks viewers on the exact dollar figure or problem before they even click.
-
-## What to Learn From Them
-${topOutlier ? `- **Lead with the exact specification or price hurdle**: Their biggest spike, "${topOutlier.title}", worked because it tapped into immediate consumer curiosity with hard facts rather than general impressions.
-- **Speed to market on major EV unveilings**: When a new model or charging standard is announced, publishing a focused breakdown within the first 24 hours captures the search wave while browse velocity is peaking.
-- **Problem-first title phrasing**: Structuring titles around a clear question or comparison consistently beats generic "review" titles.` : `- Focus on concrete specifications and rapid reaction to OEM announcements.`}
-
-## What NOT to Copy
-${topUnderperformer ? `- **Unfocused factory walkarounds or technical deep-dives**: Videos like "${topUnderperformer.title}" flopped even with their larger subscriber base because casual viewers tune out without a clear narrative hook.
-- **Casual 45+ minute discussion vlogs**: Their audience scale allows them to get away with loose, unedited conversations that would stall algorithmic momentum on a growing channel.` : `- Avoid overly long or ambiguous titles without clear search terms.`}
-
-## Blind Spot in This Analysis
-We can only measure external packaging and public view velocity—we don't have access to their YouTube Studio retention curves or average percentage viewed. A video may have driven high clicks on novelty alone while shedding viewers in the first two minutes.`;
-}
 
 // Regenerate just the narrative summary for an existing report
 async function regenerateExecutiveSummary(reportId) {
@@ -113,16 +208,20 @@ async function regenerateExecutiveSummary(reportId) {
   if (!row) throw new Error("Report not found");
 
   let analysis = JSON.parse(row.analysis_json);
-  const newSummary = await generateExecutiveSummary({
+  const previousReport = getPreviousReport(row.competitor_channel_id, reportId);
+
+  const result = await generateExecutiveSummary({
     duoChannel: analysis.duoChannel,
     competitorChannel: analysis.competitorChannel,
     benchmarks: analysis.benchmarks,
     outlierProfiles: analysis.outlierProfiles,
     underperformers: analysis.underperformers,
     sideBySide: analysis.sideBySide,
+    previousReport,
   });
 
-  analysis.executiveSummary = newSummary;
+  analysis.executiveSummary = result.summary;
+  analysis.executiveSummaryError = result.error;
 
   db.prepare("UPDATE competitor_reports SET analysis_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(
     JSON.stringify(analysis),
@@ -131,13 +230,29 @@ async function regenerateExecutiveSummary(reportId) {
 
   return {
     reportId,
-    executiveSummary: newSummary,
+    executiveSummary: result.summary,
+    executiveSummaryError: result.error,
   };
+}
+
+// Most recent earlier report for the same competitor, used for "what changed".
+function getPreviousReport(competitorChannelId, excludeReportId = null) {
+  const row = db.prepare(`
+    SELECT id, analysis_json, created_at FROM competitor_reports
+    WHERE competitor_channel_id = ? ${excludeReportId ? "AND id != ?" : ""}
+    ORDER BY created_at DESC LIMIT 1
+  `).get(...(excludeReportId ? [competitorChannelId, excludeReportId] : [competitorChannelId]));
+  if (!row) return null;
+  try {
+    return { id: row.id, createdAt: row.created_at, analysis: JSON.parse(row.analysis_json) };
+  } catch (e) {
+    return null;
+  }
 }
 
 // Convert ISO-8601 duration (PT18M6S) or standard format to seconds
 function parseDurationToSeconds(durationStr) {
-  if (!durationStr || typeof durationStr !== "string") return 900;
+  if (!durationStr || typeof durationStr !== "string") return null;
   const match = durationStr.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
   if (match) {
     const hours = parseInt(match[1] || "0", 10);
@@ -146,15 +261,15 @@ function parseDurationToSeconds(durationStr) {
     return hours * 3600 + minutes * 60 + seconds;
   }
   const parts = durationStr.split(":").map((p) => parseInt(p, 10));
-  if (parts.some(isNaN)) return 900;
+  if (parts.some(isNaN)) return null;
   if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
   if (parts.length === 2) return parts[0] * 60 + parts[1];
-  return 900;
+  return null;
 }
 
 // Format seconds into MM:SS or HH:MM:SS
 function formatDuration(sec) {
-  if (!sec || isNaN(sec)) return "00:00";
+  if (sec == null || isNaN(sec)) return "Unknown";
   const h = Math.floor(sec / 3600);
   const m = Math.floor((sec % 3600) / 60);
   const s = Math.floor(sec % 60);
@@ -414,10 +529,11 @@ async function fetchChannelUploads(channelInfo, months = 12) {
           const snip = v.snippet || {};
           const stats = v.statistics || {};
           const content = v.contentDetails || {};
-          const durationIso = content.duration || "PT15M00S";
+          const durationIso = content.duration || null;
           const durationSec = parseDurationToSeconds(durationIso);
 
-          if (durationSec >= 240) {
+          // Unknown duration is excluded rather than assumed to be long-form.
+          if (durationSec != null && durationSec > 180) {
             videos.push({
               youtubeId: v.id,
               channelId: channelInfo.channelId,
@@ -507,11 +623,13 @@ async function fetchChannelUploads(channelInfo, months = 12) {
               channelId: channelInfo.channelId,
               title: title,
               publishedAt: pubDate.toISOString(),
-              durationSec: 900,
-              durationIso: "PT15M00S",
+              // The public scrape exposes neither duration nor engagement counts.
+              // They stay null instead of being invented from a view-count ratio.
+              durationSec: null,
+              durationIso: null,
               viewCount: viewCount,
-              likeCount: Math.round(viewCount * 0.04),
-              commentCount: Math.round(viewCount * 0.008),
+              likeCount: null,
+              commentCount: null,
               thumbnailUrl: `https://img.youtube.com/vi/${vId}/hqdefault.jpg`,
               tags: [],
               description: title,
@@ -558,11 +676,31 @@ function detectOutliers(videos) {
     const multiplier = parseFloat((video.viewCount / baseline).toFixed(1));
     const isOutlier = multiplier >= 3.0;
 
+    // A three-week-old video is being compared with an eleven-month-old one on
+    // total views. Flag anything still accumulating so it is not read as settled.
+    const publishedMs = new Date(video.publishedAt).getTime();
+    const ageDays = Number.isNaN(publishedMs)
+      ? null
+      : Math.max(0, Math.round((Date.now() - publishedMs) / 86400000));
+    const stillAccumulating = ageDays != null && ageDays < 30;
+    const viewsPerDay = ageDays != null && ageDays > 0
+      ? Math.round(video.viewCount / ageDays)
+      : null;
+
     return {
       ...video,
       baselineViews: Math.round(baseline),
       multiplier: multiplier,
       isOutlier: isOutlier,
+      ageDays,
+      stillAccumulating,
+      viewsPerDay,
+      engagement: video.viewCount > 0 && video.likeCount != null && video.commentCount != null
+        ? {
+            likesPer1k: Number(((video.likeCount / video.viewCount) * 1000).toFixed(1)),
+            commentsPer1k: Number(((video.commentCount / video.viewCount) * 1000).toFixed(1)),
+          }
+        : null,
     };
   });
 }
@@ -675,11 +813,12 @@ function evaluateReplicability(outlier, allCompetitorVideos, competitorSubs, duo
   }
 
   // 3. Format / Duration deviation
-  const avgDuration = allCompetitorVideos.length > 0
-    ? allCompetitorVideos.reduce((acc, v) => acc + v.durationSec, 0) / allCompetitorVideos.length
-    : 900;
+  const withDuration = allCompetitorVideos.filter((v) => v.durationSec != null);
+  const avgDuration = withDuration.length > 0
+    ? withDuration.reduce((acc, v) => acc + v.durationSec, 0) / withDuration.length
+    : null;
 
-  if (outlier.durationSec > avgDuration * 1.6) {
+  if (avgDuration != null && outlier.durationSec != null && outlier.durationSec > avgDuration * 1.6) {
     flags.push({
       type: "format_long",
       label: "Deep Dive Format Deviation",
@@ -687,7 +826,7 @@ function evaluateReplicability(outlier, allCompetitorVideos, competitorSubs, duo
       badge: "⏱️ Extended Deep Dive",
       detail: `Video is significantly longer (${formatDuration(outlier.durationSec)} vs ${formatDuration(Math.round(avgDuration))} avg). Long-form engagement drove search & browse authority.`,
     });
-  } else if (outlier.durationSec < avgDuration * 0.6) {
+  } else if (avgDuration != null && outlier.durationSec != null && outlier.durationSec < avgDuration * 0.6) {
     flags.push({
       type: "format_short",
       label: "Punchy Format Deviation",
@@ -739,7 +878,7 @@ function detectUnderperformers(videos, competitorSubs, duoSubs) {
     if (!/\d+/.test(v.title) && !/(?:ev|truck|charging|range|review|vs|battery)/.test(title)) {
       reasons.push("Vague title lacking recognizable EV models, numbers, or specific search keywords");
     }
-    if (v.durationSec > 2700) { // 45+ mins
+    if (v.durationSec != null && v.durationSec > 2700) { // 45+ mins
       reasons.push("Extreme video duration (>45 min) without strong milestone hook");
     }
     if (/(?:podcast|q&a|livestream|talking|update|random|thoughts)/.test(title)) {
@@ -788,9 +927,11 @@ function computeSideBySideSummary(duoVideos, compVideos, duoSubs, compSubs) {
   // 2. Average Duration
   const calcAvgDuration = (vList) => {
     if (vList.length === 0) return { avgSec: 0, formatted: "0:00" };
-    const total = vList.reduce((acc, v) => acc + (v.durationSec || 0), 0);
-    const avg = Math.round(total / vList.length);
-    return { avgSec: avg, formatted: formatDuration(avg) };
+    const measured = vList.filter((v) => v.durationSec != null);
+    if (measured.length === 0) return { avgSec: null, formatted: "Unknown", sampleSize: 0 };
+    const total = measured.reduce((acc, v) => acc + v.durationSec, 0);
+    const avg = Math.round(total / measured.length);
+    return { avgSec: avg, formatted: formatDuration(avg), sampleSize: measured.length };
   };
 
   const duoAvgDuration = calcAvgDuration(duoVideos);
@@ -871,11 +1012,61 @@ function computeSideBySideSummary(duoVideos, compVideos, duoSubs, compSubs) {
   const duoPatterns = extractTitlePatterns(duoVideos);
   const compPatterns = extractTitlePatterns(compVideos);
 
+  // Engagement rate separates a packaging win (high views, low engagement) from a
+  // content win. Both counts are already stored per video.
+  const engagementRate = (vList) => {
+    // Only videos with measured counts contribute. The public scraper cannot see
+    // likes or comments, so those rows are excluded rather than counted as zero.
+    const measured = vList.filter((v) => v.likeCount != null && v.commentCount != null && v.viewCount > 0);
+    if (measured.length === 0) return { likesPer1k: null, commentsPer1k: null, sampleSize: 0 };
+    const totalViews = measured.reduce((s, v) => s + v.viewCount, 0);
+    if (totalViews <= 0) return { likesPer1k: null, commentsPer1k: null, sampleSize: 0 };
+    const totalLikes = measured.reduce((s, v) => s + v.likeCount, 0);
+    const totalComments = measured.reduce((s, v) => s + v.commentCount, 0);
+    return {
+      likesPer1k: Number(((totalLikes / totalViews) * 1000).toFixed(1)),
+      commentsPer1k: Number(((totalComments / totalViews) * 1000).toFixed(1)),
+      sampleSize: measured.length,
+    };
+  };
+
+  const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const publishTiming = (vList) => {
+    const sorted = [...vList].sort((a, b) => b.viewCount - a.viewCount);
+    const topQuartile = sorted.slice(0, Math.max(1, Math.floor(sorted.length * 0.25)));
+    const dayCounts = {};
+    topQuartile.forEach((v) => {
+      const d = new Date(v.publishedAt);
+      if (Number.isNaN(d.getTime())) return;
+      const name = DAY_NAMES[d.getUTCDay()];
+      dayCounts[name] = (dayCounts[name] || 0) + 1;
+    });
+    const entries = Object.entries(dayCounts).sort((a, b) => b[1] - a[1]);
+    return {
+      topDay: entries.length > 0 ? entries[0][0] : null,
+      distribution: entries.map(([day, count]) => ({ day, count })),
+    };
+  };
+
+  // Subscriber counts may be unresolvable. A ratio built on invented defaults is
+  // worse than no ratio, so it stays null.
+  const ratio = duoSubs > 0 && compSubs > 0
+    ? parseFloat((compSubs / duoSubs).toFixed(1))
+    : null;
+
   return {
     subscribers: {
-      duo: duoSubs,
-      competitor: compSubs,
-      ratio: parseFloat((compSubs / Math.max(duoSubs, 1000)).toFixed(1)),
+      duo: duoSubs || null,
+      competitor: compSubs || null,
+      ratio,
+    },
+    engagement: {
+      duo: engagementRate(duoVideos),
+      competitor: engagementRate(compVideos),
+    },
+    publishTiming: {
+      duo: publishTiming(duoVideos),
+      competitor: publishTiming(compVideos),
     },
     cadence: {
       duo: duoCadence,
@@ -897,7 +1088,7 @@ function computeSideBySideSummary(duoVideos, compVideos, duoSubs, compSubs) {
 }
 
 // Master Report Generator: Compares The Electric Duo with any Competitor Channel
-async function generateComparisonReport(competitorInput, ctrBenchmark = 5.0, avdBenchmark = 48.0) {
+async function generateComparisonReport(competitorInput, ctrBenchmark = null, avdBenchmark = null, reportLabel = null) {
   // 1. Resolve Competitor Channel
   const competitorInfo = await resolveChannel(competitorInput);
 
@@ -978,22 +1169,28 @@ async function generateComparisonReport(competitorInput, ctrBenchmark = 5.0, avd
     competitorInfo.subscriberCount
   );
 
-  // 8. Generate Expert YouTube Consultant Executive Narrative (Gemini 3.7 Flash)
-  let executiveSummary = "";
+  // 8. Executive narrative, with the previous run for this competitor as context
+  const previousReport = getPreviousReport(competitorInfo.channelId);
+  let executiveSummary = null;
+  let executiveSummaryError = null;
   try {
-    executiveSummary = await generateExecutiveSummary({
+    const result = await generateExecutiveSummary({
       duoChannel: duoInfo,
       competitorChannel: competitorInfo,
       benchmarks: {
-        ourCtr: parseFloat(ctrBenchmark) || 5.0,
-        ourAvd: parseFloat(avdBenchmark) || 48.0,
+        ourCtr: parseFloat(ctrBenchmark) || null,
+        ourAvd: parseFloat(avdBenchmark) || null,
       },
       outlierProfiles,
       underperformers,
       sideBySide,
+      previousReport,
     });
+    executiveSummary = result.summary;
+    executiveSummaryError = result.error;
   } catch (summaryErr) {
     console.warn("Executive summary generation warning:", summaryErr.message);
+    executiveSummaryError = summaryErr.message;
   }
 
   // 9. Assemble Master Analysis Payload
@@ -1021,69 +1218,53 @@ async function generateComparisonReport(competitorInput, ctrBenchmark = 5.0, avd
       ourAvd: parseFloat(avdBenchmark) || 48.0,
     },
     executiveSummary,
+    executiveSummaryError,
+    previousReportId: previousReport ? previousReport.id : null,
     outlierProfiles,
     underperformers,
     sideBySide,
     guardrailsNote: "All outliers and performance multipliers are calculated relative to each channel's independent baseline. Never chase raw cross-channel view counts.",
   };
 
-  // 9. Persist or Update in SQLite
-  const existingReport = db
-    .prepare("SELECT id FROM competitor_reports WHERE competitor_channel_id = ?")
-    .get(competitorInfo.channelId);
+  // 9. Persist. Reports are append-only: re-running against the same competitor
+  // adds a new run rather than overwriting (and permanently destroying) the last
+  // one, so "what changed since last time" is answerable.
+  const insertRes = db.prepare(`
+    INSERT INTO competitor_reports (
+      competitor_channel_id, competitor_title, competitor_handle, competitor_thumbnail,
+      competitor_subs, competitor_uploads_count, duo_subs, duo_uploads_count,
+      our_ctr_benchmark, our_avd_benchmark, analysis_json, report_label
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    competitorInfo.channelId,
+    competitorInfo.title,
+    competitorInfo.handle,
+    competitorInfo.thumbnailUrl,
+    competitorInfo.subscriberCount,
+    compVideosWithOutliers.length,
+    duoInfo.subscriberCount,
+    duoVideosWithOutliers.length,
+    parseFloat(ctrBenchmark) || null,
+    parseFloat(avdBenchmark) || null,
+    JSON.stringify(analysis),
+    reportLabel || null
+  );
+  const reportId = insertRes.lastInsertRowid;
 
-  let reportId;
-  if (existingReport) {
-    db.prepare(`
-      UPDATE competitor_reports
-      SET competitor_title = ?,
-          competitor_handle = ?,
-          competitor_thumbnail = ?,
-          competitor_subs = ?,
-          competitor_uploads_count = ?,
-          duo_subs = ?,
-          duo_uploads_count = ?,
-          our_ctr_benchmark = ?,
-          our_avd_benchmark = ?,
-          analysis_json = ?,
-          updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `).run(
-      competitorInfo.title,
-      competitorInfo.handle,
-      competitorInfo.thumbnailUrl,
-      competitorInfo.subscriberCount,
-      compVideosWithOutliers.length,
-      duoInfo.subscriberCount,
-      duoVideosWithOutliers.length,
-      parseFloat(ctrBenchmark) || 5.0,
-      parseFloat(avdBenchmark) || 48.0,
-      JSON.stringify(analysis),
-      existingReport.id
-    );
-    reportId = existingReport.id;
-    db.prepare("DELETE FROM competitor_videos WHERE report_id = ?").run(reportId);
-  } else {
-    const insertRes = db.prepare(`
-      INSERT INTO competitor_reports (
-        competitor_channel_id, competitor_title, competitor_handle, competitor_thumbnail,
-        competitor_subs, competitor_uploads_count, duo_subs, duo_uploads_count,
-        our_ctr_benchmark, our_avd_benchmark, analysis_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      competitorInfo.channelId,
-      competitorInfo.title,
-      competitorInfo.handle,
-      competitorInfo.thumbnailUrl,
-      competitorInfo.subscriberCount,
-      compVideosWithOutliers.length,
-      duoInfo.subscriberCount,
-      duoVideosWithOutliers.length,
-      parseFloat(ctrBenchmark) || 5.0,
-      parseFloat(avdBenchmark) || 48.0,
-      JSON.stringify(analysis)
-    );
-    reportId = insertRes.lastInsertRowid;
+  // Retain the most recent runs per competitor so history does not grow forever.
+  try {
+    const stale = db.prepare(`
+      SELECT id FROM competitor_reports
+      WHERE competitor_channel_id = ?
+      ORDER BY created_at DESC
+      LIMIT -1 OFFSET ?
+    `).all(competitorInfo.channelId, MAX_REPORTS_PER_COMPETITOR);
+    if (stale.length > 0) {
+      const del = db.prepare("DELETE FROM competitor_reports WHERE id = ?");
+      stale.forEach((r) => del.run(r.id));
+    }
+  } catch (e) {
+    console.warn("Could not prune old competitor reports:", e.message);
   }
 
   // Batch insert competitor videos
@@ -1127,16 +1308,36 @@ async function generateComparisonReport(competitorInput, ctrBenchmark = 5.0, avd
 }
 
 // Get list of saved reports
+// Latest run per competitor, for the report list view.
 function listSavedReports() {
   return db
     .prepare(`
-      SELECT id, competitor_channel_id, competitor_title, competitor_handle,
-             competitor_thumbnail, competitor_subs, competitor_uploads_count,
-             duo_subs, duo_uploads_count, created_at, updated_at
-      FROM competitor_reports
-      ORDER BY updated_at DESC
+      SELECT r.id, r.competitor_channel_id, r.competitor_title, r.competitor_handle,
+             r.competitor_thumbnail, r.competitor_subs, r.competitor_uploads_count,
+             r.duo_subs, r.duo_uploads_count, r.report_label, r.created_at, r.updated_at,
+             (SELECT COUNT(*) FROM competitor_reports x WHERE x.competitor_channel_id = r.competitor_channel_id) AS run_count
+      FROM competitor_reports r
+      WHERE r.id = (
+        SELECT id FROM competitor_reports y
+        WHERE y.competitor_channel_id = r.competitor_channel_id
+        ORDER BY y.created_at DESC, y.id DESC LIMIT 1
+      )
+      ORDER BY r.created_at DESC
     `)
     .all();
+}
+
+// Every run for one competitor, newest first.
+function listReportHistory(competitorChannelId) {
+  return db
+    .prepare(`
+      SELECT id, competitor_channel_id, competitor_title, competitor_subs,
+             competitor_uploads_count, report_label, created_at
+      FROM competitor_reports
+      WHERE competitor_channel_id = ?
+      ORDER BY created_at DESC, id DESC
+    `)
+    .all(competitorChannelId);
 }
 
 // Get full report by ID
@@ -1225,6 +1426,8 @@ module.exports = {
   resolveChannel,
   generateComparisonReport,
   regenerateExecutiveSummary,
+  listReportHistory,
+  getPreviousReport,
   listSavedReports,
   getReportById,
   deleteReport,

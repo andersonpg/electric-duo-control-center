@@ -6,6 +6,7 @@ import {
   CheckCircle,
   CheckCircle2,
   AlertTriangle,
+  MinusCircle,
   XCircle,
   TrendingUp,
   Sparkles,
@@ -437,9 +438,13 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                         <span className="text-sm sm:text-base font-extrabold text-white">
                           {evaluation?.health_tier || (isHealthy ? "Strong Performer" : "Optimization Opportunity")}
                         </span>
-                        {metrics?.isLiveStudioData && (
+                        {metrics?.isLiveStudioData ? (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-[10px] font-bold text-emerald-400 uppercase tracking-wider">
-                            <CheckCircle className="w-3 h-3" /> Live Studio Data
+                            <CheckCircle className="w-3 h-3" /> Measured Analytics
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/30 text-[10px] font-bold text-amber-400 uppercase tracking-wider">
+                            <AlertTriangle className="w-3 h-3" /> Analytics Not Connected
                           </span>
                         )}
                         <span className="text-[10px] text-slate-500">
@@ -457,29 +462,35 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 shrink-0">
                     <StatusPill
                       label="Hook Gate (0:30)"
-                      status={evaluation?.scorecard?.hook_status}
-                      detail={evaluation?.hook_diagnosis?.hook_drop_30s || `-${metrics?.hookDropPercent}%`}
+                      status={metrics?.hookDropPercent == null ? "unavailable" : evaluation?.scorecard?.hook_status}
+                      detail={metrics?.hookDropPercent == null ? "No retention data" : `-${metrics.hookDropPercent}%`}
                     />
                     <StatusPill
                       label="Impressions CTR"
-                      status={metrics?.ctr >= 5.0 ? "pass" : "warn"}
-                      detail={`${metrics?.ctr}% (${metrics?.ctrDelta >= 0 ? "+" : ""}${metrics?.ctrDelta}%)`}
+                      status={metrics?.ctr == null ? "unavailable" : metrics.ctr >= (metrics.channelBaselineCtr ?? 5.0) ? "pass" : "warn"}
+                      detail={metrics?.ctr == null ? "Studio only" : `${metrics.ctr}%${metrics.ctrDelta != null ? ` (${metrics.ctrDelta >= 0 ? "+" : ""}${metrics.ctrDelta}%)` : ""}`}
                     />
                     <StatusPill
                       label="Retention %"
-                      status={metrics?.retentionRate >= metrics?.categoryBenchmark?.avgRetention ? "pass" : "warn"}
-                      detail={`${metrics?.retentionRate}% (Avg ${metrics?.categoryBenchmark?.avgRetention}%)`}
+                      status={
+                        metrics?.retentionRate == null
+                          ? "unavailable"
+                          : metrics?.categoryBenchmark?.avgRetention == null
+                          ? "pass"
+                          : metrics.retentionRate >= metrics.categoryBenchmark.avgRetention
+                          ? "pass"
+                          : "warn"
+                      }
+                      detail={
+                        metrics?.retentionRate == null
+                          ? "Not connected"
+                          : `${metrics.retentionRate}%${metrics?.categoryBenchmark?.avgRetention != null ? ` (Avg ${metrics.categoryBenchmark.avgRetention}%)` : ""}`
+                      }
                     />
                     <StatusPill
                       label="SEO Coverage"
                       status={evaluation?.scorecard?.seo_status || "pass"}
-                      detail={
-                        evaluation?.scorecard?.seo_score
-                          ? `${evaluation.scorecard.seo_score}% Optimized`
-                          : evaluation?.scorecard?.seo_status === "warn"
-                          ? "72% Needs Work"
-                          : "92% Optimized"
-                      }
+                      detail={evaluation?.scorecard?.seo_status === "warn" ? "Needs work" : "Optimized"}
                     />
                   </div>
                 </div>
@@ -519,41 +530,45 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
                   <MetricCard
                     label="Total Views"
-                    value={metrics.views.toLocaleString()}
+                    value={metrics.views != null ? metrics.views.toLocaleString() : "\u2014"}
+                    sub={metrics.viewsSource === "catalog_snapshot" ? "From catalog sync" : undefined}
                     icon={Eye}
-                    color="text-white"
+                    color={metrics.views != null ? "text-white" : "text-slate-600"}
                   />
                   <MetricCard
                     label="Impressions"
-                    value={metrics.impressions.toLocaleString()}
+                    value={metrics.impressions != null ? metrics.impressions.toLocaleString() : "\u2014"}
+                    sub="YouTube Studio only"
                     icon={Compass}
-                    color="text-cyan-400"
+                    color={metrics.impressions != null ? "text-cyan-400" : "text-slate-600"}
                   />
                   <MetricCard
-                    label="CTR (5.0% Base)"
-                    value={`${metrics.ctr}%`}
-                    sub={`${metrics.ctrDelta >= 0 ? "+" : ""}${metrics.ctrDelta}% vs base`}
+                    label="Impressions CTR"
+                    value={metrics.ctr != null ? `${metrics.ctr}%` : "\u2014"}
+                    sub="YouTube Studio only"
                     icon={TrendingUp}
-                    color={metrics.ctr >= 5.0 ? "text-emerald-400" : "text-amber-400"}
+                    color={metrics.ctr != null ? "text-emerald-400" : "text-slate-600"}
                   />
                   <MetricCard
                     label="Watch Time"
-                    value={`${metrics.totalWatchTimeHours} hrs`}
+                    value={metrics.totalWatchTimeHours != null ? `${metrics.totalWatchTimeHours} hrs` : "\u2014"}
+                    sub={metrics.totalWatchTimeHours == null ? "Not connected" : undefined}
                     icon={Clock}
-                    color="text-blue-400"
+                    color={metrics.totalWatchTimeHours != null ? "text-blue-400" : "text-slate-600"}
                   />
                   <MetricCard
                     label="Avg Duration"
-                    value={metrics.avdFormatted}
-                    sub={`${metrics.retentionRate}% rate`}
+                    value={metrics.avdFormatted || "\u2014"}
+                    sub={metrics.retentionRate != null ? `${metrics.retentionRate}% rate` : "Not connected"}
                     icon={Zap}
-                    color="text-indigo-400"
+                    color={metrics.avdFormatted ? "text-indigo-400" : "text-slate-600"}
                   />
                   <MetricCard
                     label="Net Subs"
-                    value={`+${metrics.netSubs}`}
+                    value={metrics.netSubs != null ? `${metrics.netSubs >= 0 ? "+" : ""}${metrics.netSubs}` : "\u2014"}
+                    sub={metrics.netSubs == null ? "Not connected" : undefined}
                     icon={Users}
-                    color="text-emerald-400"
+                    color={metrics.netSubs != null ? "text-emerald-400" : "text-slate-600"}
                   />
                 </div>
 
@@ -565,24 +580,49 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                       <Compass className="w-4 h-4" />
                       <span>Traffic Source Breakdown</span>
                     </h4>
-                    <div className="space-y-3">
-                      <ProgressBar label="Browse Features" pct={metrics.trafficShare.browse} color="bg-cyan-500" />
-                      <ProgressBar label="Suggested Videos" pct={metrics.trafficShare.suggested} color="bg-blue-500" />
-                      <ProgressBar label="YouTube Search" pct={metrics.trafficShare.search} color="bg-emerald-500" />
-                      <ProgressBar label="External & Other" pct={metrics.trafficShare.other} color="bg-slate-600" />
-                    </div>
+                    {metrics.trafficShare ? (
+                      <div className="space-y-3">
+                        <ProgressBar label="Browse Features" pct={metrics.trafficShare.browse} color="bg-cyan-500" />
+                        <ProgressBar label="Suggested Videos" pct={metrics.trafficShare.suggested} color="bg-blue-500" />
+                        <ProgressBar label="YouTube Search" pct={metrics.trafficShare.search} color="bg-emerald-500" />
+                        <ProgressBar label="External & Other" pct={metrics.trafficShare.other} color="bg-slate-600" />
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-500 leading-relaxed">
+                        Traffic source data is not available. Connect YouTube Analytics in Admin Settings to populate this.
+                      </p>
+                    )}
                   </div>
 
                   {/* Device & Audience Profile */}
                   <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-5">
                     <h4 className="text-xs font-bold uppercase tracking-wider text-cyan-400 mb-3 flex items-center gap-2">
                       <Users className="w-4 h-4" />
-                      <span>Audience & Device Profile</span>
+                      <span>Data Provenance</span>
                     </h4>
-                    <div className="space-y-3">
-                      {metrics.devices.map((d, i) => (
-                        <ProgressBar key={i} label={d.type} pct={d.share} color="bg-indigo-500" />
-                      ))}
+                    <div className="space-y-2">
+                      <p className="text-xs text-slate-400 leading-relaxed">
+                        {metrics.isLiveStudioData
+                          ? "Metrics below were measured via the YouTube Analytics API."
+                          : "YouTube Analytics is not connected, so most performance metrics are unavailable for this video."}
+                      </p>
+                      {Array.isArray(metrics.unavailableMetrics) && metrics.unavailableMetrics.length > 0 && (
+                        <div>
+                          <div className="text-[10px] uppercase font-bold tracking-wider text-slate-500 mb-1.5">
+                            Not available
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {metrics.unavailableMetrics.map((m, i) => (
+                              <span
+                                key={i}
+                                className="px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-[10px] text-slate-400"
+                              >
+                                {m}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -598,16 +638,29 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                     <div>
                       <h3 className="text-sm font-bold text-white">Audience Retention Curve</h3>
                       <p className="text-xs text-slate-400">
-                        Visualizing viewer retention from 0:00 through completion with drop-off annotations.
+                        {metrics.retentionCurve
+                          ? "Measured retention across the video, plotted as percentage of video elapsed."
+                          : "Retention data is not available for this video."}
                       </p>
                     </div>
-                    <div className="text-xs font-mono px-2.5 py-1 rounded bg-slate-900 border border-slate-700 text-cyan-400">
-                      30s Drop: -{metrics.hookDropPercent}%
-                    </div>
+                    {metrics.hookDropPercent != null && (
+                      <div className="text-xs font-mono px-2.5 py-1 rounded bg-slate-900 border border-slate-700 text-cyan-400">
+                        30s Drop: -{metrics.hookDropPercent}%
+                      </div>
+                    )}
                   </div>
 
                   {/* Visual Chart */}
-                  <RetentionChart curve={metrics.retentionCurve} />
+                  {metrics.retentionCurve ? (
+                    <RetentionChart curve={metrics.retentionCurve} />
+                  ) : (
+                    <div className="flex items-center justify-center h-40 rounded-xl border border-dashed border-slate-800 bg-slate-950/40">
+                      <p className="text-xs text-slate-500 text-center px-6">
+                        No measured retention curve. Connect YouTube Analytics in Admin Settings to see the real curve
+                        for this video.
+                      </p>
+                    </div>
+                  )}
                 </div>
 
                 {/* Hook & Pacing Diagnosis */}
@@ -753,9 +806,25 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
               <div className="flex flex-col gap-6">
                 <div className="bg-slate-950/80 border border-slate-800 rounded-2xl p-6">
                   <h3 className="text-sm font-bold text-white mb-2">Discovery 2x2 Performance Matrix</h3>
-                  <p className="text-xs text-slate-400 mb-6">
+                  <p className="text-xs text-slate-400 mb-4">
                     Diagnosing whether underperformance stems from Packaging (Thumbnail/Title CTR) vs Algorithm Distribution (Impressions).
                   </p>
+
+                  {(metrics?.impressions == null || metrics?.ctr == null) && (
+                    <div className="mb-6 rounded-xl border border-amber-500/30 bg-amber-950/30 p-4">
+                      <div className="flex items-start gap-2.5">
+                        <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                        <div>
+                          <div className="text-xs font-bold text-amber-300 mb-1">Quadrant cannot be determined</div>
+                          <p className="text-xs text-amber-200/80 leading-relaxed">
+                            This matrix requires impressions and impressions click-through rate. Neither is exposed by
+                            the YouTube Analytics API, so they can only be read from YouTube Studio. No quadrant is
+                            highlighted below.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     {/* Quadrant 1 */}
@@ -900,7 +969,7 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                     <div className="bg-slate-900/80 border border-slate-800 p-4 rounded-xl">
                       <div className="text-xs font-bold text-cyan-400 mb-2">Top Search Queries Driving Views</div>
                       <div className="flex flex-wrap gap-1.5">
-                        {(evaluation.search_seo_analysis?.top_captured_terms || metrics.searchTerms || []).map(
+                        {(evaluation.search_seo_analysis?.top_captured_terms || []).map(
                           (t, i) => (
                             <span
                               key={i}
@@ -1006,13 +1075,16 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
 }
 
 function StatusPill({ label, status, detail }) {
+  const isUnavailable = status === "unavailable";
   const isPass = status === "pass";
   const isWarn = status === "warn";
   return (
     <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-2.5 flex flex-col justify-between min-w-0">
       <div className="text-[10px] text-slate-400 font-medium truncate">{label}</div>
       <div className="flex items-center gap-1.5 mt-1 min-w-0">
-        {isPass ? (
+        {isUnavailable ? (
+          <MinusCircle className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+        ) : isPass ? (
           <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
         ) : isWarn ? (
           <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
@@ -1021,7 +1093,7 @@ function StatusPill({ label, status, detail }) {
         )}
         <span
           className={`text-xs font-bold font-mono truncate ${
-            isPass ? "text-emerald-300" : isWarn ? "text-amber-300" : "text-red-300"
+            isUnavailable ? "text-slate-500" : isPass ? "text-emerald-300" : isWarn ? "text-amber-300" : "text-red-300"
           }`}
           title={detail}
         >

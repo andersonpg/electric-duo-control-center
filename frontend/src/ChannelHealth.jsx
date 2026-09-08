@@ -30,6 +30,12 @@ import {
   Search,
   CheckSquare,
   HelpCircle,
+  MousePointerClick,
+  Shuffle,
+  UserPlus,
+  MinusCircle,
+  FileText,
+  Loader2,
 } from "lucide-react";
 
 export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
@@ -38,6 +44,10 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
   const [loading, setLoading] = useState(true);
   const [isSnapshotting, setIsSnapshotting] = useState(false);
   const [isReclassifying, setIsReclassifying] = useState(false);
+  const [classifyPreview, setClassifyPreview] = useState(null);
+  const [narrative, setNarrative] = useState(null);
+  const [narrativeError, setNarrativeError] = useState(null);
+  const [isGeneratingNarrative, setIsGeneratingNarrative] = useState(false);
 
   // Modals
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
@@ -174,25 +184,64 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
     } catch (e) {}
   };
 
-  const handleBulkReclassify = async () => {
+  // Dry run first: nothing is written until the preview is accepted.
+  const handleBulkReclassify = async (dryRun = true) => {
     setIsReclassifying(true);
     try {
       const res = await fetch("/api/channel-health/reclassify", {
         method: "POST",
         credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dryRun }),
       });
       const data = await res.json();
-      if (data.success) {
-        showToast(`AI reclassified ${data.reclassified} / ${data.total} videos against active categories.`);
+      if (!data.success) {
+        showToast("Classification error: " + (data.error || data.message || "unknown"), "error");
+        return;
+      }
+
+      if (dryRun) {
+        setClassifyPreview(data);
+      } else {
+        setClassifyPreview(null);
+        const parts = [
+          `${data.by_playlist ?? data.byPlaylist ?? 0} from playlists`,
+          `${data.byAi ?? 0} from AI`,
+          `${data.needsReview ?? 0} need review`,
+        ];
+        if (data.failedBatches > 0) parts.push(`${data.failedBatches} batch(es) FAILED`);
+        showToast(parts.join(" · "), data.failedBatches > 0 ? "error" : "success");
         loadData();
         if (isLibraryModalOpen) loadCatalog();
-      } else {
-        showToast("Reclassification error: " + data.error, "error");
       }
     } catch (err) {
-      showToast("Reclassification failed: " + err.message, "error");
+      showToast("Classification failed: " + err.message, "error");
     } finally {
       setIsReclassifying(false);
+    }
+  };
+
+  const handleGenerateNarrative = async () => {
+    setIsGeneratingNarrative(true);
+    setNarrativeError(null);
+    try {
+      const res = await fetch("/api/channel-health/narrative", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ periodDays }),
+      });
+      const data = await res.json();
+      if (data.narrative) {
+        setNarrative(data.narrative);
+        showToast("Channel health narrative generated and archived.");
+      } else {
+        setNarrativeError(data.narrativeError || data.error || "The narrative could not be generated.");
+      }
+    } catch (err) {
+      setNarrativeError(err.message);
+    } finally {
+      setIsGeneratingNarrative(false);
     }
   };
 
@@ -305,7 +354,7 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
       </div>
 
       {/* 2. Flags for Review Bar */}
-      {flags && (flags.underperformingCount > 0 || flags.pendingAiCount > 0 || flags.decliningCategories.length > 0) && (
+      {flags && (flags.underperformingCount > 0 || flags.pendingAiCount > 0 || flags.needsReviewCount > 0 || flags.uncategorisedCount > 0 || flags.unknownDurationCount > 0 || flags.decliningCategories.length > 0) && (
         <div className="bg-amber-950/30 border border-amber-500/30 rounded-2xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 shrink-0">
@@ -316,7 +365,7 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
               <div className="text-[11px] text-amber-300/80 mt-0.5 flex flex-wrap gap-x-4 gap-y-1">
                 {flags.decliningCategories.length > 0 && (
                   <span>
-                    ⚠️ <b>{flags.decliningCategories.map((c) => c.name).join(", ")}</b> trending down relative to channel average.
+                    ⚠️ <b>{flags.decliningCategories.map((c) => c.name).join(", ")}</b> had fewer uploads than the prior period.
                   </span>
                 )}
                 {flags.underperformingCount > 0 && (
@@ -324,9 +373,24 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
                     📉 <b>{flags.underperformingCount} low-traction videos</b> in this period.
                   </span>
                 )}
+                {flags.needsReviewCount > 0 && (
+                  <span>
+                    🔍 <b>{flags.needsReviewCount} videos</b> the classifier could not place confidently.
+                  </span>
+                )}
+                {flags.uncategorisedCount > 0 && (
+                  <span>
+                    🏷️ <b>{flags.uncategorisedCount} long-form videos</b> have no category, so category totals are incomplete.
+                  </span>
+                )}
+                {flags.unknownDurationCount > 0 && (
+                  <span>
+                    ⏱️ <b>{flags.unknownDurationCount} videos</b> have an unknown duration and are excluded from all figures.
+                  </span>
+                )}
                 {flags.pendingAiCount > 0 && (
                   <span>
-                    🤖 <b>{flags.pendingAiCount} videos</b> categorized via AI (ready for manual review).
+                    🤖 <b>{flags.pendingAiCount} videos</b> categorized by AI (ready for manual review).
                   </span>
                 )}
               </div>
@@ -358,173 +422,62 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
           </div>
 
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-4 gap-4">
-            {/* 1. Total Subscribers (Milestone / Size) */}
-            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 flex flex-col justify-between shadow-sm hover:border-slate-700 transition-colors">
-              <div className="flex items-center justify-between text-slate-400 mb-2">
-                <span className="text-[11px] font-semibold text-slate-400">Total Subscribers</span>
-                <Users className="w-3.5 h-3.5 text-cyan-400/80" />
-              </div>
-              <div>
-                <div className="text-2xl font-black tracking-tight text-white">
-                  {scorecard.totalSubscribers.value.toLocaleString()}
-                </div>
-                <div className="text-[10px] text-cyan-400 mt-1 font-semibold">
-                  Channel Milestone Total
-                </div>
-              </div>
-            </div>
-
-            {/* 2. Total Views */}
-            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 flex flex-col justify-between shadow-sm hover:border-slate-700 transition-colors">
-              <div className="flex items-center justify-between text-slate-400 mb-2">
-                <span className="text-[11px] font-semibold text-slate-400">Total Views</span>
-                <Eye className="w-3.5 h-3.5 text-emerald-400/80" />
-              </div>
-              <div>
-                <div className="text-2xl font-black tracking-tight text-white">
-                  {scorecard.views.value.toLocaleString()}
-                </div>
-                <div className="flex items-center gap-1.5 mt-1">
-                  <span
-                    className={`inline-flex items-center text-[10px] font-bold px-1.5 py-0.5 rounded-md ${
-                      scorecard.views.pctChange > 0
-                        ? "bg-emerald-950/80 border border-emerald-500/30 text-emerald-300"
-                        : "bg-red-950/80 border border-red-500/30 text-red-300"
-                    }`}
-                  >
-                    {scorecard.views.pctChange > 0 ? <ArrowUpRight className="w-3 h-3 inline mr-0.5" /> : <ArrowDownRight className="w-3 h-3 inline mr-0.5" />}
-                    {scorecard.views.pctChange > 0 ? `+${scorecard.views.pctChange}%` : `${scorecard.views.pctChange}%`}
-                  </span>
-                  <span className="text-[10px] text-slate-500">vs prior period</span>
-                </div>
-              </div>
-            </div>
-
-            {/* 3. Total Impressions */}
-            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 flex flex-col justify-between shadow-sm hover:border-slate-700 transition-colors">
-              <div className="flex items-center justify-between text-slate-400 mb-2">
-                <span className="text-[11px] font-semibold text-slate-400">Impressions (Reach)</span>
-                <Compass className="w-3.5 h-3.5 text-blue-400/80" />
-              </div>
-              <div>
-                <div className="text-2xl font-black tracking-tight text-white">
-                  {scorecard.impressions.value.toLocaleString()}
-                </div>
-                <div className="flex items-center gap-1.5 mt-1">
-                  <span
-                    className={`inline-flex items-center text-[10px] font-bold px-1.5 py-0.5 rounded-md ${
-                      scorecard.impressions.pctChange >= 0
-                        ? "bg-emerald-950/80 border border-emerald-500/30 text-emerald-300"
-                        : "bg-red-950/80 border border-red-500/30 text-red-300"
-                    }`}
-                  >
-                    {scorecard.impressions.pctChange >= 0 ? `+${scorecard.impressions.pctChange}%` : `${scorecard.impressions.pctChange}%`}
-                  </span>
-                  <span className="text-[10px] text-slate-500">vs prior period</span>
-                </div>
-              </div>
-            </div>
-
-            {/* 4. Channel Avg CTR */}
-            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 flex flex-col justify-between shadow-sm hover:border-slate-700 transition-colors">
-              <div className="flex items-center justify-between text-slate-400 mb-2">
-                <span className="text-[11px] font-semibold text-slate-400">Channel Avg CTR</span>
-                <TrendingUp className="w-3.5 h-3.5 text-amber-400/80" />
-              </div>
-              <div>
-                <div className="text-2xl font-black tracking-tight text-white">
-                  {scorecard.avgCtr.value}%
-                </div>
-                <div className="text-[10px] text-emerald-400 mt-1 font-semibold">
-                  5.0% target baseline
-                </div>
-              </div>
-            </div>
-
-            {/* 5. Watch Time (Hours) */}
-            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 flex flex-col justify-between shadow-sm hover:border-slate-700 transition-colors">
-              <div className="flex items-center justify-between text-slate-400 mb-2">
-                <span className="text-[11px] font-semibold text-slate-400">Watch Time (Hours)</span>
-                <Clock className="w-3.5 h-3.5 text-cyan-400/80" />
-              </div>
-              <div>
-                <div className="text-2xl font-black tracking-tight text-white">
-                  {scorecard.watchTimeHours.value.toLocaleString()}h
-                </div>
-                <div className="flex items-center gap-1.5 mt-1">
-                  <span
-                    className={`inline-flex items-center text-[10px] font-bold px-1.5 py-0.5 rounded-md ${
-                      scorecard.watchTimeHours.pctChange >= 0
-                        ? "bg-emerald-950/80 border border-emerald-500/30 text-emerald-300"
-                        : "bg-red-950/80 border border-red-500/30 text-red-300"
-                    }`}
-                  >
-                    {scorecard.watchTimeHours.pctChange >= 0 ? `+${scorecard.watchTimeHours.pctChange}%` : `${scorecard.watchTimeHours.pctChange}%`}
-                  </span>
-                  <span className="text-[10px] text-slate-500">vs prior period</span>
-                </div>
-              </div>
-            </div>
-
-            {/* 6. Suggested Video Share % */}
-            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 flex flex-col justify-between shadow-sm hover:border-slate-700 transition-colors">
-              <div className="flex items-center justify-between text-slate-400 mb-2">
-                <span className="text-[11px] font-semibold text-slate-400">Suggested Video Share</span>
-                <Sparkles className="w-3.5 h-3.5 text-purple-400/80" />
-              </div>
-              <div>
-                <div className="text-2xl font-black tracking-tight text-white">
-                  {scorecard.suggestedShare.value}%
-                </div>
-                <div className="text-[10px] text-purple-300 mt-1 font-semibold">
-                  Algorithm Recommendations
-                </div>
-              </div>
-            </div>
-
-            {/* 7. Avg % Viewed (Retention) */}
-            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 flex flex-col justify-between shadow-sm hover:border-slate-700 transition-colors">
-              <div className="flex items-center justify-between text-slate-400 mb-2">
-                <span className="text-[11px] font-semibold text-slate-400">Avg % Viewed (Retention)</span>
-                <Activity className="w-3.5 h-3.5 text-cyan-400/80" />
-              </div>
-              <div>
-                <div className="text-2xl font-black tracking-tight text-white">
-                  {scorecard.avgRetention.value}%
-                </div>
-                <div className="text-[10px] text-slate-400 mt-1">
-                  Across long-form library
-                </div>
-              </div>
-            </div>
-
-            {/* 8. Net Subscribers */}
-            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 flex flex-col justify-between shadow-sm hover:border-slate-700 transition-colors">
-              <div className="flex items-center justify-between text-slate-400 mb-2">
-                <span className="text-[11px] font-semibold text-slate-400">Net Subscribers</span>
-                <Users className="w-3.5 h-3.5 text-emerald-400/80" />
-              </div>
-              <div>
-                <div className="text-2xl font-black tracking-tight text-white">
-                  {scorecard.netSubs.value >= 0 ? `+${scorecard.netSubs.value}` : scorecard.netSubs.value}
-                </div>
-                <div className="flex items-center gap-1.5 mt-1">
-                  <span
-                    className={`inline-flex items-center text-[10px] font-bold px-1.5 py-0.5 rounded-md ${
-                      scorecard.netSubs.pctChange >= 0
-                        ? "bg-emerald-950/80 border border-emerald-500/30 text-emerald-300"
-                        : "bg-red-950/80 border border-red-500/30 text-red-300"
-                    }`}
-                  >
-                    {scorecard.netSubs.pctChange >= 0 ? `+${scorecard.netSubs.pctChange}%` : `${scorecard.netSubs.pctChange}%`}
-                  </span>
-                  <span className="text-[10px] text-slate-500">period growth</span>
-                </div>
-              </div>
-            </div>
+            <ScoreCard metric={scorecard.totalSubscribers} icon={Users} accent="text-cyan-400/80" />
+            <ScoreCard metric={scorecard.views} icon={Eye} accent="text-blue-400/80" />
+            <ScoreCard metric={scorecard.impressions} icon={Compass} accent="text-purple-400/80" />
+            <ScoreCard metric={scorecard.avgCtr} icon={MousePointerClick} accent="text-amber-400/80" suffix="%" />
+            <ScoreCard metric={scorecard.watchTimeHours} icon={Clock} accent="text-emerald-400/80" suffix="h" />
+            <ScoreCard metric={scorecard.suggestedShare} icon={Shuffle} accent="text-indigo-400/80" suffix="%" />
+            <ScoreCard metric={scorecard.avgRetention} icon={Activity} accent="text-pink-400/80" suffix="%" />
+            <ScoreCard metric={scorecard.netSubs} icon={UserPlus} accent="text-teal-400/80" signed />
           </div>
         </div>
       )}
+
+      {/* 3b. AI Channel Health Narrative */}
+      <div className="bg-slate-900/80 border border-slate-800 rounded-3xl p-6 sm:p-7">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4 mb-5">
+          <div>
+            <h3 className="text-base font-bold text-white flex items-center gap-2">
+              <FileText className="w-5 h-5 text-cyan-400" />
+              <span>Channel Health Narrative</span>
+            </h3>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Written by Gemini from the measured data above. Instructions are editable in Admin Settings.
+            </p>
+          </div>
+          <button
+            onClick={handleGenerateNarrative}
+            disabled={isGeneratingNarrative}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-cyan-950/60 hover:bg-cyan-900/60 text-cyan-300 text-xs font-semibold border border-cyan-500/30 transition-colors shrink-0 disabled:opacity-50"
+          >
+            {isGeneratingNarrative ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Sparkles className="w-3.5 h-3.5" />
+            )}
+            <span>{isGeneratingNarrative ? "Generating…" : narrative ? "Regenerate" : "Generate Narrative"}</span>
+          </button>
+        </div>
+
+        {narrativeError && (
+          <div className="rounded-xl border border-amber-500/30 bg-amber-950/30 p-4 mb-4 flex items-start gap-2.5">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <p className="text-xs text-amber-200/90 leading-relaxed">{narrativeError}</p>
+          </div>
+        )}
+
+        {narrative ? (
+          <div className="text-xs text-slate-300 leading-relaxed whitespace-pre-wrap">{narrative}</div>
+        ) : (
+          !narrativeError && (
+            <p className="text-xs text-slate-500 leading-relaxed">
+              No narrative generated for this period yet. Every figure it cites comes from the scorecard above, and
+              metrics that are unavailable are named rather than estimated.
+            </p>
+          )
+        )}
+      </div>
 
       {/* 4. Category Breakdown Matrix */}
       <div className="bg-slate-900/80 border border-slate-800 rounded-3xl p-6 sm:p-7">
@@ -535,7 +488,7 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
               <span>Category Breakdown & Trajectory</span>
             </h3>
             <p className="text-xs text-slate-400 mt-0.5">
-              Performance breakdown across your active content categories.
+              Catalog and upload cadence per category. Retention is shown only where it was measured.
             </p>
           </div>
 
@@ -563,10 +516,10 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
               <tr className="border-b border-slate-800 text-[11px] font-bold uppercase tracking-wider text-slate-400">
                 <th className="pb-3">Category</th>
                 <th className="pb-3">Video Count</th>
-                <th className="pb-3">Total Views</th>
-                <th className="pb-3">Avg Impressions CTR</th>
-                <th className="pb-3">Avg Retention %</th>
-                <th className="pb-3 text-right">Trajectory</th>
+                <th className="pb-3">Lifetime Views</th>
+                <th className="pb-3">Uploads This Period</th>
+                <th className="pb-3">Measured Avg Retention</th>
+                <th className="pb-3 text-right">Upload Trajectory</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/60 font-medium">
@@ -596,41 +549,42 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
 
                     <td className="py-3.5">
                       <div className="flex items-center gap-2">
-                        <span className="font-bold text-white">{cat.avgCtr}%</span>
-                        <span
-                          className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
-                            cat.avgCtr >= 5.0 ? "text-emerald-400 bg-emerald-950/40" : "text-amber-400 bg-amber-950/40"
-                          }`}
-                        >
-                          {cat.avgCtr >= 5.0 ? `+${(cat.avgCtr - 5.0).toFixed(1)}%` : `${(cat.avgCtr - 5.0).toFixed(1)}%`}
+                        <span className="font-bold text-white">{cat.uploadsThisPeriod}</span>
+                        <span className="text-[10px] text-slate-500">
+                          prior: {cat.uploadsPriorPeriod}
                         </span>
                       </div>
                     </td>
 
                     <td className="py-3.5">
-                      <div className="flex items-center gap-2">
-                        <div className="w-16 h-1.5 rounded-full bg-slate-800 overflow-hidden">
-                          <div
-                            className="h-full bg-cyan-400 rounded-full"
-                            style={{ width: `${Math.min(100, cat.avgRetention * 1.5)}%` }}
-                          ></div>
+                      {cat.avgRetention != null ? (
+                        <div className="flex items-center gap-2">
+                          <div className="w-16 h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                            <div
+                              className="h-full bg-cyan-400 rounded-full"
+                              style={{ width: `${Math.min(100, cat.avgRetention * 1.5)}%` }}
+                            ></div>
+                          </div>
+                          <span className="font-bold text-white">{cat.avgRetention}%</span>
+                          <span className="text-[10px] text-slate-500">n={cat.retentionSampleSize}</span>
                         </div>
-                        <span className="font-bold text-white">{cat.avgRetention}%</span>
-                      </div>
+                      ) : (
+                        <span className="text-slate-600">&mdash;</span>
+                      )}
                     </td>
 
                     <td className="py-3.5 text-right">
                       {cat.trajectory === "up" ? (
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-950/80 border border-emerald-500/30 text-emerald-300 text-[10px] font-bold">
-                          <TrendingUp className="w-3 h-3" /> Gaining Traction
+                          <TrendingUp className="w-3 h-3" /> More uploads
                         </span>
                       ) : cat.trajectory === "down" ? (
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-950/80 border border-red-500/30 text-red-300 text-[10px] font-bold">
-                          <TrendingDown className="w-3 h-3" /> Underperforming
+                          <TrendingDown className="w-3 h-3" /> Fewer uploads
                         </span>
                       ) : (
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 text-[10px] font-semibold">
-                          <Minus className="w-3 h-3" /> Stable
+                          <Minus className="w-3 h-3" /> {cat.trajectory === "unknown" ? "No data" : "Unchanged"}
                         </span>
                       )}
                     </td>
@@ -798,15 +752,80 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
                 </select>
 
                 <button
-                  onClick={handleBulkReclassify}
+                  onClick={() => handleBulkReclassify(true)}
                   disabled={isReclassifying}
                   className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-cyan-950/60 hover:bg-cyan-900/60 border border-cyan-500/30 text-cyan-300 text-xs font-semibold"
                 >
                   <Sparkles className={`w-3.5 h-3.5 ${isReclassifying ? "animate-spin" : ""}`} />
-                  <span>{isReclassifying ? "Classifying..." : "Re-classify All with AI"}</span>
+                  <span>{isReclassifying ? "Classifying..." : "Preview Re-classification"}</span>
                 </button>
               </div>
             </div>
+
+            {/* Dry-run preview: nothing has been written yet */}
+            {classifyPreview && (
+              <div className="mb-4 rounded-2xl border border-cyan-500/30 bg-cyan-950/20 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+                  <div>
+                    <div className="text-xs font-bold text-cyan-200 mb-1">
+                      Preview only &mdash; nothing has been written
+                    </div>
+                    <div className="text-[11px] text-cyan-300/80 flex flex-wrap gap-x-4 gap-y-1">
+                      <span><b>{classifyPreview.byPlaylist}</b> from playlist mapping</span>
+                      <span><b>{classifyPreview.byAi}</b> from AI</span>
+                      <span><b>{classifyPreview.needsReview}</b> need review</span>
+                      {classifyPreview.failedBatches > 0 && (
+                        <span className="text-red-300">
+                          <b>{classifyPreview.failedBatches}</b> of {classifyPreview.totalBatches} batches failed
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setClassifyPreview(null)}
+                      className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
+                    >
+                      Discard
+                    </button>
+                    <button
+                      onClick={() => handleBulkReclassify(false)}
+                      disabled={isReclassifying}
+                      className="px-3 py-1.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-bold disabled:opacity-50"
+                    >
+                      Apply {classifyPreview.byPlaylist + classifyPreview.byAi} changes
+                    </button>
+                  </div>
+                </div>
+
+                <div className="max-h-56 overflow-y-auto rounded-xl border border-slate-800 bg-slate-950/60">
+                  <table className="w-full text-left text-[11px]">
+                    <tbody className="divide-y divide-slate-800/60">
+                      {(classifyPreview.changes || []).slice(0, 100).map((c) => (
+                        <tr key={c.youtube_id}>
+                          <td className="px-3 py-1.5 text-slate-300 max-w-xs truncate" title={c.title}>{c.title}</td>
+                          <td className="px-3 py-1.5 text-slate-500 whitespace-nowrap">{c.from || "\u2014"}</td>
+                          <td className="px-3 py-1.5 text-slate-500">&rarr;</td>
+                          <td className={`px-3 py-1.5 font-semibold whitespace-nowrap ${c.to ? "text-cyan-300" : "text-amber-400"}`}>
+                            {c.to || "needs review"}
+                          </td>
+                          <td className="px-3 py-1.5 text-slate-500 whitespace-nowrap">
+                            {c.source}
+                            {c.confidence != null && ` (${c.confidence.toFixed(2)})`}
+                          </td>
+                          <td className="px-3 py-1.5 text-slate-500 max-w-xs truncate" title={c.reason}>{c.reason}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {(classifyPreview.changes || []).length > 100 && (
+                  <div className="text-[10px] text-slate-500 mt-2">
+                    Showing the first 100 of {classifyPreview.changes.length} changes.
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Video List Table */}
             <div className="flex-1 overflow-y-auto space-y-2 pr-1">
@@ -955,6 +974,56 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+
+// A scorecard tile that renders a metric's availability honestly. A metric with
+// no measured value shows an em dash and the reason, never a filled-in number.
+function ScoreCard({ metric, icon: Icon, accent, suffix = "", signed = false }) {
+  if (!metric) return null;
+
+  const available = metric.available && metric.value != null;
+  const formatted = available
+    ? `${signed && metric.value >= 0 ? "+" : ""}${typeof metric.value === "number" ? metric.value.toLocaleString() : metric.value}${suffix}`
+    : "\u2014";
+
+  const change = metric.pctChange;
+  const hasChange = available && change != null;
+
+  return (
+    <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 flex flex-col justify-between shadow-sm hover:border-slate-700 transition-colors">
+      <div className="flex items-center justify-between text-slate-400 mb-2">
+        <span className="text-[11px] font-semibold text-slate-400">{metric.label}</span>
+        {available ? (
+          <Icon className={`w-3.5 h-3.5 ${accent}`} />
+        ) : (
+          <MinusCircle className="w-3.5 h-3.5 text-slate-600" />
+        )}
+      </div>
+      <div>
+        <div className={`text-2xl font-black tracking-tight ${available ? "text-white" : "text-slate-600"}`}>
+          {formatted}
+        </div>
+        {hasChange ? (
+          <div className="flex items-center gap-1 mt-1">
+            <span
+              className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                change >= 0 ? "text-emerald-400 bg-emerald-950/40" : "text-red-400 bg-red-950/40"
+              }`}
+            >
+              {change >= 0 ? <ArrowUpRight className="w-3 h-3 inline mr-0.5" /> : <ArrowDownRight className="w-3 h-3 inline mr-0.5" />}
+              {change >= 0 ? `+${change}%` : `${change}%`}
+            </span>
+            <span className="text-[10px] text-slate-500">vs prior period</span>
+          </div>
+        ) : (
+          <div className="text-[10px] text-slate-500 mt-1 leading-snug">
+            {metric.note || (available ? "No prior period to compare" : "Not available")}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

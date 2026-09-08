@@ -5,71 +5,110 @@ const db = require("./db").articleDb;
 const { getTranscript, getGeminiApiKey, callGeminiWithRetry, DEFAULT_GEMINI_MODEL } = require("./gemini");
 const { isOAuthConnected, fetchLiveVideoAnalytics } = require("./youtube-analytics");
 
-// Category benchmark definitions for The Electric Duo
-const CATEGORY_BENCHMARKS = {
-  "Review": {
-    name: "Hardware / Vehicle Review",
-    avgCtr: 6.2,
-    avgRetention: 48,
-    avgViewDuration: "08:15",
-    expectedImpressionsMultiplier: 20.5,
-    trafficShare: { browse: 45, suggested: 30, search: 18, other: 7 },
-  },
-  "How-To / Instructional": {
-    name: "How-To / Guide",
-    avgCtr: 6.8,
-    avgRetention: 52,
-    avgViewDuration: "06:45",
-    expectedImpressionsMultiplier: 15.0,
-    trafficShare: { search: 50, suggested: 25, browse: 15, other: 10 },
-  },
-  "EV News": {
-    name: "News & Commentary",
-    avgCtr: 5.8,
-    avgRetention: 42,
-    avgViewDuration: "07:30",
-    expectedImpressionsMultiplier: 25.0,
-    trafficShare: { browse: 55, suggested: 32, search: 8, other: 5 },
-  },
-  "Road Trip / Vlog": {
-    name: "Road Trip & Travel",
-    avgCtr: 4.8,
-    avgRetention: 54,
-    avgViewDuration: "14:20",
-    expectedImpressionsMultiplier: 18.0,
-    trafficShare: { browse: 50, suggested: 35, search: 10, other: 5 },
-  },
-};
+// ---------------------------------------------------------------------------
+// Video metrics.
+//
+// Every value here is either measured or null. Nothing is derived from a hash,
+// a category average, or a plausible-looking constant. A metric we cannot
+// measure is reported as unavailable so the UI can label it and the AI prompt
+// can omit it, rather than reasoning confidently from noise.
+// ---------------------------------------------------------------------------
 
-// Deterministic seed helper for consistent metrics per video ID
-function hashString(str) {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    hash = (hash << 5) - hash + str.charCodeAt(i);
-    hash |= 0;
+// Per-category benchmarks come from the content_categories row so they can never
+// drift from the category name. They are null until entered from YouTube Studio.
+function getCategoryBenchmark(categoryName) {
+  if (!categoryName) return null;
+  try {
+    const row = db
+      .prepare("SELECT name, avg_ctr, avg_retention, avg_view_duration, traffic_share_json, benchmarks_updated_at FROM content_categories WHERE name = ?")
+      .get(categoryName);
+    if (!row) return null;
+    const hasAny = row.avg_ctr != null || row.avg_retention != null || row.avg_view_duration != null;
+    if (!hasAny) return null;
+    let trafficShare = null;
+    if (row.traffic_share_json) {
+      try {
+        trafficShare = JSON.parse(row.traffic_share_json);
+      } catch (e) {
+        trafficShare = null;
+      }
+    }
+    return {
+      name: row.name,
+      avgCtr: row.avg_ctr,
+      avgRetention: row.avg_retention,
+      avgViewDuration: row.avg_view_duration,
+      trafficShare,
+      updatedAt: row.benchmarks_updated_at,
+    };
+  } catch (e) {
+    console.warn("Could not read category benchmark:", e.message);
+    return null;
   }
-  return Math.abs(hash);
 }
 
-// Build metrics: Uses live YouTube Analytics API if connected via OAuth, or calibrated baseline
-async function getCalibratedMetrics(youtubeId, video) {
-  const seed = hashString(youtubeId);
-  const category = video.content_type || "Review";
-  const benchmark = CATEGORY_BENCHMARKS[category] || CATEGORY_BENCHMARKS["Review"];
+// Channel CTR baseline is a value the user enters from YouTube Studio, not a constant.
+function getChannelCtrBaseline() {
+  try {
+    const row = db.prepare("SELECT value FROM app_settings WHERE key = 'channel_ctr_benchmark'").get();
+    if (!row || !row.value) return null;
+    const parsed = parseFloat(row.value);
+    return Number.isFinite(parsed) ? parsed : null;
+  } catch (e) {
+    return null;
+  }
+}
 
-  // Parse exact duration in seconds
-  let durationSec = 900;
-  if (video.duration) {
-    const match = video.duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
-    if (match) {
-      const h = parseInt(match[1] || "0", 10);
-      const m = parseInt(match[2] || "0", 10);
-      const s = parseInt(match[3] || "0", 10);
-      durationSec = h * 3600 + m * 60 + s;
+function parseIsoDurationSec(durationStr) {
+  if (!durationStr || typeof durationStr !== "string") return null;
+  const match = durationStr.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!match) return null;
+  const h = parseInt(match[1] || "0", 10);
+  const m = parseInt(match[2] || "0", 10);
+  const s = parseInt(match[3] || "0", 10);
+  const total = h * 3600 + m * 60 + s;
+  return total > 0 ? total : null;
+}
+
+function formatSeconds(sec) {
+  if (sec == null || !Number.isFinite(sec)) return null;
+  return `${Math.floor(sec / 60)}:${String(Math.round(sec % 60)).padStart(2, "0")}`;
+}
+
+// The live retention curve is keyed on elapsedVideoTimeRatio (a percentage of the
+// video), not on seconds. Reading index 2 as "30 seconds" is wrong for every
+// video whose length is not ~25 minutes. Interpolate the real 30-second point.
+function computeHookDropAt30s(retentionCurve, durationSec) {
+  if (!Array.isArray(retentionCurve) || retentionCurve.length < 2) return null;
+  if (!durationSec || durationSec <= 30) return null;
+
+  const targetRatio = 30 / durationSec;
+  const points = retentionCurve
+    .filter((p) => p && Number.isFinite(p.ratio) && Number.isFinite(p.pct))
+    .sort((a, b) => a.ratio - b.ratio);
+  if (points.length < 2) return null;
+
+  if (targetRatio <= points[0].ratio) return Math.max(0, Math.round(100 - points[0].pct));
+  if (targetRatio >= points[points.length - 1].ratio) return null;
+
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i];
+    const b = points[i + 1];
+    if (targetRatio >= a.ratio && targetRatio <= b.ratio) {
+      const span = b.ratio - a.ratio;
+      const t = span === 0 ? 0 : (targetRatio - a.ratio) / span;
+      const pct = a.pct + (b.pct - a.pct) * t;
+      return Math.max(0, Math.round(100 - pct));
     }
   }
+  return null;
+}
 
-  // Check if live YouTube Analytics OAuth is connected
+async function getVideoMetrics(youtubeId, video) {
+  const category = video.content_type || null;
+  const benchmark = getCategoryBenchmark(category);
+  const durationSec = parseIsoDurationSec(video.duration);
+
   let liveAnalytics = null;
   if (isOAuthConnected()) {
     try {
@@ -79,129 +118,86 @@ async function getCalibratedMetrics(youtubeId, video) {
     }
   }
 
-  const isLive = !!(liveAnalytics && liveAnalytics.coreData);
+  const core = (liveAnalytics && liveAnalytics.coreData) || null;
+  const isLive = !!core;
 
-  // Views & Performance
-  const baseViews = (video.view_count && video.view_count > 0) ? video.view_count : 2300;
-  const views = isLive && liveAnalytics.coreData.views > 0 ? liveAnalytics.coreData.views : baseViews;
-
-  // Calibrate CTR around channel 5.0% baseline
-  const ctrVariation = ((seed % 35) - 15) / 10;
-  const ctr = Math.max(2.8, Math.min(9.4, Number((benchmark.avgCtr + ctrVariation).toFixed(1))));
-  const impressions = Math.round(views / (ctr / 100));
-
-  // Retention and Watch Time
-  const retentionVariation = (seed % 16) - 8;
-  const retentionRate = isLive && liveAnalytics.coreData.retentionRate > 0
-    ? liveAnalytics.coreData.retentionRate
-    : Math.max(30, Math.min(68, benchmark.avgRetention + retentionVariation));
-
-  const avgViewDurationSec = isLive && liveAnalytics.coreData.avgViewDurationSec > 0
-    ? liveAnalytics.coreData.avgViewDurationSec
-    : Math.round((durationSec * retentionRate) / 100);
-
-  const totalWatchTimeHours = isLive && liveAnalytics.coreData.watchMinutes > 0
-    ? Math.round(liveAnalytics.coreData.watchMinutes / 60)
-    : Math.round((views * avgViewDurationSec) / 3600);
-
-  // Engagement stats
-  const likes = isLive && liveAnalytics.coreData.likes > 0 ? liveAnalytics.coreData.likes : Math.round(views * (0.035 + ((seed % 20) / 1000)));
-  const comments = isLive && liveAnalytics.coreData.comments > 0 ? liveAnalytics.coreData.comments : Math.round(views * (0.005 + ((seed % 10) / 1500)));
-  const shares = isLive && liveAnalytics.coreData.shares > 0 ? liveAnalytics.coreData.shares : Math.round(views * 0.008);
-  const subsGained = isLive && liveAnalytics.coreData.subsGained > 0 ? liveAnalytics.coreData.subsGained : Math.round(views * (0.0035 + ((seed % 15) / 2500)));
-  const subsLost = isLive ? liveAnalytics.coreData.subsLost : Math.round(subsGained * 0.12);
-
-  // Retention Curve points
-  let retentionCurve = [];
-  let hookDrop = 22 + (seed % 14);
-
-  if (isLive && liveAnalytics.retentionCurve && liveAnalytics.retentionCurve.length > 0) {
-    retentionCurve = liveAnalytics.retentionCurve;
-    if (retentionCurve.length >= 3) {
-      hookDrop = Math.max(5, 100 - retentionCurve[2].pct);
-    }
-  } else {
-    const retention30s = 100 - hookDrop;
-    const retentionMid = Math.round(retentionRate * 0.95);
-    const retentionEnd = Math.max(12, Math.round(retentionRate * 0.45));
-
-    retentionCurve = [
-      { time: "0:00", pct: 100, label: "Intro start" },
-      { time: "0:15", pct: Math.round(100 - hookDrop * 0.6), label: "First 15s" },
-      { time: "0:30", pct: retention30s, label: "30s Hook Gate" },
-      { time: "1:00", pct: Math.round(retention30s * 0.92), label: "1 min mark" },
-      { time: "2:30", pct: Math.round(retention30s * 0.82), label: "Topic transition" },
-      { time: "5:00", pct: Math.round(retentionMid * 1.08), label: "Core demonstration" },
-      { time: "7:30", pct: retentionMid, label: "Mid-video / Sponsor read" },
-      { time: "10:00", pct: Math.round(retentionMid * 0.85), label: "Detailed analysis" },
-      { time: "12:30", pct: Math.round(retentionMid * 0.7), label: "Summary verdict" },
-      { time: "End", pct: retentionEnd, label: "Outro & End-screen" },
-    ];
+  // Views: live figure preferred, catalog figure as a real (if stale) fallback.
+  let views = null;
+  let viewsSource = "unavailable";
+  if (core && core.views > 0) {
+    views = core.views;
+    viewsSource = "youtube_analytics";
+  } else if (video.view_count && video.view_count > 0) {
+    views = video.view_count;
+    viewsSource = "catalog_snapshot";
   }
 
-  // Traffic Source Breakdown
-  let trafficShare = { ...benchmark.trafficShare };
-  if (isLive && liveAnalytics.trafficShare) {
-    trafficShare = liveAnalytics.trafficShare;
-  } else if (ctr > 5.5) {
-    trafficShare.browse += 4;
-    trafficShare.suggested += 2;
-    trafficShare.search = Math.max(5, trafficShare.search - 6);
-  }
+  const retentionRate = core && core.retentionRate > 0 ? core.retentionRate : null;
+  const avgViewDurationSec = core && core.avgViewDurationSec > 0 ? core.avgViewDurationSec : null;
+  const totalWatchTimeHours = core && core.watchMinutes > 0 ? Math.round(core.watchMinutes / 60) : null;
 
-  // Top Search Terms relevant to video title
-  const searchTerms = [
-    `${video.title.split(" ").slice(0, 3).join(" ").toLowerCase()}`,
-    "the electric duo",
-    "mustang mach-e charging",
-    "ev road trip",
-    "electric vehicle real range",
-  ];
+  const likes = core && core.likes > 0 ? core.likes : null;
+  const comments = core && core.comments > 0 ? core.comments : null;
+  const shares = core && core.shares > 0 ? core.shares : null;
+  const subsGained = core && core.subsGained > 0 ? core.subsGained : null;
+  const subsLost = core && Number.isFinite(core.subsLost) ? core.subsLost : null;
+  const netSubs = subsGained != null && subsLost != null ? subsGained - subsLost : null;
 
-  const durationFormatted = `${Math.floor(durationSec / 60)}:${String(durationSec % 60).padStart(2, "0")}`;
-  const avdFormatted = `${Math.floor(avgViewDurationSec / 60)}:${String(avgViewDurationSec % 60).padStart(2, "0")}`;
+  const retentionCurve = (liveAnalytics && liveAnalytics.retentionCurve && liveAnalytics.retentionCurve.length > 0)
+    ? liveAnalytics.retentionCurve
+    : null;
+  const hookDropPercent = computeHookDropAt30s(retentionCurve, durationSec);
+  const trafficShare = (liveAnalytics && liveAnalytics.trafficShare) || null;
+
+  // Impressions and impressions click-through rate are YouTube Studio figures
+  // and are not exposed by the public YouTube Analytics API. They stay null
+  // rather than being back-computed from an assumed CTR.
+  const impressions = null;
+  const ctr = null;
+  const channelBaselineCtr = getChannelCtrBaseline();
+
+  const unavailable = [];
+  if (views == null) unavailable.push("views");
+  if (impressions == null) unavailable.push("impressions");
+  if (ctr == null) unavailable.push("click-through rate");
+  if (retentionRate == null) unavailable.push("retention rate");
+  if (avgViewDurationSec == null) unavailable.push("average view duration");
+  if (totalWatchTimeHours == null) unavailable.push("watch time");
+  if (hookDropPercent == null) unavailable.push("30-second hook drop");
+  if (!retentionCurve) unavailable.push("retention curve");
+  if (!trafficShare) unavailable.push("traffic sources");
+  if (netSubs == null) unavailable.push("net subscribers");
 
   return {
     isLiveStudioData: isLive,
+    viewsSource,
     views,
     impressions,
     ctr,
-    channelBaselineCtr: 5.0,
-    ctrDelta: Number((ctr - 5.0).toFixed(1)),
+    channelBaselineCtr,
+    ctrDelta: ctr != null && channelBaselineCtr != null ? Number((ctr - channelBaselineCtr).toFixed(1)) : null,
     durationSec,
-    durationFormatted,
+    durationFormatted: formatSeconds(durationSec),
     retentionRate,
     avgViewDurationSec,
-    avdFormatted,
+    avdFormatted: formatSeconds(avgViewDurationSec),
     totalWatchTimeHours,
     subsGained,
     subsLost,
-    netSubs: subsGained - subsLost,
+    netSubs,
     likes,
     comments,
     shares,
-    cardCtr: Number((2.1 + (seed % 18) / 10).toFixed(1)),
-    endScreenCtr: Number((4.3 + (seed % 25) / 10).toFixed(1)),
     retentionCurve,
-    hookDropPercent: hookDrop,
+    retentionCurveAxis: retentionCurve ? "percent_of_video" : null,
+    hookDropPercent,
     trafficShare,
-    searchTerms,
     category,
     categoryBenchmark: benchmark,
-    geography: [
-      { country: "United States", share: 74 },
-      { country: "Canada", share: 12 },
-      { country: "United Kingdom", share: 6 },
-      { country: "Australia & Other", share: 8 },
-    ],
-    devices: [
-      { type: "Mobile phone", share: 58 },
-      { type: "Connected TV", share: 26 },
-      { type: "Desktop / Computer", share: 14 },
-      { type: "Tablet", share: 2 },
-    ],
+    unavailableMetrics: unavailable,
   };
 }
+
 
 // Generate Multimodal AI Evaluation via Gemini
 async function generateAIEvaluation(video, metrics) {
@@ -215,44 +211,98 @@ async function generateAIEvaluation(video, metrics) {
     console.warn(`Could not load transcript for audit of ${video.youtube_id}:`, e.message);
   }
 
-  const prompt = `You are the principal YouTube Strategy & Editorial Director for "The Electric Duo" (25K+ subscribers, premier EV channel).
+  // Build the metrics block from measured values only. A metric we do not have is
+  // stated as unavailable so the model says so instead of inventing a diagnosis.
+  const metricLines = [];
+  if (metrics.views != null) {
+    const sourceNote = metrics.viewsSource === "catalog_snapshot" ? " (from catalog sync, not Studio)" : "";
+    metricLines.push(`- Total Views: ${metrics.views.toLocaleString()}${sourceNote}`);
+  }
+  if (metrics.totalWatchTimeHours != null) metricLines.push(`- Total Watch Time: ${metrics.totalWatchTimeHours} hours`);
+  if (metrics.avdFormatted && metrics.retentionRate != null) {
+    metricLines.push(`- Average View Duration: ${metrics.avdFormatted} (${metrics.retentionRate}% average percentage viewed)`);
+  } else if (metrics.avdFormatted) {
+    metricLines.push(`- Average View Duration: ${metrics.avdFormatted}`);
+  }
+  if (metrics.hookDropPercent != null) {
+    metricLines.push(`- 30-Second Hook Drop-Off: -${metrics.hookDropPercent}% of viewers left in the first 30 seconds (interpolated from the measured retention curve)`);
+  }
+  if (metrics.netSubs != null) metricLines.push(`- Net Subscribers: ${metrics.netSubs >= 0 ? "+" : ""}${metrics.netSubs}`);
+  if (metrics.likes != null || metrics.comments != null) {
+    const parts = [];
+    if (metrics.likes != null) parts.push(`Likes: ${metrics.likes.toLocaleString()}`);
+    if (metrics.comments != null) parts.push(`Comments: ${metrics.comments.toLocaleString()}`);
+    metricLines.push(`- ${parts.join(", ")}`);
+  }
+  if (metrics.trafficShare) {
+    metricLines.push(`- Traffic Sources: Browse ${metrics.trafficShare.browse}%, Suggested ${metrics.trafficShare.suggested}%, Search ${metrics.trafficShare.search}%, Other ${metrics.trafficShare.other}%`);
+  }
+  if (metrics.categoryBenchmark) {
+    const b = metrics.categoryBenchmark;
+    const bParts = [];
+    if (b.avgCtr != null) bParts.push(`avg CTR ${b.avgCtr}%`);
+    if (b.avgRetention != null) bParts.push(`avg retention ${b.avgRetention}%`);
+    if (b.avgViewDuration) bParts.push(`avg view duration ${b.avgViewDuration}`);
+    if (bParts.length > 0) {
+      metricLines.push(`- Category Benchmark for "${b.name}" (entered from YouTube Studio): ${bParts.join(", ")}`);
+    }
+  }
+  if (metricLines.length === 0) {
+    metricLines.push("- No performance metrics are available for this video.");
+  }
+
+  const unavailableBlock = metrics.unavailableMetrics && metrics.unavailableMetrics.length > 0
+    ? `\nMETRICS THAT ARE NOT AVAILABLE FOR THIS VIDEO — you do NOT have these numbers and must not estimate, infer, or invent them:\n${metrics.unavailableMetrics.map((m) => `- ${m}`).join("\n")}\n`
+    : "";
+
+  const hasDiscoveryData = metrics.impressions != null && metrics.ctr != null;
+  const hasHookData = metrics.hookDropPercent != null;
+
+  // Mandates are only issued for analyses the data can actually support.
+  const mandates = [];
+  let mandateNum = 1;
+  if (hasHookData) {
+    mandates.push(`${mandateNum++}. Hook / Retention Diagnosis: Using the measured 30-second hook drop-off of -${metrics.hookDropPercent}%, analyse whether this was an intro issue (taking too long to deliver on the title/thumbnail promise) or a mid-video pacing bleed. Ground this in the transcript.`);
+  } else {
+    mandates.push(`${mandateNum++}. Hook / Retention Diagnosis: Retention data is NOT available for this video. Assess the intro from the transcript alone — how quickly it delivers on the title and thumbnail promise — and state explicitly that no retention measurement was available to confirm it.`);
+  }
+  if (hasDiscoveryData) {
+    mandates.push(`${mandateNum++}. Discovery 2x2 Matrix: Classify into one of 4 quadrants:
+   - "High Impressions / High CTR" (Star Performer)
+   - "High Impressions / Low CTR" (Packaging Problem)
+   - "Low Impressions / High CTR" (Distribution Bottleneck)
+   - "Low Impressions / Low CTR" (Topic / Packaging Overhaul)`);
+  } else {
+    mandates.push(`${mandateNum++}. Discovery Matrix: SKIP THIS. Impressions and click-through rate are not available, so the quadrant cannot be determined. Return "quadrant": "Unavailable", "quadrant_number": 0, and a diagnosis field explaining that impressions and CTR are not exposed by the YouTube Analytics API and must be read from YouTube Studio.`);
+  }
+  mandates.push(`${mandateNum++}. Title & Thumbnail Critique: Evaluate mobile legibility, colour contrast against the YouTube UI, emotional clarity, curiosity gap without clickbait, and mobile title truncation. This is a qualitative judgement of the packaging itself and does not require performance data.`);
+  mandates.push(`${mandateNum++}. Alternative Concepts: Generate 3-5 SPECIFIC alternative title and thumbnail concepts grounded directly in the vehicle, hardware, and transcript discussion above. DO NOT produce generic template placeholders (e.g. "The Truth About Ford!").`);
+  mandates.push(`${mandateNum++}. Provide 3-5 Concrete, Prioritized Action Items (numbered and specific).`);
+  mandates.push(`${mandateNum++}. Calculate an Overall Video Health Score from 0 to 100. Base it ONLY on evidence you actually have. If most performance metrics are unavailable, score the packaging and content craft, and say in the verdict that the score reflects packaging rather than measured performance.`);
+
+  const prompt = `You are the principal YouTube Strategy & Editorial Director for "The Electric Duo", a two-person EV channel run by Patrick and Liv.
 Perform a comprehensive Video Audit & Diagnostic Evaluation for this specific video.
 
 TARGET VIDEO DETAILS:
 - Title: "${video.title}"
 - YouTube ID: ${video.youtube_id}
 - Thumbnail URL: ${video.thumbnail_url || `https://img.youtube.com/vi/${video.youtube_id}/maxresdefault.jpg`}
-- Content Category: ${metrics.category}
-- Duration: ${metrics.durationFormatted}
+- Content Category: ${metrics.category || "Unclassified"}
+- Duration: ${metrics.durationFormatted || "Unknown"}
 - Published Date: ${video.published_at}
-- Description: ${video.description ? video.description.substring(0, 600) : "None provided"}
+- Description: ${video.description && !video.description_is_placeholder ? video.description.substring(0, 600) : "None provided"}
 
 ACTUAL VIDEO DISCUSSION & TRANSCRIPT CONTEXT:
 ${transcriptSnippet}
 
-PERFORMANCE METRICS (${metrics.isLiveStudioData ? "GROUND-TRUTH YOUTUBE STUDIO DATA" : "CALIBRATED METRICS"}):
-- Total Views: ${metrics.views.toLocaleString()}
-- Total Impressions: ${metrics.impressions.toLocaleString()}
-- Impressions CTR: ${metrics.ctr}% (Channel Baseline is 5.0%, Delta: ${metrics.ctrDelta >= 0 ? '+' : ''}${metrics.ctrDelta}%)
-- Category Avg CTR Benchmark: ${metrics.categoryBenchmark.avgCtr}%
-- Average View Duration: ${metrics.avdFormatted} (${metrics.retentionRate}% retention rate)
-- Category Avg Retention Benchmark: ${metrics.categoryBenchmark.avgRetention}%
-- 30-Second Hook Drop-Off: -${metrics.hookDropPercent}% of viewers left in first 30 seconds
-- Net Subscribers Gained: +${metrics.netSubs}
-- Likes: ${metrics.likes.toLocaleString()}, Comments: ${metrics.comments.toLocaleString()}
-- Traffic Sources: Browse ${metrics.trafficShare.browse}%, Suggested ${metrics.trafficShare.suggested}%, Search ${metrics.trafficShare.search}%, Other ${metrics.trafficShare.other}%
+PERFORMANCE METRICS (${metrics.isLiveStudioData ? "MEASURED VIA THE YOUTUBE ANALYTICS API" : "LIMITED — YouTube Analytics is not connected for this video"}):
+${metricLines.join("\n")}
+${unavailableBlock}
+ABSOLUTE RULE ON DATA:
+Every number you cite must appear above. Do not estimate, extrapolate, or invent any metric that is listed as unavailable. If an analysis requires a number you do not have, say plainly that the data is not available and explain what the user would need to check in YouTube Studio. A clearly stated gap is worth more than a confident guess.
 
 CRITICAL EVALUATION MANDATES:
-1. Hook / Retention Diagnosis: Analyze whether the 30s hook drop-off (-${metrics.hookDropPercent}%) was an intro issue (taking too long to deliver on the title/thumbnail promise) or a mid-video pacing bleed.
-2. Discovery 2x2 Matrix: Classify into one of 4 quadrants:
-   - "High Impressions / High CTR" (Star Performer)
-   - "High Impressions / Low CTR" (Packaging Problem - thumbnail/title not converting high browse traffic)
-   - "Low Impressions / High CTR" (Distribution Bottleneck - packaging works, algorithm not surfacing / needs SEO & series playlist)
-   - "Low Impressions / Low CTR" (Topic / Packaging Overhaul)
-3. Title & Thumbnail Critique: Evaluate mobile legibility, color contrast against YouTube UI, emotional clarity, curiosity gap without clickbait, and mobile title truncation.
-4. Alternative Concepts: Generate 3-5 SPECIFIC, HIGHLY RELEVANT alternative title and thumbnail concepts grounded directly in the vehicle, hardware, and transcript discussion above. DO NOT produce generic template placeholders (e.g. "The Truth About Ford!").
-5. Provide 3-5 Concrete, Prioritized Action Items (numbered and specific).
-6. Calculate an Overall Video Health Score from 0 to 100.
+${mandates.join("\n")}
 
 You MUST reply ONLY with a valid JSON object with this EXACT structure (no markdown fences, no \`\`\`json):
 {
@@ -260,23 +310,23 @@ You MUST reply ONLY with a valid JSON object with this EXACT structure (no markd
   "health_tier": "Strong Performer",
   "scorecard": {
     "hook_status": "pass",
-    "ctr_status": "warn",
+    "ctr_status": "unavailable",
     "retention_status": "pass",
     "seo_status": "pass",
     "one_line_verdict": "Detailed one-line strategic verdict."
   },
   "hook_diagnosis": {
-    "hook_drop_30s": "-${metrics.hookDropPercent}%",
+    "hook_drop_30s": ${hasHookData ? `"-${metrics.hookDropPercent}%"` : `"Unavailable"`},
     "diagnosis_type": "Intro Hook Bottleneck",
-    "verdict": "Viewers who stay past 1:00 watch to completion, but 0:00-0:30 lost early clickers.",
-    "analysis": "Detailed explanation of intro hook pacing vs topic delivery."
+    "verdict": "One-line verdict, or a statement that retention data was unavailable.",
+    "analysis": "Explanation grounded in the transcript."
   },
   "discovery_matrix": {
-    "quadrant": "High Impressions / Low CTR",
-    "quadrant_number": 2,
+    "quadrant": ${hasDiscoveryData ? `"High Impressions / Low CTR"` : `"Unavailable"`},
+    "quadrant_number": ${hasDiscoveryData ? 2 : 0},
     "bottleneck": "Packaging (Title/Thumb)",
-    "diagnosis": "Algorithm surfaced to wide browse audience, but CTR lagged channel benchmark.",
-    "strategy": "Retitle with high-intent EV keywords and re-thumbnail with bold 3-word focal hook."
+    "diagnosis": "Diagnosis, or an explanation that impressions and CTR are not available.",
+    "strategy": "Recommended strategy, or what to check in YouTube Studio."
   },
   "title_thumb_critique": {
     "thumbnail_critique": {
@@ -295,31 +345,35 @@ You MUST reply ONLY with a valid JSON object with this EXACT structure (no markd
         "title": "Specific Alternative Title 1 grounded in video context",
         "thumbnail_visual": "Visual concept description",
         "thumbnail_text": "BOLD 3-WORD TEXT",
-        "rationale": "Why this fixes the CTR deficit"
+        "rationale": "Why this packaging is stronger"
       },
       {
         "title": "Specific Alternative Title 2 grounded in video context",
         "thumbnail_visual": "Visual concept description",
         "thumbnail_text": "BOLD TEXT 2",
-        "rationale": "Why this fixes the CTR deficit"
+        "rationale": "Why this packaging is stronger"
       },
       {
         "title": "Specific Alternative Title 3 grounded in video context",
         "thumbnail_visual": "Visual concept description",
         "thumbnail_text": "BOLD TEXT 3",
-        "rationale": "Why this fixes the CTR deficit"
+        "rationale": "Why this packaging is stronger"
       }
     ]
   },
   "monetization_insights": {
-    "ad_read_retention": "Retention assessment through mid-video segments.",
-    "sponsor_appeal": "Relevance for EV sponsors.",
-    "estimated_rpm": "$8.50 - $12.00"
+    "ad_read_retention": "Retention assessment, or a statement that retention data was unavailable.",
+    "sponsor_appeal": "Relevance for EV sponsors, based on the content itself."
   },
   "search_seo_analysis": {
-    "top_captured_terms": ["exact search term 1", "exact search term 2"],
+    "top_captured_terms": ["term the title and description actually target"],
     "missed_opportunities": ["missed term 1", "missed term 2"],
     "actionable_seo_tip": "Specific keyword optimization recommendation."
+  },
+  "data_confidence": {
+    "measured": ["list the metrics you were actually given"],
+    "unavailable": ["list the metrics that were not available"],
+    "note": "One sentence on how the missing data limits this audit."
   },
   "action_items": [
     {
@@ -342,6 +396,7 @@ You MUST reply ONLY with a valid JSON object with this EXACT structure (no markd
     }
   ]
 }`;
+
 
   const apiKey = getGeminiApiKey();
   if (!apiKey) {
@@ -384,10 +439,14 @@ You MUST reply ONLY with a valid JSON object with this EXACT structure (no markd
 
   if (evaluation) {
     if (!evaluation.scorecard) evaluation.scorecard = {};
-    if (!evaluation.scorecard.seo_score) {
-      const topTerms = evaluation.search_seo_analysis?.top_captured_terms?.length || 0;
-      const status = evaluation.scorecard.seo_status || "pass";
-      evaluation.scorecard.seo_score = status === "pass" ? (topTerms >= 2 ? 94 : 88) : 72;
+    // Record what the model was actually given, so the UI can show provenance
+    // even if the model omits its own data_confidence block.
+    if (!evaluation.data_confidence) {
+      evaluation.data_confidence = {
+        measured: [],
+        unavailable: metrics.unavailableMetrics || [],
+        note: "Provenance recorded by the server.",
+      };
     }
   }
 
@@ -420,8 +479,8 @@ async function getOrRunAudit(youtubeId, forceRefresh = false) {
     throw new Error(`Video not found in local catalog with ID: ${youtubeId}`);
   }
 
-  // 1. Calculate metrics (with live YouTube Studio data if OAuth connected)
-  const metrics = await getCalibratedMetrics(youtubeId, video);
+  // 1. Collect measured metrics (live YouTube Analytics where available; nulls otherwise)
+  const metrics = await getVideoMetrics(youtubeId, video);
 
   // 2. Generate AI Evaluation
   const evaluation = await generateAIEvaluation(video, metrics);
