@@ -309,7 +309,8 @@ export default function CompetitorComparison({ currentUser }) {
 
   // New Report Inputs
   const [channelUrl, setChannelUrl] = useState("");
-  const [ourCtr, setOurCtr] = useState(5.0);
+  const [ourCtr, setOurCtr] = useState("");
+  const [reportingCtr, setReportingCtr] = useState(null);
   const [ourAvd, setOurAvd] = useState(48.0);
   const [toast, setToast] = useState(null);
 
@@ -320,7 +321,24 @@ export default function CompetitorComparison({ currentUser }) {
 
   useEffect(() => {
     fetchReports();
+    fetchChannelBenchmarks();
   }, []);
+
+  const fetchChannelBenchmarks = async () => {
+    try {
+      const res = await fetch("/api/comparison/channel-benchmarks", { credentials: "same-origin" });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.reportingCtr != null) {
+          setReportingCtr(data.reportingCtr);
+        } else if (data.ourCtr != null) {
+          setReportingCtr(data.ourCtr);
+        }
+      }
+    } catch (e) {
+      console.warn("Could not fetch channel benchmarks:", e);
+    }
+  };
 
   const fetchReports = async () => {
     try {
@@ -348,8 +366,11 @@ export default function CompetitorComparison({ currentUser }) {
         setActiveReport(data);
         setActiveReportId(data.id);
         if (data.analysis?.benchmarks) {
-          setOurCtr(data.analysis.benchmarks.ourCtr || 5.0);
+          setOurCtr(data.analysis.benchmarks.ourCtr != null ? String(data.analysis.benchmarks.ourCtr) : "");
           setOurAvd(data.analysis.benchmarks.ourAvd || 48.0);
+          if (data.analysis.benchmarks.reportingCtr != null) {
+            setReportingCtr(data.analysis.benchmarks.reportingCtr);
+          }
         }
       }
     } catch (e) {
@@ -366,6 +387,10 @@ export default function CompetitorComparison({ currentUser }) {
     setGenerating(true);
     showToast("Analyzing competitor uploads and calculating rolling baselines...", "info");
 
+    const effectiveCtr = ourCtr !== "" && !isNaN(parseFloat(ourCtr))
+      ? parseFloat(ourCtr)
+      : (reportingCtr != null ? reportingCtr : 5.0);
+
     try {
       const res = await fetch("/api/comparison/generate", {
         method: "POST",
@@ -373,13 +398,13 @@ export default function CompetitorComparison({ currentUser }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           channelUrl: channelUrl.trim(),
-          ourCtr: parseFloat(ourCtr) || 5.0,
+          ourCtr: effectiveCtr,
           ourAvd: parseFloat(ourAvd) || 48.0,
         }),
       });
 
-      const data = await res.json();
-      if (data.success && data.reportId) {
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success && data.reportId) {
         showToast("Comparison report generated successfully!");
         setChannelUrl("");
         await fetchReports();
@@ -398,20 +423,25 @@ export default function CompetitorComparison({ currentUser }) {
     if (!activeReportId) return;
     setGenerating(true);
     showToast("Updating report with fresh YouTube uploads...", "info");
+
+    const effectiveCtr = ourCtr !== "" && !isNaN(parseFloat(ourCtr))
+      ? parseFloat(ourCtr)
+      : (reportingCtr != null ? reportingCtr : undefined);
+
     try {
       const res = await fetch(`/api/comparison/reports/${activeReportId}/refresh`, {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ourCtr, ourAvd }),
+        body: JSON.stringify({ ourCtr: effectiveCtr, ourAvd: ourAvd || undefined }),
       });
-      const data = await res.json();
-      if (data.success && data.reportId) {
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success && data.reportId) {
         showToast("Report refreshed successfully!");
         await fetchReports();
         await loadReportDetails(data.reportId);
       } else {
-        showToast("Refresh error: " + (data.error || "Failed"), "error");
+        showToast("Refresh error: " + (data.error || "Failed to refresh report"), "error");
       }
     } catch (err) {
       showToast("Refresh error: " + err.message, "error");
@@ -539,16 +569,20 @@ export default function CompetitorComparison({ currentUser }) {
             />
           </div>
 
-          {/* Manual CTR Benchmark */}
-          <div className="lg:col-span-2 flex items-center gap-2 bg-slate-950 px-3 py-2 rounded-xl border border-slate-800">
+          {/* Manual CTR Benchmark with Reporting API Placeholder */}
+          <div
+            className="lg:col-span-2 flex items-center gap-2 bg-slate-950 px-3 py-2 rounded-xl border border-slate-800"
+            title={reportingCtr != null ? `YouTube Reporting API measured CTR: ${reportingCtr}%. You can edit or override this value.` : "Default CTR placeholder. You can edit or enter your own value."}
+          >
             <span className="text-[11px] font-semibold text-slate-400 whitespace-nowrap">Our CTR:</span>
             <input
               type="number"
               step="0.1"
               value={ourCtr}
+              placeholder={reportingCtr != null ? String(reportingCtr) : "5.0"}
               onChange={(e) => setOurCtr(e.target.value)}
               disabled={generating}
-              className="w-16 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs font-bold text-white text-center focus:outline-none focus:border-cyan-500"
+              className="w-16 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs font-bold text-white text-center focus:outline-none focus:border-cyan-500 placeholder-slate-500"
             />
             <span className="text-[11px] text-slate-500">%</span>
           </div>
@@ -620,8 +654,21 @@ export default function CompetitorComparison({ currentUser }) {
             {/* The Electric Duo */}
             <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-5 flex items-center justify-between">
               <div className="flex items-center gap-3.5">
-                <div className="w-12 h-12 rounded-2xl bg-cyan-500/20 border border-cyan-500/30 flex items-center justify-center text-cyan-400 font-black text-lg">
-                  ED
+                <div className="w-12 h-12 rounded-2xl overflow-hidden bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center shrink-0 relative shadow-inner">
+                  <img
+                    src={analysis.duoChannel.thumbnailUrl || "https://yt3.googleusercontent.com/Al-4PHbFW51ukUyBMrk6M-iWW_YCkvIu5QTO94XRlImHGiZnoY_Harm4L39pfcSZf6EvNkd3=s900-c-k-c0x00ffffff-no-rj"}
+                    alt="The Electric Duo"
+                    referrerPolicy="no-referrer"
+                    onError={(e) => {
+                      e.currentTarget.style.display = "none";
+                      const fallback = e.currentTarget.parentElement?.querySelector(".avatar-fallback");
+                      if (fallback) fallback.style.display = "flex";
+                    }}
+                    className="w-full h-full object-cover"
+                  />
+                  <div className="avatar-fallback hidden w-full h-full items-center justify-center text-cyan-400 font-black text-lg bg-cyan-500/20">
+                    ED
+                  </div>
                 </div>
                 <div>
                   <div className="text-xs font-bold text-white">{analysis.duoChannel.title}</div>
@@ -642,11 +689,24 @@ export default function CompetitorComparison({ currentUser }) {
             {/* Competitor Channel */}
             <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-5 flex items-center justify-between">
               <div className="flex items-center gap-3.5">
-                <img
-                  src={analysis.competitorChannel.thumbnailUrl || "https://img.youtube.com/vi/mqdefault.jpg"}
-                  alt=""
-                  className="w-12 h-12 rounded-2xl object-cover border border-slate-700"
-                />
+                <div className="w-12 h-12 rounded-2xl overflow-hidden bg-slate-800 border border-slate-700 flex items-center justify-center shrink-0 relative shadow-inner">
+                  {analysis.competitorChannel.thumbnailUrl ? (
+                    <img
+                      src={analysis.competitorChannel.thumbnailUrl}
+                      alt={analysis.competitorChannel.title || "Competitor Channel"}
+                      referrerPolicy="no-referrer"
+                      onError={(e) => {
+                        e.currentTarget.style.display = "none";
+                        const fallback = e.currentTarget.parentElement?.querySelector(".avatar-fallback");
+                        if (fallback) fallback.style.display = "flex";
+                      }}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : null}
+                  <div className={`avatar-fallback ${analysis.competitorChannel.thumbnailUrl ? 'hidden' : 'flex'} w-full h-full items-center justify-center text-slate-300 font-black text-base bg-slate-800`}>
+                    {(analysis.competitorChannel.title || "C").charAt(0).toUpperCase()}
+                  </div>
+                </div>
                 <div>
                   <div className="text-xs font-bold text-white flex items-center gap-1.5">
                     <span>{analysis.competitorChannel.title}</span>
@@ -820,7 +880,7 @@ export default function CompetitorComparison({ currentUser }) {
                       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-800/80 pb-4">
                         <div className="flex items-start gap-4 min-w-0 flex-1">
                           <div className="relative group rounded-xl overflow-hidden aspect-video w-36 bg-slate-950 border border-slate-800 shrink-0 shadow-md">
-                            <img src={outlier.thumbnailUrl} alt="" className="w-full h-full object-cover" />
+                            <img src={outlier.thumbnailUrl} alt="" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
                             <a
                               href={`https://www.youtube.com/watch?v=${outlier.youtubeId}`}
                               target="_blank"
@@ -994,6 +1054,7 @@ export default function CompetitorComparison({ currentUser }) {
                         <img
                           src={video.thumbnailUrl}
                           alt=""
+                          referrerPolicy="no-referrer"
                           className="w-24 h-14 rounded-xl object-cover border border-slate-800 shrink-0"
                         />
                         <div className="min-w-0 flex-1">

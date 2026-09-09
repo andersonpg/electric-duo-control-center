@@ -134,6 +134,7 @@ export default function AdminSettings({ currentUser }) {
   const [chapterInstructions, setChapterInstructions] = useState("");
   const [competitorInstructions, setCompetitorInstructions] = useState("");
   const [channelHealthInstructions, setChannelHealthInstructions] = useState("");
+  const [activePromptTab, setActivePromptTab] = useState("competitor"); // 'competitor' | 'channel_health' | 'instructions' | 'thumbnail' | 'description' | 'chapter'
   const [loadingPrompt, setLoadingPrompt] = useState(false);
   const [isSavingPrompt, setIsSavingPrompt] = useState(false);
   const [promptLastUpdated, setPromptLastUpdated] = useState("");
@@ -154,6 +155,7 @@ export default function AdminSettings({ currentUser }) {
     fetchIntegrations();
     fetchModels();
     fetchOAuthStatus();
+    fetchPromptSettings();
 
     // Check for OAuth query params
     const params = new URLSearchParams(window.location.search);
@@ -173,6 +175,8 @@ export default function AdminSettings({ currentUser }) {
     }
     if (activeTab === "terms") {
       fetchTerms();
+    }
+    if (activeTab === "terms" || activeTab === "models") {
       fetchPromptSettings();
     }
   }, [activeTab]);
@@ -761,7 +765,7 @@ export default function AdminSettings({ currentUser }) {
       });
       const data = await res.json();
       if (res.ok && data.success) {
-        showToast("Title prompt instructions saved!", "success");
+        showToast("Prompt instructions saved successfully!", "success");
         setPromptLastUpdated(data.updated_at || new Date().toISOString());
       } else {
         showToast(data.error || "Failed to save prompt settings", "error");
@@ -770,6 +774,36 @@ export default function AdminSettings({ currentUser }) {
       showToast(e.message, "error");
     } finally {
       setIsSavingPrompt(false);
+    }
+  };
+
+  const handleResetPromptToDefault = async (promptKey) => {
+    try {
+      const res = await fetch("/api/title-prompt-settings/defaults", { credentials: "same-origin" });
+      if (res.ok) {
+        const defaults = await res.json();
+        if (promptKey === "competitor" && defaults.competitor_instructions) {
+          setCompetitorInstructions(defaults.competitor_instructions);
+          showToast("Competitor instructions restored to default (click Save to persist)", "info");
+        } else if (promptKey === "channel_health" && defaults.channel_health_instructions) {
+          setChannelHealthInstructions(defaults.channel_health_instructions);
+          showToast("Channel health instructions restored to default (click Save to persist)", "info");
+        } else if (promptKey === "instructions" && defaults.instructions) {
+          setPromptInstructions(defaults.instructions);
+          showToast("Title prompt instructions restored to default (click Save to persist)", "info");
+        } else if (promptKey === "thumbnail" && defaults.thumbnail_instructions) {
+          setThumbnailInstructions(defaults.thumbnail_instructions);
+          showToast("Thumbnail instructions restored to default (click Save to persist)", "info");
+        } else if (promptKey === "description" && defaults.description_instructions) {
+          setDescriptionInstructions(defaults.description_instructions);
+          showToast("Description instructions restored to default (click Save to persist)", "info");
+        } else if (promptKey === "chapter" && defaults.chapter_instructions) {
+          setChapterInstructions(defaults.chapter_instructions);
+          showToast("Chapter instructions restored to default (click Save to persist)", "info");
+        }
+      }
+    } catch (e) {
+      showToast("Could not load default prompt instructions", "error");
     }
   };
 
@@ -870,9 +904,9 @@ export default function AdminSettings({ currentUser }) {
       <div className="flex flex-wrap gap-2 border-b border-slate-800 pb-3">
         {[
           { id: "integrations", label: "API Keys & Integrations", icon: Key },
-          { id: "models", label: "AI Models & Thinking Mode", icon: Sparkles },
+          { id: "models", label: "AI Models & Prompts", icon: Sparkles },
           { id: "users", label: "User Accounts", icon: Users },
-          { id: "terms", label: "EV Terms & Title Prompt", icon: BookOpen },
+          { id: "terms", label: "EV Terms Registry", icon: BookOpen },
           { id: "maintenance", label: "Catalog Maintenance", icon: Database },
         ].map((t) => {
           const Icon = t.icon;
@@ -1170,67 +1204,352 @@ export default function AdminSettings({ currentUser }) {
         </form>
       )}
 
-      {/* TAB 2: AI MODELS & THINKING MODE */}
+      {/* TAB 2: AI MODELS & PROMPTS */}
       {activeTab === "models" && (
-        <form onSubmit={handleSaveIntegrations} className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 flex flex-col gap-6">
-          <div>
-            <h3 className="text-base font-bold text-white mb-1">Gemini AI Model Selector</h3>
-            <p className="text-xs text-slate-400">
-              Select the primary Google Gemini model used across Article Generator and Video Audit diagnostics.
-            </p>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="flex flex-col gap-6">
+          <form onSubmit={handleSaveIntegrations} className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 flex flex-col gap-6">
             <div>
-              <div className="flex items-center justify-between mb-2">
-                <label className="block text-xs font-semibold text-slate-300">Default Gemini Model</label>
-                <button
-                  type="button"
-                  onClick={handleRefreshModels}
-                  disabled={isRefreshingModels}
-                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 text-[11px] font-semibold border border-slate-700 transition-colors"
-                  title="Query Google AI Studio live for available models"
+              <h3 className="text-base font-bold text-white mb-1">Gemini AI Model Selector</h3>
+              <p className="text-xs text-slate-400">
+                Select the primary Google Gemini model used across Article Generator and Video Audit diagnostics.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-xs font-semibold text-slate-300">Default Gemini Model</label>
+                  <button
+                    type="button"
+                    onClick={handleRefreshModels}
+                    disabled={isRefreshingModels}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 text-[11px] font-semibold border border-slate-700 transition-colors"
+                    title="Query Google AI Studio live for available models"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${isRefreshingModels ? "animate-spin" : ""}`} />
+                    <span>Refresh Models from AI Studio</span>
+                  </button>
+                </div>
+                <select
+                  value={integrations.default_model}
+                  onChange={(e) => setIntegrations({ ...integrations, default_model: e.target.value })}
+                  className="w-full px-4 py-3 rounded-xl bg-slate-950 border border-slate-700/80 text-xs text-slate-100 font-medium focus:outline-none focus:border-cyan-500"
                 >
-                  <RefreshCw className={`w-3 h-3 ${isRefreshingModels ? "animate-spin" : ""}`} />
-                  <span>Refresh Models from AI Studio</span>
+                  {models.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-2">Thinking / Reasoning Depth</label>
+                <select
+                  value={integrations.thinking_mode}
+                  onChange={(e) => setIntegrations({ ...integrations, thinking_mode: e.target.value })}
+                  className="w-full px-4 py-3 rounded-xl bg-slate-950 border border-slate-700/80 text-xs text-slate-100 font-medium focus:outline-none focus:border-cyan-500"
+                >
+                  <option value="standard">Standard (Sub-2s latency · Optimized for publishing speed)</option>
+                  <option value="extended">Extended Reasoning (Deep diagnostic evaluation)</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="flex justify-end">
+              <button
+                type="submit"
+                className="flex items-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 font-bold text-xs uppercase tracking-wider shadow-lg shadow-cyan-500/20"
+              >
+                <Save className="w-4 h-4" />
+                <span>Update AI Settings</span>
+              </button>
+            </div>
+          </form>
+
+          {/* AI Prompts Management Section */}
+          <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 flex flex-col gap-6">
+            <div className="flex items-start justify-between flex-wrap gap-4 border-b border-slate-800 pb-5">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+                  <Sparkles className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">AI System Prompts & Instructions</h3>
+                  <p className="text-xs text-slate-400">
+                    View and customize the exact system prompts given to Gemini AI models across all features.
+                  </p>
+                </div>
+              </div>
+
+              {promptLastUpdated && (
+                <div className="text-right">
+                  <span className="text-[11px] text-slate-500">Last updated</span>
+                  <div className="text-xs text-slate-300 font-mono">
+                    {new Date(promptLastUpdated).toLocaleString()}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Prompt Category Pills */}
+            <div className="flex flex-wrap gap-2">
+              {[
+                { id: "competitor", label: "Competitor Comparison", badge: "Analysis Narrative" },
+                { id: "channel_health", label: "Channel Health", badge: "Executive Narrative" },
+                { id: "instructions", label: "Title Generator", badge: "8 Structured Titles" },
+                { id: "thumbnail", label: "Thumbnail Words", badge: "2-4 Word Text" },
+                { id: "description", label: "Video Description", badge: "Hook & Discussion" },
+                { id: "chapter", label: "Video Chapters", badge: "Timestamps & Quotes" },
+              ].map((tab) => {
+                const isActive = activePromptTab === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setActivePromptTab(tab.id)}
+                    className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all ${
+                      isActive
+                        ? "bg-cyan-500 text-slate-950 shadow-md shadow-cyan-500/20"
+                        : "bg-slate-950 hover:bg-slate-800 text-slate-300 border border-slate-800"
+                    }`}
+                  >
+                    <span>{tab.label}</span>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-semibold ${
+                      isActive ? "bg-slate-950/20 text-slate-950" : "bg-slate-800 text-slate-400"
+                    }`}>
+                      {tab.badge}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Active Prompt Editor Card */}
+            <form onSubmit={handleSavePromptSettings} className="flex flex-col gap-4">
+              {activePromptTab === "competitor" && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div>
+                      <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-purple-400"></span>
+                        Competitor Comparison Narrative Prompt
+                      </h4>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Instructions given to Gemini when writing the YouTube Growth Consultant executive briefing on a competitor report. The structured data block (outliers, cadence, topics, packaging, engagement) is assembled in code and appended automatically.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleResetPromptToDefault("competitor")}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold border border-slate-700 transition-colors"
+                      title="Restore factory default prompt"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
+                      <span>Reset to Default</span>
+                    </button>
+                  </div>
+                  <textarea
+                    value={competitorInstructions}
+                    onChange={(e) => setCompetitorInstructions(e.target.value)}
+                    rows={16}
+                    className="w-full p-4 rounded-2xl bg-slate-950 border border-slate-800 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors leading-relaxed selection:bg-cyan-500 selection:text-slate-950"
+                    placeholder="Enter competitor comparison narrative instructions..."
+                  />
+                  <div className="flex items-center justify-between text-xs text-slate-500 font-mono">
+                    <span>{competitorInstructions.length} characters · {competitorInstructions.split(/\s+/).filter(Boolean).length} words</span>
+                  </div>
+                </div>
+              )}
+
+              {activePromptTab === "channel_health" && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div>
+                      <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-blue-400"></span>
+                        Channel Health Narrative Prompt
+                      </h4>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Instructions given to Gemini when writing the Channel Health executive narrative. The scorecard metrics, category breakdown, top and bottom performers, and unavailable metric safeguards are appended automatically.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleResetPromptToDefault("channel_health")}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold border border-slate-700 transition-colors"
+                      title="Restore factory default prompt"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
+                      <span>Reset to Default</span>
+                    </button>
+                  </div>
+                  <textarea
+                    value={channelHealthInstructions}
+                    onChange={(e) => setChannelHealthInstructions(e.target.value)}
+                    rows={16}
+                    className="w-full p-4 rounded-2xl bg-slate-950 border border-slate-800 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors leading-relaxed selection:bg-cyan-500 selection:text-slate-950"
+                    placeholder="Enter channel health narrative instructions..."
+                  />
+                  <div className="flex items-center justify-between text-xs text-slate-500 font-mono">
+                    <span>{channelHealthInstructions.length} characters · {channelHealthInstructions.split(/\s+/).filter(Boolean).length} words</span>
+                  </div>
+                </div>
+              )}
+
+              {activePromptTab === "instructions" && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div>
+                      <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+                        Title Generation System Prompt
+                      </h4>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        System instructions given to Gemini when generating 8 high-CTR title suggestions from cleaned video transcripts.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleResetPromptToDefault("instructions")}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold border border-slate-700 transition-colors"
+                      title="Restore factory default prompt"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
+                      <span>Reset to Default</span>
+                    </button>
+                  </div>
+                  <textarea
+                    value={promptInstructions}
+                    onChange={(e) => setPromptInstructions(e.target.value)}
+                    rows={16}
+                    className="w-full p-4 rounded-2xl bg-slate-950 border border-slate-800 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors leading-relaxed selection:bg-cyan-500 selection:text-slate-950"
+                    placeholder="Enter title prompt instructions..."
+                  />
+                  <div className="flex items-center justify-between text-xs text-slate-500 font-mono">
+                    <span>{promptInstructions.length} characters · {promptInstructions.split(/\s+/).filter(Boolean).length} words</span>
+                  </div>
+                </div>
+              )}
+
+              {activePromptTab === "thumbnail" && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div>
+                      <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-amber-400"></span>
+                        Thumbnail Words & Phrases Instructions
+                      </h4>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Instructions given to Gemini for generating 2–4 word punchy thumbnail text paired alongside each suggested title.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleResetPromptToDefault("thumbnail")}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold border border-slate-700 transition-colors"
+                      title="Restore factory default prompt"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
+                      <span>Reset to Default</span>
+                    </button>
+                  </div>
+                  <textarea
+                    value={thumbnailInstructions}
+                    onChange={(e) => setThumbnailInstructions(e.target.value)}
+                    rows={14}
+                    className="w-full p-4 rounded-2xl bg-slate-950 border border-slate-800 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors leading-relaxed selection:bg-cyan-500 selection:text-slate-950"
+                    placeholder="Enter thumbnail words instructions..."
+                  />
+                  <div className="flex items-center justify-between text-xs text-slate-500 font-mono">
+                    <span>{thumbnailInstructions.length} characters · {thumbnailInstructions.split(/\s+/).filter(Boolean).length} words</span>
+                  </div>
+                </div>
+              )}
+
+              {activePromptTab === "description" && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div>
+                      <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
+                        YouTube Video Description Instructions
+                      </h4>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Instructions given to Gemini for generating viewer-first video descriptions (hook, content breakdown, and discussion closing).
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleResetPromptToDefault("description")}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold border border-slate-700 transition-colors"
+                      title="Restore factory default prompt"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
+                      <span>Reset to Default</span>
+                    </button>
+                  </div>
+                  <textarea
+                    value={descriptionInstructions}
+                    onChange={(e) => setDescriptionInstructions(e.target.value)}
+                    rows={14}
+                    className="w-full p-4 rounded-2xl bg-slate-950 border border-slate-800 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors leading-relaxed selection:bg-cyan-500 selection:text-slate-950"
+                    placeholder="Enter video description instructions..."
+                  />
+                  <div className="flex items-center justify-between text-xs text-slate-500 font-mono">
+                    <span>{descriptionInstructions.length} characters · {descriptionInstructions.split(/\s+/).filter(Boolean).length} words</span>
+                  </div>
+                </div>
+              )}
+
+              {activePromptTab === "chapter" && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div>
+                      <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-indigo-400"></span>
+                        Video Chapter List Instructions
+                      </h4>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Instructions given to Gemini for generating 6–12 logical, non-clickbait chapters with accurate timestamps from the cleaned transcript.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleResetPromptToDefault("chapter")}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold border border-slate-700 transition-colors"
+                      title="Restore factory default prompt"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
+                      <span>Reset to Default</span>
+                    </button>
+                  </div>
+                  <textarea
+                    value={chapterInstructions}
+                    onChange={(e) => setChapterInstructions(e.target.value)}
+                    rows={14}
+                    className="w-full p-4 rounded-2xl bg-slate-950 border border-slate-800 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors leading-relaxed selection:bg-cyan-500 selection:text-slate-950"
+                    placeholder="Enter chapter generation instructions..."
+                  />
+                  <div className="flex items-center justify-between text-xs text-slate-500 font-mono">
+                    <span>{chapterInstructions.length} characters · {chapterInstructions.split(/\s+/).filter(Boolean).length} words</span>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex justify-end pt-2 border-t border-slate-800">
+                <button
+                  type="submit"
+                  disabled={isSavingPrompt}
+                  className="flex items-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 font-bold text-xs uppercase tracking-wider shadow-lg shadow-cyan-500/20 disabled:opacity-50"
+                >
+                  <Save className={`w-4 h-4 ${isSavingPrompt ? "animate-spin" : ""}`} />
+                  <span>{isSavingPrompt ? "Saving All Prompts..." : "Save Prompt Instructions"}</span>
                 </button>
               </div>
-              <select
-                value={integrations.default_model}
-                onChange={(e) => setIntegrations({ ...integrations, default_model: e.target.value })}
-                className="w-full px-4 py-3 rounded-xl bg-slate-950 border border-slate-700/80 text-xs text-slate-100 font-medium focus:outline-none focus:border-cyan-500"
-              >
-                {models.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 mb-2">Thinking / Reasoning Depth</label>
-              <select
-                value={integrations.thinking_mode}
-                onChange={(e) => setIntegrations({ ...integrations, thinking_mode: e.target.value })}
-                className="w-full px-4 py-3 rounded-xl bg-slate-950 border border-slate-700/80 text-xs text-slate-100 font-medium focus:outline-none focus:border-cyan-500"
-              >
-                <option value="standard">Standard (Sub-2s latency · Optimized for publishing speed)</option>
-                <option value="extended">Extended Reasoning (Deep diagnostic evaluation)</option>
-              </select>
-            </div>
+            </form>
           </div>
-
-          <div className="flex justify-end">
-            <button
-              type="submit"
-              className="flex items-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 font-bold text-xs uppercase tracking-wider shadow-lg shadow-cyan-500/20"
-            >
-              <Save className="w-4 h-4" />
-              <span>Update AI Settings</span>
-            </button>
-          </div>
-        </form>
+        </div>
       )}
 
       {/* TAB 3: USER ACCOUNTS */}

@@ -1064,6 +1064,23 @@ app.get("/api/title-prompt-settings", auth.requireAuth(), (req, res, next) => {
   }
 });
 
+// 1b. Get default factory prompt instructions
+app.get("/api/title-prompt-settings/defaults", auth.requireAuth(), (req, res, next) => {
+  try {
+    const dbModule = require("./db");
+    res.json({
+      instructions: dbModule.DEFAULT_TITLE_PROMPT_INSTRUCTIONS || "",
+      thumbnail_instructions: dbModule.DEFAULT_THUMBNAIL_PROMPT_INSTRUCTIONS || "",
+      description_instructions: dbModule.DEFAULT_DESCRIPTION_PROMPT_INSTRUCTIONS || "",
+      chapter_instructions: dbModule.DEFAULT_CHAPTER_PROMPT_INSTRUCTIONS || "",
+      competitor_instructions: dbModule.DEFAULT_COMPETITOR_PROMPT_INSTRUCTIONS || "",
+      channel_health_instructions: dbModule.DEFAULT_CHANNEL_HEALTH_PROMPT_INSTRUCTIONS || "",
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // 2. Update Title, Thumbnail, Description & Chapter Prompt Instructions
 app.put("/api/title-prompt-settings", auth.requireAuth(), (req, res, next) => {
   try {
@@ -2653,6 +2670,20 @@ app.get("/api/comparison/reports/:id", auth.requireAuth(), (req, res, next) => {
   }
 });
 
+// 2b. Get Channel Benchmarks (Reporting API CTR and default AVD)
+app.get("/api/comparison/channel-benchmarks", auth.requireAuth(), (req, res, next) => {
+  try {
+    const reportingCtr = competitorComparison.getReportingApiCtr();
+    res.json({
+      ourCtr: reportingCtr != null ? reportingCtr : 5.0,
+      reportingCtr: reportingCtr,
+      ourAvd: 48.0,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // 3. Generate new comparison report or update existing
 app.post("/api/comparison/generate", auth.requireAuth(), aiLimiter, async (req, res, next) => {
   try {
@@ -2694,8 +2725,9 @@ app.post("/api/comparison/reports/:id/refresh", auth.requireAuth(), async (req, 
       return res.status(404).json({ error: "Report not found" });
     }
     const { ourCtr, ourAvd } = req.body || {};
+    const competitorTarget = report.competitorHandle || report.competitorChannelId;
     const result = await competitorComparison.generateComparisonReport(
-      report.competitorChannelId,
+      competitorTarget,
       ourCtr || report.analysis?.benchmarks?.ourCtr || null,
       ourAvd || report.analysis?.benchmarks?.ourAvd || null,
       req.body?.label || null

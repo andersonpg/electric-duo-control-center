@@ -365,10 +365,13 @@ async function resolveChannel(input) {
 
   // 4. Web Scrape / Search fallback for Handles, Vanity URLs, and Channel Pages
   try {
+    const isChannelId = parsed.type === "id" || parsed.value.startsWith("UC");
     const searchTarget = parsed.value.startsWith("@")
       ? `https://www.youtube.com/${parsed.value}`
       : parsed.value.startsWith("http")
       ? parsed.value
+      : isChannelId
+      ? `https://www.youtube.com/channel/${parsed.value}`
       : `https://www.youtube.com/@${parsed.value.replace(/^@/, "")}`;
 
     const webRes = await axios.get(searchTarget, {
@@ -420,6 +423,20 @@ async function resolveChannel(input) {
         subs = Math.round(num * mult);
       }
 
+      // Robust avatar extraction: modern pageHeaderViewModel, channelMetadataRenderer, or c4TabbedHeaderRenderer
+      let avatarUrl = "";
+      const headerAvatarSources = header?.image?.decoratedAvatarViewModel?.avatar?.avatarViewModel?.image?.sources;
+      if (Array.isArray(headerAvatarSources) && headerAvatarSources.length > 0) {
+        avatarUrl = headerAvatarSources[headerAvatarSources.length - 1]?.url || "";
+      }
+      if (!avatarUrl && Array.isArray(meta.avatar?.thumbnails) && meta.avatar.thumbnails.length > 0) {
+        avatarUrl = meta.avatar.thumbnails[meta.avatar.thumbnails.length - 1]?.url || "";
+      }
+      const c4Avatar = data.header?.c4TabbedHeaderRenderer?.avatar?.thumbnails;
+      if (!avatarUrl && Array.isArray(c4Avatar) && c4Avatar.length > 0) {
+        avatarUrl = c4Avatar[c4Avatar.length - 1]?.url || "";
+      }
+
       const extractedId = cId || meta.externalId;
       if (extractedId) {
         return {
@@ -427,7 +444,7 @@ async function resolveChannel(input) {
           title: meta.title || "Competitor Channel",
           handle: meta.vanityChannelUrl ? meta.vanityChannelUrl.replace(/.*youtube\.com\//, "") : ("@" + (meta.title || "channel").replace(/\s+/g, "")),
           description: meta.description || "",
-          thumbnailUrl: meta.avatar?.thumbnails?.[0]?.url || `https://img.youtube.com/vi/mqdefault.jpg`,
+          thumbnailUrl: avatarUrl || "",
           subscriberCount: subs || 50000,
           videoCount: 100,
           viewCount: 1000000,
@@ -1087,6 +1104,24 @@ function computeSideBySideSummary(duoVideos, compVideos, duoSubs, compSubs) {
   };
 }
 
+// Helper: Pull channel-wide weighted CTR from YouTube Reporting API reach records if available
+function getReportingApiCtr() {
+  try {
+    const row = db.prepare(`
+      SELECT ROUND(SUM(impressions * impressions_ctr) / NULLIF(SUM(impressions), 0), 2) AS weighted_ctr
+      FROM video_reach_daily
+    `).get();
+    if (row && row.weighted_ctr != null) {
+      return parseFloat(row.weighted_ctr);
+    }
+  } catch (e) {
+    /* ignore */
+  }
+  return null;
+}
+
+const DUO_DEFAULT_AVATAR = "https://yt3.googleusercontent.com/Al-4PHbFW51ukUyBMrk6M-iWW_YCkvIu5QTO94XRlImHGiZnoY_Harm4L39pfcSZf6EvNkd3=s900-c-k-c0x00ffffff-no-rj";
+
 // Master Report Generator: Compares The Electric Duo with any Competitor Channel
 async function generateComparisonReport(competitorInput, ctrBenchmark = null, avdBenchmark = null, reportLabel = null) {
   // 1. Resolve Competitor Channel
@@ -1097,11 +1132,15 @@ async function generateComparisonReport(competitorInput, ctrBenchmark = null, av
   let duoInfo;
   try {
     duoInfo = await resolveChannel(duoChannelId);
+    if (!duoInfo.thumbnailUrl) {
+      duoInfo.thumbnailUrl = DUO_DEFAULT_AVATAR;
+    }
   } catch (e) {
     duoInfo = {
       channelId: duoChannelId,
       title: "The Electric Duo",
       handle: "@TheElectricDuo",
+      thumbnailUrl: DUO_DEFAULT_AVATAR,
       subscriberCount: 24800,
       uploadsPlaylistId: "UU" + duoChannelId.substring(2),
     };
@@ -1173,13 +1212,22 @@ async function generateComparisonReport(competitorInput, ctrBenchmark = null, av
   const previousReport = getPreviousReport(competitorInfo.channelId);
   let executiveSummary = null;
   let executiveSummaryError = null;
+
+  const reportingCtr = getReportingApiCtr();
+  const effectiveCtr = ctrBenchmark != null && !isNaN(parseFloat(ctrBenchmark))
+    ? parseFloat(ctrBenchmark)
+    : (reportingCtr != null ? reportingCtr : 5.0);
+  const effectiveAvd = avdBenchmark != null && !isNaN(parseFloat(avdBenchmark))
+    ? parseFloat(avdBenchmark)
+    : 48.0;
+
   try {
     const result = await generateExecutiveSummary({
       duoChannel: duoInfo,
       competitorChannel: competitorInfo,
       benchmarks: {
-        ourCtr: parseFloat(ctrBenchmark) || null,
-        ourAvd: parseFloat(avdBenchmark) || null,
+        ourCtr: effectiveCtr,
+        ourAvd: effectiveAvd,
       },
       outlierProfiles,
       underperformers,
@@ -1200,6 +1248,7 @@ async function generateComparisonReport(competitorInput, ctrBenchmark = null, av
       channelId: duoInfo.channelId,
       title: duoInfo.title,
       handle: duoInfo.handle,
+      thumbnailUrl: duoInfo.thumbnailUrl || DUO_DEFAULT_AVATAR,
       subscribers: duoInfo.subscriberCount,
       videoCount12M: duoVideosWithOutliers.length,
       outlierCount: duoVideosWithOutliers.filter((v) => v.isOutlier).length,
@@ -1214,8 +1263,9 @@ async function generateComparisonReport(competitorInput, ctrBenchmark = null, av
       outlierCount: compOutliers.length,
     },
     benchmarks: {
-      ourCtr: parseFloat(ctrBenchmark) || 5.0,
-      ourAvd: parseFloat(avdBenchmark) || 48.0,
+      ourCtr: effectiveCtr,
+      ourAvd: effectiveAvd,
+      reportingCtr: reportingCtr,
     },
     executiveSummary,
     executiveSummaryError,
@@ -1432,4 +1482,5 @@ module.exports = {
   getReportById,
   deleteReport,
   generateReportCsv,
+  getReportingApiCtr,
 };

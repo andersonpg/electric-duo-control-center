@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.3.5] - 2026-09-08
+
+### Added
+- **AI System Prompts & Instructions Management (Admin Settings → AI Models & Prompts)**:
+  - Added full prompt inspection and editing interface under the AI Models & Prompts tab.
+  - Enables viewing and editing prompts for:
+    - **Competitor Comparison**: Strategic executive summary and comparison briefing instructions.
+    - **Channel Health Narrative**: 30-day channel diagnostic narrative instructions.
+    - **Video Title Ideas**: Creative direction and structure for AI title generation.
+    - **Thumbnail Words**: 3-4 word thumbnail text overlay instructions.
+    - **Video Description**: Structured YouTube description copy generation instructions.
+    - **Video Chapters**: Timestamp & chapter label generation instructions.
+  - Added individual **"Reset to Default"** action buttons backed by `GET /api/title-prompt-settings/defaults`.
+  - Added live character and word counters and unified **"Save All Prompts"** persistence.
+- **Competitor Comparison "Our CTR" Reporting API Integration**:
+  - Automatically queries view-weighted CTR from the YouTube Reporting API (`video_reach_daily`).
+  - Added `GET /api/comparison/channel-benchmarks` to serve real measured CTR and default benchmarks.
+  - Pre-populates the "Our CTR" input placeholder with the authentic Reporting API rate while preserving user manual entry and custom overrides.
+
+### Fixed
+- **Competitor Comparison Channel Logos & Avatars**:
+  - Attached official high-resolution channel logo (`thumbnailUrl`) to `analysis.duoChannel` and updated the frontend to render The Electric Duo's logo with fallback badge.
+  - Removed broken `mqdefault.jpg` fallback and implemented direct YouTube web scraper extraction (`ytInitialData` view models) for competitor avatars.
+  - Added `referrerPolicy="no-referrer"` to all competitor channel logos, avatar images, and video thumbnails to prevent Google CDN hotlink blocking (`403 Forbidden`).
+- **Competitor Report Refresh 500 Error**:
+  - Fixed channel scraper in `resolveChannel()` when YouTube API quota is exceeded. Channel IDs (`UC...`) now correctly target `https://www.youtube.com/channel/UC...` instead of invalid `@UC...` URLs that resulted in 404s and a 500 error.
+  - Updated `POST /api/comparison/reports/:id/refresh` to pass `report.competitorHandle || report.competitorChannelId`.
+
+---
+
 ## [2.3.4] - 2026-09-08
 
 ### Added
