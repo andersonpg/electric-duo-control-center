@@ -2442,7 +2442,8 @@ app.get("/api/channel-health/video-catalog", auth.requireAuth(), (req, res, next
     const limit = parseInt(req.query.limit || "50", 10);
     const search = req.query.search || "";
     const category = req.query.category || "";
-    const catalog = channelHealth.getVideoCatalog({ page, limit, search, category });
+    const source = req.query.source || "";
+    const catalog = channelHealth.getVideoCatalog({ page, limit, search, category, source });
     res.json(catalog);
   } catch (error) {
     next(error);
@@ -2559,6 +2560,16 @@ app.post("/api/channel-health/batch-override-categories", auth.requireAuth(), (r
       return res.status(400).json({ error: "updates array is required." });
     }
     const result = channelHealth.batchOverrideVideoCategories(updates);
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/channel-health/save-all", auth.requireAuth(), (req, res, next) => {
+  try {
+    const { manualOverrides, acceptAllAi, scopeYoutubeIds } = req.body || {};
+    const result = channelHealth.saveAllAndAcceptAi({ manualOverrides, acceptAllAi, scopeYoutubeIds });
     res.json(result);
   } catch (error) {
     next(error);

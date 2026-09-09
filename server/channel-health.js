@@ -245,8 +245,76 @@ function batchOverrideVideoCategories(updates) {
   return { success: true, count: updatedCount };
 }
 
-// 4. Video Catalog Query for Easy Search & Re-categorization (50 items/page, Long-Form Only)
-function getVideoCatalog({ page = 1, limit = 50, search = "", category = "" }) {
+/**
+ * Save manual overrides and accept all remaining AI-inferred categorizations.
+ */
+function saveAllAndAcceptAi({ manualOverrides = [], acceptAllAi = true, scopeYoutubeIds = null } = {}) {
+  const updateManualStmt = db.prepare(`
+    UPDATE videos
+    SET content_type = ?, category_source = 'manual'
+    WHERE youtube_id = ?
+  `);
+
+  const runTx = db.transaction(() => {
+    let manualCount = 0;
+    const manualIds = new Set();
+
+    // 1. Process all staged manual overrides
+    if (Array.isArray(manualOverrides)) {
+      for (const item of manualOverrides) {
+        if (item && item.youtubeId && item.category) {
+          updateManualStmt.run(item.category, item.youtubeId);
+          manualCount++;
+          manualIds.add(item.youtubeId);
+        }
+      }
+    }
+
+    // 2. Accept all remaining AI-inferred categorizations (that have a valid content_type)
+    let aiAcceptedCount = 0;
+    if (acceptAllAi) {
+      if (Array.isArray(scopeYoutubeIds) && scopeYoutubeIds.length > 0) {
+        const acceptSingleStmt = db.prepare(`
+          UPDATE videos
+          SET category_source = 'manual'
+          WHERE youtube_id = ?
+            AND category_source = 'ai_inferred'
+            AND content_type IS NOT NULL
+            AND content_type != ''
+        `);
+        for (const yid of scopeYoutubeIds) {
+          if (!manualIds.has(yid)) {
+            const res = acceptSingleStmt.run(yid);
+            if (res.changes > 0) aiAcceptedCount++;
+          }
+        }
+      } else {
+        const acceptAllStmt = db.prepare(`
+          UPDATE videos
+          SET category_source = 'manual'
+          WHERE category_source = 'ai_inferred'
+            AND content_type IS NOT NULL
+            AND content_type != ''
+        `);
+        const res = acceptAllStmt.run();
+        aiAcceptedCount = res.changes;
+      }
+    }
+
+    return { manualCount, aiAcceptedCount };
+  });
+
+  const result = runTx();
+  return {
+    success: true,
+    manualCount: result.manualCount,
+    aiAcceptedCount: result.aiAcceptedCount,
+    message: `Saved ${result.manualCount} manual adjustment${result.manualCount === 1 ? "" : "s"} and accepted ${result.aiAcceptedCount} AI categorization${result.aiAcceptedCount === 1 ? "" : "s"}.`
+  };
+}
+
+// 4. Video Catalog Query for Easy Search & Re-categorization (Long-Form Only)
+function getVideoCatalog({ page = 1, limit = 50, search = "", category = "", source = "" } = {}) {
   let where = "WHERE (privacy_status IS NULL OR privacy_status = 'public')";
   const params = [];
 
@@ -260,22 +328,58 @@ function getVideoCatalog({ page = 1, limit = 50, search = "", category = "" }) {
     params.push(category.trim());
   }
 
+  if (source && source.trim() && source !== "all") {
+    if (source === "ai_inferred") {
+      where += " AND category_source = 'ai_inferred'";
+    } else if (source === "manual") {
+      where += " AND category_source = 'manual'";
+    } else if (source === "needs_review") {
+      where += " AND COALESCE(category_source, '') IN ('needs_review', 'unclassified')";
+    } else {
+      where += " AND category_source = ?";
+      params.push(source.trim());
+    }
+  }
+
   // Retrieve matching videos and filter out shorts (<4m)
   const allMatching = db.prepare(`SELECT * FROM videos ${where} ORDER BY published_at DESC`).all(...params);
   const longFormVideos = allMatching.filter((v) => parseDurationSec(v.duration) >= 240);
 
   const total = longFormVideos.length;
-  const totalPages = Math.max(1, Math.ceil(total / limit));
-  const validPage = Math.max(1, Math.min(page, totalPages));
-  const offset = (validPage - 1) * limit;
-  const paginatedRows = longFormVideos.slice(offset, offset + limit);
+  const numLimit = Number(limit) || 50;
+  const effectiveLimit = numLimit <= 0 ? Math.max(total, 1) : numLimit;
+  const totalPages = Math.max(1, Math.ceil(total / effectiveLimit));
+  const validPage = Math.max(1, Math.min(Number(page) || 1, totalPages));
+  const offset = (validPage - 1) * effectiveLimit;
+  const paginatedRows = numLimit <= 0 ? longFormVideos : longFormVideos.slice(offset, offset + effectiveLimit);
+
+  // Compute source distribution across all long-form videos
+  const allLongForm = db.prepare(`SELECT duration, category_source FROM videos WHERE (privacy_status IS NULL OR privacy_status = 'public')`)
+    .all()
+    .filter((v) => parseDurationSec(v.duration) >= 240);
+
+  const sourceCounts = {
+    all: allLongForm.length,
+    ai_inferred: 0,
+    manual: 0,
+    needs_review: 0,
+    migrated: 0,
+  };
+  for (const v of allLongForm) {
+    const src = v.category_source || "unclassified";
+    if (src === "ai_inferred") sourceCounts.ai_inferred++;
+    else if (src === "manual") sourceCounts.manual++;
+    else if (src === "needs_review" || src === "unclassified") sourceCounts.needs_review++;
+    else if (src === "migrated") sourceCounts.migrated++;
+  }
 
   return {
     videos: paginatedRows,
     total,
     page: validPage,
-    limit,
+    limit: effectiveLimit,
     totalPages,
+    sourceCounts,
   };
 }
 
@@ -1356,6 +1460,7 @@ module.exports = {
   deletePlaylistMapping,
   overrideVideoCategory,
   batchOverrideVideoCategories,
+  saveAllAndAcceptAi,
   getVideoCatalog,
   bulkReclassifyLibrary,
   rollbackClassificationRun,

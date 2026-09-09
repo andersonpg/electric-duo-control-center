@@ -36,6 +36,8 @@ import {
   MinusCircle,
   FileText,
   Loader2,
+  RotateCcw,
+  ChevronLeft,
 } from "lucide-react";
 
 export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
@@ -65,8 +67,23 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
   const [catalogVideos, setCatalogVideos] = useState([]);
   const [catalogSearch, setCatalogSearch] = useState("");
   const [catalogCatFilter, setCatalogCatFilter] = useState("");
+  const [catalogSourceFilter, setCatalogSourceFilter] = useState("");
+  const [catalogPage, setCatalogPage] = useState(1);
+  const [catalogLimit, setCatalogLimit] = useState(100);
+  const [catalogTotalPages, setCatalogTotalPages] = useState(1);
+  const [catalogSourceCounts, setCatalogSourceCounts] = useState({
+    all: 0,
+    ai_inferred: 0,
+    manual: 0,
+    needs_review: 0,
+    migrated: 0,
+  });
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogTotal, setCatalogTotal] = useState(0);
+
+  // Staged Manual Overrides (youtubeId -> newCategory)
+  const [stagedCategories, setStagedCategories] = useState({});
+  const [isSavingAll, setIsSavingAll] = useState(false);
 
   // Toast
   const [toast, setToast] = useState(null);
@@ -106,15 +123,25 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
     } catch (e) {}
   };
 
-  const loadCatalog = async (search = catalogSearch, category = catalogCatFilter) => {
+  const loadCatalog = async (
+    search = catalogSearch,
+    category = catalogCatFilter,
+    source = catalogSourceFilter,
+    page = catalogPage,
+    limit = catalogLimit
+  ) => {
     setCatalogLoading(true);
     try {
-      const query = new URLSearchParams({ page: 1, limit: 100, search, category });
+      const query = new URLSearchParams({ page, limit, search, category, source });
       const res = await fetch(`/api/channel-health/video-catalog?${query.toString()}`, { credentials: "same-origin" });
       if (res.ok) {
         const data = await res.json();
         setCatalogVideos(data.videos || []);
         setCatalogTotal(data.total || 0);
+        setCatalogTotalPages(data.totalPages || 1);
+        if (data.sourceCounts) {
+          setCatalogSourceCounts(data.sourceCounts);
+        }
       }
     } catch (e) {
       console.error("Error loading catalog:", e);
@@ -123,9 +150,86 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
     }
   };
 
-  const handleOpenLibraryModal = () => {
+  const handleOpenLibraryModal = (initialSource = null) => {
+    // If an explicit source is provided, use it. Otherwise, if there are pending AI tags, default to "ai_inferred"
+    const src = initialSource !== null
+      ? initialSource
+      : (report?.flags?.pendingAiCount > 0 ? "ai_inferred" : "");
+    setCatalogSourceFilter(src);
+    setCatalogPage(1);
+    setStagedCategories({});
     setIsLibraryModalOpen(true);
-    loadCatalog();
+    loadCatalog(catalogSearch, catalogCatFilter, src, 1, catalogLimit);
+  };
+
+  const handleStageCategory = (youtubeId, newCategory, originalCategory) => {
+    setStagedCategories((prev) => {
+      const updated = { ...prev };
+      if (newCategory === originalCategory) {
+        delete updated[youtubeId];
+      } else {
+        updated[youtubeId] = newCategory;
+      }
+      return updated;
+    });
+  };
+
+  const handleRevertStage = (youtubeId) => {
+    setStagedCategories((prev) => {
+      const updated = { ...prev };
+      delete updated[youtubeId];
+      return updated;
+    });
+  };
+
+  const handleSaveAll = async () => {
+    const stagedCount = Object.keys(stagedCategories).length;
+    const aiCount = catalogSourceCounts.ai_inferred ?? report?.flags?.pendingAiCount ?? 0;
+
+    if (stagedCount === 0 && aiCount === 0) {
+      showToast("All videos are already verified and manual.", "info");
+      return;
+    }
+
+    const parts = [];
+    if (stagedCount > 0) parts.push(`• ${stagedCount} manual adjustment${stagedCount === 1 ? "" : "s"}`);
+    if (aiCount > 0) parts.push(`• Accept ${aiCount} AI-categorized video${aiCount === 1 ? "" : "s"} as verified manual entries`);
+
+    const confirmMsg = `Save All Categories?\n\n${parts.join("\n")}\n\nThis will lock in all categories as verified and manual.`;
+    if (!window.confirm(confirmMsg)) return;
+
+    setIsSavingAll(true);
+    try {
+      const manualOverrides = Object.entries(stagedCategories).map(([youtubeId, category]) => ({
+        youtubeId,
+        category,
+      }));
+
+      const res = await fetch("/api/channel-health/save-all", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          manualOverrides,
+          acceptAllAi: true,
+        }),
+      });
+
+      const data = await res.json();
+      if (!data.success) {
+        showToast("Save error: " + (data.error || "Failed to save"), "error");
+        return;
+      }
+
+      showToast(data.message || "All categories saved and AI tags accepted!", "success");
+      setStagedCategories({});
+      loadCatalog(catalogSearch, catalogCatFilter, catalogSourceFilter, catalogPage, catalogLimit);
+      loadData();
+    } catch (err) {
+      showToast("Save failed: " + err.message, "error");
+    } finally {
+      setIsSavingAll(false);
+    }
   };
 
   const handlePullSnapshot = async () => {
@@ -785,33 +889,91 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
 
       {/* 6. Video Library Re-Categorization Modal */}
       {isLibraryModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-4xl w-full p-6 shadow-2xl flex flex-col gap-4 max-h-[90vh] overflow-hidden">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <div className="flex items-center gap-2">
-                <ListFilter className="w-5 h-5 text-cyan-400" />
-                <h3 className="text-base font-bold text-white">Re-categorize Video Library</h3>
-                <span className="text-xs text-slate-400">({catalogTotal} long-form videos)</span>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/85 backdrop-blur-md">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-4xl w-full p-5 sm:p-6 shadow-2xl flex flex-col gap-3.5 max-h-[92vh] overflow-hidden">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3 gap-3">
+              <div className="flex items-center gap-2 min-w-0">
+                <ListFilter className="w-5 h-5 text-cyan-400 shrink-0" />
+                <h3 className="text-base font-bold text-white truncate">Re-categorize Video Library</h3>
+                <span className="text-xs text-slate-400 hidden sm:inline shrink-0">({catalogTotal} videos)</span>
+                {Object.keys(stagedCategories).length > 0 && (
+                  <span className="px-2 py-0.5 rounded-full bg-cyan-950 border border-cyan-500/40 text-cyan-300 text-[11px] font-bold shrink-0">
+                    {Object.keys(stagedCategories).length} edited
+                  </span>
+                )}
               </div>
-              <button
-                onClick={() => setIsLibraryModalOpen(false)}
-                className="p-1.5 rounded-xl bg-slate-800 text-slate-400 hover:text-white"
-              >
-                <X className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={handleSaveAll}
+                  disabled={isSavingAll}
+                  className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-slate-950 text-xs font-bold shadow-lg shadow-cyan-500/20 disabled:opacity-50 transition-all cursor-pointer"
+                  title="Save all manual adjustments and accept AI categorizations as verified manual entries"
+                >
+                  {isSavingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckSquare className="w-3.5 h-3.5" />}
+                  <span>
+                    {isSavingAll
+                      ? "Saving..."
+                      : Object.keys(stagedCategories).length > 0
+                        ? `Save All (${Object.keys(stagedCategories).length} edits)`
+                        : "Save All & Accept AI"}
+                  </span>
+                </button>
+                <button
+                  onClick={() => setIsLibraryModalOpen(false)}
+                  className="p-1.5 rounded-xl bg-slate-800 text-slate-400 hover:text-white transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Source Filter Tabs */}
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs border-b border-slate-800/60 shrink-0">
+              <span className="text-[11px] font-semibold text-slate-400 mr-1 shrink-0">Filter:</span>
+              {[
+                { id: "", label: "All Videos", count: catalogSourceCounts.all || catalogTotal },
+                { id: "ai_inferred", label: "🤖 AI Tagged", count: catalogSourceCounts.ai_inferred },
+                { id: "needs_review", label: "⚠️ Needs Review", count: catalogSourceCounts.needs_review },
+                { id: "manual", label: "✓ Manual", count: catalogSourceCounts.manual },
+                { id: "migrated", label: "📦 Migrated", count: catalogSourceCounts.migrated },
+              ].map((tab) => {
+                const isActive = catalogSourceFilter === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    onClick={() => {
+                      setCatalogSourceFilter(tab.id);
+                      setCatalogPage(1);
+                      loadCatalog(catalogSearch, catalogCatFilter, tab.id, 1, catalogLimit);
+                    }}
+                    className={`flex items-center gap-1.5 px-3 py-1 rounded-xl font-medium transition-all shrink-0 ${
+                      isActive
+                        ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-bold"
+                        : "bg-slate-950/60 text-slate-400 hover:text-slate-200 border border-slate-800"
+                    }`}
+                  >
+                    <span>{tab.label}</span>
+                    <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${isActive ? "bg-cyan-500/30 text-cyan-200" : "bg-slate-800 text-slate-400"}`}>
+                      {tab.count ?? 0}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
 
             {/* Filter / Search Bar */}
-            <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-950 p-3 rounded-2xl border border-slate-800">
-              <div className="flex flex-1 items-center gap-2 bg-slate-900 px-3 py-2 rounded-xl border border-slate-700 min-w-[200px]">
-                <Search className="w-4 h-4 text-slate-400 shrink-0" />
+            <div className="flex flex-wrap items-center justify-between gap-2.5 bg-slate-950 p-2.5 rounded-2xl border border-slate-800 shrink-0">
+              <div className="flex flex-1 items-center gap-2 bg-slate-900 px-3 py-1.5 rounded-xl border border-slate-700 min-w-[180px]">
+                <Search className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                 <input
                   type="text"
                   placeholder="Search video title..."
                   value={catalogSearch}
                   onChange={(e) => {
                     setCatalogSearch(e.target.value);
-                    loadCatalog(e.target.value, catalogCatFilter);
+                    setCatalogPage(1);
+                    loadCatalog(e.target.value, catalogCatFilter, catalogSourceFilter, 1, catalogLimit);
                   }}
                   className="bg-transparent text-xs text-white placeholder-slate-500 focus:outline-none w-full"
                 />
@@ -822,9 +984,10 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
                   value={catalogCatFilter}
                   onChange={(e) => {
                     setCatalogCatFilter(e.target.value);
-                    loadCatalog(catalogSearch, e.target.value);
+                    setCatalogPage(1);
+                    loadCatalog(catalogSearch, e.target.value, catalogSourceFilter, 1, catalogLimit);
                   }}
-                  className="px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none"
+                  className="px-2.5 py-1.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none"
                 >
                   <option value="">All Categories</option>
                   {categories.map((c) => (
@@ -834,26 +997,42 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
                   ))}
                 </select>
 
+                <select
+                  value={catalogLimit}
+                  onChange={(e) => {
+                    const l = parseInt(e.target.value, 10);
+                    setCatalogLimit(l);
+                    setCatalogPage(1);
+                    loadCatalog(catalogSearch, catalogCatFilter, catalogSourceFilter, 1, l);
+                  }}
+                  className="px-2 py-1.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-slate-300 focus:outline-none"
+                >
+                  <option value="50">50 / page</option>
+                  <option value="100">100 / page</option>
+                  <option value="250">250 / page</option>
+                  <option value="0">Show All</option>
+                </select>
+
                 <button
                   onClick={() => handleBulkReclassify(true)}
                   disabled={isReclassifying}
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-cyan-950/60 hover:bg-cyan-900/60 border border-cyan-500/30 text-cyan-300 text-xs font-semibold"
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-cyan-950/60 hover:bg-cyan-900/60 border border-cyan-500/30 text-cyan-300 text-xs font-semibold shrink-0"
                 >
                   <Sparkles className={`w-3.5 h-3.5 ${isReclassifying ? "animate-spin" : ""}`} />
-                  <span>{isReclassifying ? "Classifying..." : "Preview Re-classification"}</span>
+                  <span className="hidden sm:inline">{isReclassifying ? "Classifying..." : "Preview AI Reclassify"}</span>
                 </button>
               </div>
             </div>
 
             {/* Dry-run preview: nothing has been written yet */}
             {classifyPreview && (
-              <div className="mb-4 rounded-2xl border border-cyan-500/30 bg-cyan-950/20 p-4">
-                <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+              <div className="mb-2 rounded-2xl border border-cyan-500/30 bg-cyan-950/20 p-3 shrink-0">
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
                   <div>
-                    <div className="text-xs font-bold text-cyan-200 mb-1">
+                    <div className="text-xs font-bold text-cyan-200 mb-0.5">
                       Preview only &mdash; nothing has been written
                     </div>
-                    <div className="text-[11px] text-cyan-300/80 flex flex-wrap gap-x-4 gap-y-1">
+                    <div className="text-[11px] text-cyan-300/80 flex flex-wrap gap-x-3 gap-y-1">
                       <span><b>{classifyPreview.byPlaylist}</b> from playlist mapping</span>
                       <span><b>{classifyPreview.byAi}</b> from AI</span>
                       <span><b>{classifyPreview.needsReview}</b> need review</span>
@@ -872,21 +1051,21 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => setClassifyPreview(null)}
-                      className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
+                      className="px-2.5 py-1 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
                     >
                       Discard
                     </button>
                     <button
                       onClick={() => handleBulkReclassify(false)}
                       disabled={isReclassifying}
-                      className="px-3 py-1.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-bold disabled:opacity-50"
+                      className="px-2.5 py-1 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-bold disabled:opacity-50"
                     >
                       Apply {classifyPreview.byPlaylist + classifyPreview.byAi} changes
                     </button>
                   </div>
                 </div>
 
-                <div className="max-h-56 overflow-y-auto rounded-xl border border-slate-800 bg-slate-950/60">
+                <div className="max-h-44 overflow-y-auto rounded-xl border border-slate-800 bg-slate-950/60">
                   <table className="w-full text-left text-[11px]">
                     <tbody className="divide-y divide-slate-800/60">
                       {(classifyPreview.changes || []).slice(0, 100).map((c) => (
@@ -907,63 +1086,159 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
                     </tbody>
                   </table>
                 </div>
-                {(classifyPreview.changes || []).length > 100 && (
-                  <div className="text-[10px] text-slate-500 mt-2">
-                    Showing the first 100 of {classifyPreview.changes.length} changes.
-                  </div>
-                )}
               </div>
             )}
 
             {/* Video List Table */}
-            <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+            <div className="flex-1 overflow-y-auto space-y-2 pr-1 min-h-[250px]">
               {catalogLoading ? (
-                <div className="py-12 text-center text-slate-400 text-xs">Loading videos...</div>
+                <div className="py-16 text-center text-slate-400 text-xs flex flex-col items-center justify-center gap-2">
+                  <Loader2 className="w-5 h-5 animate-spin text-cyan-400" />
+                  <span>Loading videos...</span>
+                </div>
               ) : catalogVideos.length === 0 ? (
-                <div className="py-12 text-center text-slate-400 text-xs">No videos match your search.</div>
+                <div className="py-16 text-center text-slate-400 text-xs">No videos match your search or filter.</div>
               ) : (
-                catalogVideos.map((v) => (
-                  <div
-                    key={v.youtube_id}
-                    className="bg-slate-950/80 p-3 rounded-2xl border border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-slate-700 transition-all"
-                  >
-                    <div className="flex items-center gap-3 min-w-0 flex-1">
-                      <img
-                        src={v.thumbnail_url || `https://img.youtube.com/vi/${v.youtube_id}/mqdefault.jpg`}
-                        alt=""
-                        className="w-16 h-10 rounded-lg object-cover shrink-0"
-                      />
-                      <div className="min-w-0 flex-1">
-                        <div className="text-xs font-bold text-white truncate">{v.title}</div>
-                        <div className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-2">
-                          <span><b>{(v.view_count || 0).toLocaleString()}</b> views</span>
-                          <span>•</span>
-                          <span>{v.duration || "15m"}</span>
-                          <span>•</span>
-                          <span className={v.category_source === "manual" ? "text-emerald-400 font-semibold" : "text-purple-400"}>
-                            {v.category_source === "manual" ? "✓ Manual" : "🤖 AI Tagged"}
-                          </span>
+                catalogVideos.map((v) => {
+                  const staged = stagedCategories[v.youtube_id];
+                  const isModified = staged !== undefined && staged !== v.content_type;
+                  const displayCategory = staged !== undefined ? staged : (v.content_type || "Other");
+
+                  return (
+                    <div
+                      key={v.youtube_id}
+                      className={`bg-slate-950/80 p-3 rounded-2xl border transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                        isModified
+                          ? "border-cyan-500/60 shadow-md shadow-cyan-500/10 bg-cyan-950/20"
+                          : "border-slate-800/80 hover:border-slate-700"
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0 flex-1">
+                        <img
+                          src={v.thumbnail_url || `https://img.youtube.com/vi/${v.youtube_id}/mqdefault.jpg`}
+                          alt=""
+                          className="w-16 h-10 rounded-lg object-cover shrink-0"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-bold text-white truncate" title={v.title}>
+                            {v.title}
+                          </div>
+                          <div className="text-[10px] text-slate-400 mt-0.5 flex flex-wrap items-center gap-2">
+                            <span><b>{(v.view_count || 0).toLocaleString()}</b> views</span>
+                            <span>•</span>
+                            <span>{v.duration || "15m"}</span>
+                            <span>•</span>
+                            {isModified ? (
+                              <span className="text-cyan-300 font-bold bg-cyan-950/80 px-1.5 py-0.5 rounded border border-cyan-500/40 flex items-center gap-1">
+                                ✏️ Manual Adjust (Pending)
+                              </span>
+                            ) : v.category_source === "manual" ? (
+                              <span className="text-emerald-400 font-semibold">✓ Manual</span>
+                            ) : v.category_source === "ai_inferred" ? (
+                              <span className="text-purple-400 font-medium">🤖 AI Tagged</span>
+                            ) : v.category_source === "needs_review" ? (
+                              <span className="text-amber-400 font-medium">⚠️ Needs Review</span>
+                            ) : (
+                              <span className="text-slate-400">📦 Migrated</span>
+                            )}
+                          </div>
                         </div>
                       </div>
-                    </div>
 
-                    {/* Quick Category Selector Dropdown */}
-                    <div className="flex items-center gap-2 shrink-0">
-                      <select
-                        value={v.content_type || "Other"}
-                        onChange={(e) => handleOverrideCategory(v.youtube_id, e.target.value)}
-                        className="px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-700 text-xs font-bold text-cyan-300 focus:outline-none focus:border-cyan-500 cursor-pointer"
-                      >
-                        {categories.map((cat) => (
-                          <option key={cat.id} value={cat.name}>
-                            {cat.name}
-                          </option>
-                        ))}
-                      </select>
+                      {/* Quick Category Selector Dropdown & Revert */}
+                      <div className="flex items-center gap-2 shrink-0">
+                        {isModified && (
+                          <button
+                            onClick={() => handleRevertStage(v.youtube_id)}
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+                            title="Revert category adjustment"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        <select
+                          value={displayCategory}
+                          onChange={(e) => handleStageCategory(v.youtube_id, e.target.value, v.content_type)}
+                          className={`px-3 py-1.5 rounded-xl border text-xs font-bold focus:outline-none cursor-pointer transition-colors ${
+                            isModified
+                              ? "bg-cyan-950 border-cyan-400 text-cyan-200"
+                              : "bg-slate-900 border-slate-700 text-cyan-300 focus:border-cyan-500"
+                          }`}
+                        >
+                          {categories.map((cat) => (
+                            <option key={cat.id} value={cat.name}>
+                              {cat.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
                     </div>
-                  </div>
-                ))
+                  );
+                })
               )}
+            </div>
+
+            {/* Modal Footer with Pagination & Save All */}
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-800 text-xs shrink-0">
+              <div className="flex items-center gap-2">
+                <span className="text-slate-400 text-[11px]">
+                  {catalogTotal > 0
+                    ? `Showing ${((catalogPage - 1) * (catalogLimit || catalogTotal)) + 1}–${Math.min(catalogPage * (catalogLimit || catalogTotal), catalogTotal)} of ${catalogTotal}`
+                    : "0 videos"}
+                </span>
+                {catalogLimit > 0 && catalogTotalPages > 1 && (
+                  <div className="flex items-center gap-1 ml-2">
+                    <button
+                      disabled={catalogPage <= 1}
+                      onClick={() => {
+                        const prev = Math.max(1, catalogPage - 1);
+                        setCatalogPage(prev);
+                        loadCatalog(catalogSearch, catalogCatFilter, catalogSourceFilter, prev, catalogLimit);
+                      }}
+                      className="p-1 rounded-lg bg-slate-800 text-slate-300 hover:text-white disabled:opacity-30 disabled:pointer-events-none transition-colors"
+                    >
+                      <ChevronLeft className="w-3.5 h-3.5" />
+                    </button>
+                    <span className="text-[11px] text-slate-400 px-1">
+                      {catalogPage} / {catalogTotalPages}
+                    </span>
+                    <button
+                      disabled={catalogPage >= catalogTotalPages}
+                      onClick={() => {
+                        const next = Math.min(catalogTotalPages, catalogPage + 1);
+                        setCatalogPage(next);
+                        loadCatalog(catalogSearch, catalogCatFilter, catalogSourceFilter, next, catalogLimit);
+                      }}
+                      className="p-1 rounded-lg bg-slate-800 text-slate-300 hover:text-white disabled:opacity-30 disabled:pointer-events-none transition-colors"
+                    >
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2">
+                {Object.keys(stagedCategories).length > 0 && (
+                  <button
+                    onClick={() => setStagedCategories({})}
+                    className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors"
+                  >
+                    Discard Edits
+                  </button>
+                )}
+                <button
+                  onClick={handleSaveAll}
+                  disabled={isSavingAll}
+                  className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-slate-950 text-xs font-bold shadow-lg shadow-cyan-500/20 disabled:opacity-50 transition-all cursor-pointer"
+                >
+                  {isSavingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckSquare className="w-3.5 h-3.5" />}
+                  <span>
+                    {isSavingAll
+                      ? "Saving..."
+                      : `Save All (${Object.keys(stagedCategories).length} edits, accept AI)`}
+                  </span>
+                </button>
+              </div>
             </div>
           </div>
         </div>

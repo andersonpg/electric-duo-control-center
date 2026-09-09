@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.3.4] - 2026-09-08
+
+### Added
+- **Re-categorize Video Library "Save All" & AI Acceptance Workflow**:
+  - Added a prominent **"Save All"** button in both the header and footer of the Re-categorize Video Library modal.
+  - Automatically saves all manually adjusted categories as `category_source = 'manual'` and accepts all remaining AI-categorized videos (`category_source = 'ai_inferred'`) as verified manual entries in an atomic transaction.
+  - Added **Source Filter Tabs** (`All Videos`, `🤖 AI Tagged`, `⚠️ Needs Review`, `✓ Manual`, `📦 Migrated`) with live record counts.
+  - Automatically defaults to the `🤖 AI Tagged` view when opened from the review flag banner or when unreviewed AI tags exist.
+  - Staged manual overrides in the UI with visual `✏️ Manual Adjust (Pending)` indicators and one-click revert (↺) before saving.
+  - Added clean pagination controls (`Previous`, `Page X of Y`, `Next`) and per-page limit selector (50, 100, 250, Show All).
+  - Exposed `POST /api/channel-health/save-all` backend endpoint supporting batch manual overrides and atomic AI acceptance.
+
+---
+
 ## [2.3.3] - 2026-09-08
 
 ### Added
