@@ -1064,8 +1064,8 @@ app.delete("/api/terms", auth.requireAuth(), (req, res, next) => {
 // 1. Get Title, Thumbnail, Description & Chapter Prompt Instructions
 app.get("/api/title-prompt-settings", auth.requireAuth(), (req, res, next) => {
   try {
-    const row = articleDb.prepare("SELECT instructions, thumbnail_instructions, description_instructions, chapter_instructions, competitor_instructions, channel_health_instructions, updated_at FROM title_prompt_settings WHERE id = 1").get();
-    res.json(row || { instructions: "", thumbnail_instructions: "", description_instructions: "", chapter_instructions: "", competitor_instructions: "", channel_health_instructions: "", updated_at: null });
+    const row = articleDb.prepare("SELECT instructions, thumbnail_instructions, description_instructions, chapter_instructions, competitor_instructions, channel_health_instructions, audit_instructions, updated_at FROM title_prompt_settings WHERE id = 1").get();
+    res.json(row || { instructions: "", thumbnail_instructions: "", description_instructions: "", chapter_instructions: "", competitor_instructions: "", channel_health_instructions: "", audit_instructions: "", updated_at: null });
   } catch (error) {
     next(error);
   }
@@ -1082,6 +1082,7 @@ app.get("/api/title-prompt-settings/defaults", auth.requireAuth(), (req, res, ne
       chapter_instructions: dbModule.DEFAULT_CHAPTER_PROMPT_INSTRUCTIONS || "",
       competitor_instructions: dbModule.DEFAULT_COMPETITOR_PROMPT_INSTRUCTIONS || "",
       channel_health_instructions: dbModule.DEFAULT_CHANNEL_HEALTH_PROMPT_INSTRUCTIONS || "",
+      audit_instructions: dbModule.DEFAULT_AUDIT_PROMPT_INSTRUCTIONS || "",
     });
   } catch (error) {
     next(error);
@@ -1091,18 +1092,19 @@ app.get("/api/title-prompt-settings/defaults", auth.requireAuth(), (req, res, ne
 // 2. Update Title, Thumbnail, Description & Chapter Prompt Instructions
 app.put("/api/title-prompt-settings", auth.requireAuth(), (req, res, next) => {
   try {
-    const { instructions, thumbnail_instructions, description_instructions, chapter_instructions, competitor_instructions, channel_health_instructions } = req.body || {};
-    const current = articleDb.prepare("SELECT instructions, thumbnail_instructions, description_instructions, chapter_instructions, competitor_instructions, channel_health_instructions FROM title_prompt_settings WHERE id = 1").get() || {};
+    const { instructions, thumbnail_instructions, description_instructions, chapter_instructions, competitor_instructions, channel_health_instructions, audit_instructions } = req.body || {};
+    const current = articleDb.prepare("SELECT instructions, thumbnail_instructions, description_instructions, chapter_instructions, competitor_instructions, channel_health_instructions, audit_instructions FROM title_prompt_settings WHERE id = 1").get() || {};
     const newInstructions = typeof instructions === "string" ? instructions : (current.instructions || "");
     const newThumbnail = typeof thumbnail_instructions === "string" ? thumbnail_instructions : (current.thumbnail_instructions || "");
     const newDescription = typeof description_instructions === "string" ? description_instructions : (current.description_instructions || "");
     const newChapter = typeof chapter_instructions === "string" ? chapter_instructions : (current.chapter_instructions || "");
     const newCompetitor = typeof competitor_instructions === "string" ? competitor_instructions : (current.competitor_instructions || "");
     const newHealth = typeof channel_health_instructions === "string" ? channel_health_instructions : (current.channel_health_instructions || "");
+    const newAudit = typeof audit_instructions === "string" ? audit_instructions : (current.audit_instructions || "");
 
     articleDb.prepare(`
-      INSERT INTO title_prompt_settings (id, instructions, thumbnail_instructions, description_instructions, chapter_instructions, competitor_instructions, channel_health_instructions, updated_at)
-      VALUES (1, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      INSERT INTO title_prompt_settings (id, instructions, thumbnail_instructions, description_instructions, chapter_instructions, competitor_instructions, channel_health_instructions, audit_instructions, updated_at)
+      VALUES (1, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
       ON CONFLICT(id) DO UPDATE SET
         instructions = excluded.instructions,
         thumbnail_instructions = excluded.thumbnail_instructions,
@@ -1110,10 +1112,11 @@ app.put("/api/title-prompt-settings", auth.requireAuth(), (req, res, next) => {
         chapter_instructions = excluded.chapter_instructions,
         competitor_instructions = excluded.competitor_instructions,
         channel_health_instructions = excluded.channel_health_instructions,
+        audit_instructions = excluded.audit_instructions,
         updated_at = CURRENT_TIMESTAMP
-    `).run(newInstructions, newThumbnail, newDescription, newChapter, newCompetitor, newHealth);
+    `).run(newInstructions, newThumbnail, newDescription, newChapter, newCompetitor, newHealth, newAudit);
 
-    const updated = articleDb.prepare("SELECT instructions, thumbnail_instructions, description_instructions, chapter_instructions, competitor_instructions, channel_health_instructions, updated_at FROM title_prompt_settings WHERE id = 1").get();
+    const updated = articleDb.prepare("SELECT instructions, thumbnail_instructions, description_instructions, chapter_instructions, competitor_instructions, channel_health_instructions, audit_instructions, updated_at FROM title_prompt_settings WHERE id = 1").get();
     res.json({ success: true, ok: true, ...updated });
   } catch (error) {
     next(error);

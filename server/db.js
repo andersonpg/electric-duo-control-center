@@ -377,6 +377,7 @@ addColumnIfNotExists(articleDb, "title_prompt_settings", "competitor_instruction
 addColumnIfNotExists(articleDb, "title_prompt_settings", "channel_health_instructions", "TEXT");
 addColumnIfNotExists(articleDb, "title_prompt_settings", "description_instructions", "TEXT");
 addColumnIfNotExists(articleDb, "title_prompt_settings", "chapter_instructions", "TEXT");
+addColumnIfNotExists(articleDb, "title_prompt_settings", "audit_instructions", "TEXT");
 
 addColumnIfNotExists(articleDb, "transcripts", "status", "TEXT DEFAULT 'unfixed'");
 addColumnIfNotExists(articleDb, "transcripts", "youtube_caption_id", "TEXT");
@@ -530,6 +531,20 @@ RULES:
 - Compare against our own prior period only. Do not reference other channels' absolute numbers.
 - Plain, direct prose. No memo headers, no ASCII tables, no closing pep talk.`;
 
+const DEFAULT_AUDIT_PROMPT_INSTRUCTIONS = `You are the principal YouTube Strategy & Editorial Director for "The Electric Duo", a two-person EV channel run by Patrick and Liv.
+Perform a comprehensive Video Audit & Diagnostic Evaluation for this specific video.
+
+CRITICAL EVALUATION MANDATES:
+1. Hook / Retention Diagnosis: Assess whether viewers drop off early due to slow intro delivery (taking too long to deliver on the title/thumbnail promise) or mid-video pacing bleed. Ground your critique directly in the transcript and hook metrics.
+2. Discovery 2x2 Matrix: Classify into one of 4 quadrants ("High Impressions / High CTR" Star Performer, "High Impressions / Low CTR" Packaging Problem, "Low Impressions / High CTR" Distribution Bottleneck, "Low Impressions / Low CTR" Topic/Packaging Overhaul). If impressions or CTR are not available, state that clearly.
+3. Title & Thumbnail Critique: Evaluate mobile legibility, color contrast against the YouTube dark/light UI, emotional clarity, curiosity gap without clickbait, and mobile title truncation. This is a qualitative judgment of packaging craft.
+4. Alternative Concepts: Generate 3-5 SPECIFIC alternative title and thumbnail concepts grounded directly in the vehicle, hardware, specs, and transcript discussion. DO NOT produce generic template placeholders (e.g. "The Truth About Ford!").
+5. Concrete Prioritized Action Items: Provide 3-5 numbered, high-impact action items for packaging, thumbnail text, or content structure.
+6. Overall Video Health Score: Calculate a realistic score from 0 to 100 based strictly on evidence actually present. If metrics are unavailable, state that the score reflects packaging and editorial craft rather than measured performance.
+
+ABSOLUTE DATA INTEGRITY RULE:
+Every number you cite must come directly from the provided metrics block. Never estimate, extrapolate, or invent metrics that are marked unavailable. A clearly stated data gap is worth far more than a confident guess.`;
+
 try {
   const existingTitlePrompt = articleDb.prepare("SELECT instructions, thumbnail_instructions, description_instructions, chapter_instructions FROM title_prompt_settings WHERE id = 1").get();
   if (!existingTitlePrompt) {
@@ -549,13 +564,16 @@ try {
     }
   }
 
-  // Seed the competitor + channel health narrative instructions if blank.
-  const promptRow = articleDb.prepare("SELECT competitor_instructions, channel_health_instructions FROM title_prompt_settings WHERE id = 1").get() || {};
+  // Seed the competitor + channel health + video audit instructions if blank.
+  const promptRow = articleDb.prepare("SELECT competitor_instructions, channel_health_instructions, audit_instructions FROM title_prompt_settings WHERE id = 1").get() || {};
   if (!promptRow.competitor_instructions || !promptRow.competitor_instructions.trim()) {
     articleDb.prepare("UPDATE title_prompt_settings SET competitor_instructions = ? WHERE id = 1").run(DEFAULT_COMPETITOR_PROMPT_INSTRUCTIONS);
   }
   if (!promptRow.channel_health_instructions || !promptRow.channel_health_instructions.trim()) {
     articleDb.prepare("UPDATE title_prompt_settings SET channel_health_instructions = ? WHERE id = 1").run(DEFAULT_CHANNEL_HEALTH_PROMPT_INSTRUCTIONS);
+  }
+  if (!promptRow.audit_instructions || !promptRow.audit_instructions.trim()) {
+    articleDb.prepare("UPDATE title_prompt_settings SET audit_instructions = ? WHERE id = 1").run(DEFAULT_AUDIT_PROMPT_INSTRUCTIONS);
   }
 
   // One-time migration for chapter prompt v2 (guarded by app_settings flag)
@@ -769,5 +787,6 @@ controlDb.DEFAULT_DESCRIPTION_PROMPT_INSTRUCTIONS = DEFAULT_DESCRIPTION_PROMPT_I
 controlDb.DEFAULT_CHAPTER_PROMPT_INSTRUCTIONS = DEFAULT_CHAPTER_PROMPT_INSTRUCTIONS;
 controlDb.DEFAULT_COMPETITOR_PROMPT_INSTRUCTIONS = DEFAULT_COMPETITOR_PROMPT_INSTRUCTIONS;
 controlDb.DEFAULT_CHANNEL_HEALTH_PROMPT_INSTRUCTIONS = DEFAULT_CHANNEL_HEALTH_PROMPT_INSTRUCTIONS;
+controlDb.DEFAULT_AUDIT_PROMPT_INSTRUCTIONS = DEFAULT_AUDIT_PROMPT_INSTRUCTIONS;
 
 module.exports = controlDb;

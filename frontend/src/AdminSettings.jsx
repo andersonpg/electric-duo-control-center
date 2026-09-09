@@ -134,7 +134,8 @@ export default function AdminSettings({ currentUser }) {
   const [chapterInstructions, setChapterInstructions] = useState("");
   const [competitorInstructions, setCompetitorInstructions] = useState("");
   const [channelHealthInstructions, setChannelHealthInstructions] = useState("");
-  const [activePromptTab, setActivePromptTab] = useState("competitor"); // 'competitor' | 'channel_health' | 'instructions' | 'thumbnail' | 'description' | 'chapter'
+  const [auditInstructions, setAuditInstructions] = useState("");
+  const [activePromptTab, setActivePromptTab] = useState("competitor"); // 'competitor' | 'channel_health' | 'audit' | 'instructions' | 'thumbnail' | 'description' | 'chapter'
   const [loadingPrompt, setLoadingPrompt] = useState(false);
   const [isSavingPrompt, setIsSavingPrompt] = useState(false);
   const [promptLastUpdated, setPromptLastUpdated] = useState("");
@@ -657,6 +658,7 @@ export default function AdminSettings({ currentUser }) {
         setChapterInstructions(data.chapter_instructions || "");
         setCompetitorInstructions(data.competitor_instructions || "");
         setChannelHealthInstructions(data.channel_health_instructions || "");
+        setAuditInstructions(data.audit_instructions || "");
         setPromptLastUpdated(data.updated_at || "");
       }
     } catch (e) {
@@ -761,6 +763,7 @@ export default function AdminSettings({ currentUser }) {
           chapter_instructions: chapterInstructions,
           competitor_instructions: competitorInstructions,
           channel_health_instructions: channelHealthInstructions,
+          audit_instructions: auditInstructions,
         }),
       });
       const data = await res.json();
@@ -788,6 +791,9 @@ export default function AdminSettings({ currentUser }) {
         } else if (promptKey === "channel_health" && defaults.channel_health_instructions) {
           setChannelHealthInstructions(defaults.channel_health_instructions);
           showToast("Channel health instructions restored to default (click Save to persist)", "info");
+        } else if (promptKey === "audit" && defaults.audit_instructions) {
+          setAuditInstructions(defaults.audit_instructions);
+          showToast("Video audit instructions restored to default (click Save to persist)", "info");
         } else if (promptKey === "instructions" && defaults.instructions) {
           setPromptInstructions(defaults.instructions);
           showToast("Title prompt instructions restored to default (click Save to persist)", "info");
@@ -1297,6 +1303,7 @@ export default function AdminSettings({ currentUser }) {
               {[
                 { id: "competitor", label: "Competitor Comparison", badge: "Analysis Narrative" },
                 { id: "channel_health", label: "Channel Health", badge: "Executive Narrative" },
+                { id: "audit", label: "Video Audit", badge: "Diagnostic Critique" },
                 { id: "instructions", label: "Title Generator", badge: "8 Structured Titles" },
                 { id: "thumbnail", label: "Thumbnail Words", badge: "2-4 Word Text" },
                 { id: "description", label: "Video Description", badge: "Hook & Discussion" },
@@ -1393,6 +1400,41 @@ export default function AdminSettings({ currentUser }) {
                   />
                   <div className="flex items-center justify-between text-xs text-slate-500 font-mono">
                     <span>{channelHealthInstructions.length} characters · {channelHealthInstructions.split(/\s+/).filter(Boolean).length} words</span>
+                  </div>
+                </div>
+              )}
+
+              {activePromptTab === "audit" && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div>
+                      <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-rose-400"></span>
+                        Video Audit & Diagnostic Strategic Prompt
+                      </h4>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Strategic instructions given to Gemini as Editorial Director when diagnosing a video: hook drop-off critique, title & thumbnail packaging evaluation, alternative concepts, and prioritized action items. Video metadata, transcript context, measured metrics, and schema formatting are injected automatically.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleResetPromptToDefault("audit")}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold border border-slate-700 transition-colors"
+                      title="Restore factory default prompt"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
+                      <span>Reset to Default</span>
+                    </button>
+                  </div>
+                  <textarea
+                    value={auditInstructions}
+                    onChange={(e) => setAuditInstructions(e.target.value)}
+                    rows={16}
+                    className="w-full p-4 rounded-2xl bg-slate-950 border border-slate-800 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors leading-relaxed selection:bg-cyan-500 selection:text-slate-950"
+                    placeholder="Enter video audit diagnostic instructions..."
+                  />
+                  <div className="flex items-center justify-between text-xs text-slate-500 font-mono">
+                    <span>{auditInstructions.length} characters · {auditInstructions.split(/\s+/).filter(Boolean).length} words</span>
                   </div>
                 </div>
               )}
@@ -2005,6 +2047,29 @@ export default function AdminSettings({ currentUser }) {
                 />
                 <span className="text-xs text-slate-500 font-mono">
                   {channelHealthInstructions.length} characters · {channelHealthInstructions.split(/\s+/).filter(Boolean).length} words
+                </span>
+              </div>
+
+              {/* Video Audit Strategic Evaluation Instructions */}
+              <div className="pt-4 border-t border-slate-800 flex flex-col gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-500/10 text-rose-400 border border-rose-500/20 uppercase tracking-widest">
+                    Video Audit
+                  </span>
+                  <h4 className="text-sm font-bold text-white">Video Audit Strategic Evaluation Prompt</h4>
+                </div>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Strategic instructions given to Gemini when writing a video diagnostic evaluation (hook retention drop-off critique, packaging assessment, alternative concepts, and prioritized action items).
+                </p>
+                <textarea
+                  value={auditInstructions}
+                  onChange={(e) => setAuditInstructions(e.target.value)}
+                  rows={12}
+                  className="w-full p-4 rounded-2xl bg-slate-950 border border-slate-800 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors leading-relaxed selection:bg-cyan-500 selection:text-slate-950"
+                  placeholder="Enter video audit diagnostic instructions..."
+                />
+                <span className="text-xs text-slate-500 font-mono">
+                  {auditInstructions.length} characters · {auditInstructions.split(/\s+/).filter(Boolean).length} words
                 </span>
               </div>
 

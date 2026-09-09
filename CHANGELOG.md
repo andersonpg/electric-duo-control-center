@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.3.6] - 2026-09-08
+
+### Added
+- **Editable Video Audit Strategic Prompts (Admin Settings → AI Models & Prompts)**:
+  - Exposed the Video Audit diagnostic prompt in Admin Settings under **AI Models & Prompts** (as well as Section B of Title Strategist settings).
+  - Editorial directors and admins can now view, customize, and save the exact strategic instructions given to Gemini during video evaluations (including hook retention drop-off critique, packaging assessment, alternative concepts, and prioritized action items).
+  - Added a dedicated **"Video Audit"** tab pill with character and word counters and a factory **"Reset to Default"** action.
+  - Added `audit_instructions` column to `title_prompt_settings` in SQLite with guarded migration and automatic seeding from `DEFAULT_AUDIT_PROMPT_INSTRUCTIONS`.
+  - Updated `server/audit.js` to dynamically load `audit_instructions` while keeping metadata injection, transcript excerpts, measured metrics, and JSON response schema safely protected.
+
+---
+
 ## [2.3.5] - 2026-09-08
 
 ### Added

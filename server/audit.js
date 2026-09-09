@@ -199,6 +199,19 @@ async function getVideoMetrics(youtubeId, video) {
 }
 
 
+function getAuditInstructions() {
+  try {
+    const row = db.prepare("SELECT audit_instructions FROM title_prompt_settings WHERE id = 1").get();
+    if (row && row.audit_instructions && row.audit_instructions.trim()) {
+      return row.audit_instructions.trim();
+    }
+  } catch (e) {
+    console.warn("Could not read audit instructions:", e.message);
+  }
+  const dbModule = require("./db");
+  return dbModule.DEFAULT_AUDIT_PROMPT_INSTRUCTIONS || "";
+}
+
 // Generate Multimodal AI Evaluation via Gemini
 async function generateAIEvaluation(video, metrics) {
   let transcriptSnippet = "Not available.";
@@ -258,30 +271,22 @@ async function generateAIEvaluation(video, metrics) {
   const hasDiscoveryData = metrics.impressions != null && metrics.ctr != null;
   const hasHookData = metrics.hookDropPercent != null;
 
-  // Mandates are only issued for analyses the data can actually support.
-  const mandates = [];
-  let mandateNum = 1;
+  // Context-aware data availability safeguards
+  const dataSafeguards = [];
   if (hasHookData) {
-    mandates.push(`${mandateNum++}. Hook / Retention Diagnosis: Using the measured 30-second hook drop-off of -${metrics.hookDropPercent}%, analyse whether this was an intro issue (taking too long to deliver on the title/thumbnail promise) or a mid-video pacing bleed. Ground this in the transcript.`);
+    dataSafeguards.push(`- Measured 30-second hook drop-off: -${metrics.hookDropPercent}%. Ground hook analysis in this number and transcript.`);
   } else {
-    mandates.push(`${mandateNum++}. Hook / Retention Diagnosis: Retention data is NOT available for this video. Assess the intro from the transcript alone — how quickly it delivers on the title and thumbnail promise — and state explicitly that no retention measurement was available to confirm it.`);
+    dataSafeguards.push(`- Retention data is NOT available for this video. Assess the intro from the transcript alone and state explicitly that no retention measurement was available to confirm it.`);
   }
   if (hasDiscoveryData) {
-    mandates.push(`${mandateNum++}. Discovery 2x2 Matrix: Classify into one of 4 quadrants:
-   - "High Impressions / High CTR" (Star Performer)
-   - "High Impressions / Low CTR" (Packaging Problem)
-   - "Low Impressions / High CTR" (Distribution Bottleneck)
-   - "Low Impressions / Low CTR" (Topic / Packaging Overhaul)`);
+    dataSafeguards.push(`- Measured impressions and CTR are available. Classify into the Discovery 2x2 Matrix.`);
   } else {
-    mandates.push(`${mandateNum++}. Discovery Matrix: SKIP THIS. Impressions and click-through rate are not available, so the quadrant cannot be determined. Return "quadrant": "Unavailable", "quadrant_number": 0, and a diagnosis field explaining that impressions and CTR are not exposed by the YouTube Analytics API and must be read from YouTube Studio.`);
+    dataSafeguards.push(`- Impressions and CTR are NOT available. SKIP the Discovery Matrix (return "quadrant": "Unavailable", "quadrant_number": 0, and explain that impressions and CTR must be checked in YouTube Studio).`);
   }
-  mandates.push(`${mandateNum++}. Title & Thumbnail Critique: Evaluate mobile legibility, colour contrast against the YouTube UI, emotional clarity, curiosity gap without clickbait, and mobile title truncation. This is a qualitative judgement of the packaging itself and does not require performance data.`);
-  mandates.push(`${mandateNum++}. Alternative Concepts: Generate 3-5 SPECIFIC alternative title and thumbnail concepts grounded directly in the vehicle, hardware, and transcript discussion above. DO NOT produce generic template placeholders (e.g. "The Truth About Ford!").`);
-  mandates.push(`${mandateNum++}. Provide 3-5 Concrete, Prioritized Action Items (numbered and specific).`);
-  mandates.push(`${mandateNum++}. Calculate an Overall Video Health Score from 0 to 100. Base it ONLY on evidence you actually have. If most performance metrics are unavailable, score the packaging and content craft, and say in the verdict that the score reflects packaging rather than measured performance.`);
 
-  const prompt = `You are the principal YouTube Strategy & Editorial Director for "The Electric Duo", a two-person EV channel run by Patrick and Liv.
-Perform a comprehensive Video Audit & Diagnostic Evaluation for this specific video.
+  const editorialInstructions = getAuditInstructions();
+
+  const prompt = `${editorialInstructions}
 
 TARGET VIDEO DETAILS:
 - Title: "${video.title}"
@@ -298,11 +303,11 @@ ${transcriptSnippet}
 PERFORMANCE METRICS (${metrics.isLiveStudioData ? "MEASURED VIA THE YOUTUBE ANALYTICS API" : "LIMITED — YouTube Analytics is not connected for this video"}):
 ${metricLines.join("\n")}
 ${unavailableBlock}
+DATA AVAILABILITY SAFEGUARDS:
+${dataSafeguards.join("\n")}
+
 ABSOLUTE RULE ON DATA:
 Every number you cite must appear above. Do not estimate, extrapolate, or invent any metric that is listed as unavailable. If an analysis requires a number you do not have, say plainly that the data is not available and explain what the user would need to check in YouTube Studio. A clearly stated gap is worth more than a confident guess.
-
-CRITICAL EVALUATION MANDATES:
-${mandates.join("\n")}
 
 You MUST reply ONLY with a valid JSON object with this EXACT structure (no markdown fences, no \`\`\`json):
 {
