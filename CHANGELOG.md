@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.4.3] - 2026-09-12
+
+### Fixed
+- **Engagement Rate & Long-Form Audience Stats Silently Blending In Shorts**:
+  - The "Engagement Rate" and "Avg % Viewed" figures, and the underlying Top Markets, Age & Gender, Device, Subscriber Status, and Traffic Source breakdowns, were falling back to raw channel-wide totals (Shorts and Live included) whenever the local video catalog's long-form matching came up empty — while the card stayed labeled "Long-Form."
+  - Confirmed against live YouTube Analytics data for the same 90-day window: true long-form (video-on-demand) engagement rate was 3.80%, versus the 2.22% shown, because Shorts (0.54% engagement rate) were being blended into the total.
+  - Replaced the local-duration-based video whitelist with YouTube's own `creatorContentType` classification (`video_on_demand`) as the primary filter across all six sections. This is authoritative and no longer depends on the local video catalog's `duration` field being complete or fresh.
+  - Removed the unfiltered channel-wide fallback entirely. A section now renders blank rather than silently mixing in Shorts/Live data if long-form data can't be retrieved.
+  - Added an explicit unlisted/private video exclusion (from the local catalog's `privacy_status`) on top of the content-type filter, since YouTube Analytics has no privacy-status filter of its own.
+  - Widened the local duration-based whitelist (used only as a secondary fallback) from the top 25 to the top 200 highest-viewed long-form videos for better coverage in the rare case it's needed.
+
+---
+
 ## [2.4.2] - 2026-09-12
 
 ### Added

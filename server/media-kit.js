@@ -380,20 +380,58 @@ async function generateMediaKitSnapshot(onProgress = () => {}) {
     ORDER BY published_at DESC
   `).all().filter((v) => isLongForm(v.duration));
 
-  const longVideoIdSet = new Set(publishedLongVideos.map((v) => v.youtube_id));
   const topLongIds = [...publishedLongVideos]
     .sort((a, b) => (b.view_count || 0) - (a.view_count || 0))
-    .slice(0, 25)
+    .slice(0, 200)
     .map((v) => v.youtube_id);
   const topLongFilter = topLongIds.length > 0 ? `video==${topLongIds.join(",")}` : null;
+
+  // Videos the local catalog knows for certain are unlisted/private. YouTube's
+  // own creatorContentType classification (used below) has no concept of privacy
+  // status, so this exclusion list is the only way to keep non-public videos out
+  // of the long-form aggregates.
+  const nonPublicVideoIds = new Set(
+    db.prepare(`
+      SELECT youtube_id FROM videos
+      WHERE privacy_status IS NOT NULL AND privacy_status != 'public'
+    `).all().map((v) => v.youtube_id)
+  );
+
+  /**
+   * Runs an Analytics query restricted to long-form (non-Shorts, non-live)
+   * videos. Primary attempt uses YouTube's own `creatorContentType` dimension,
+   * which is authoritative and does not depend on the local video catalog being
+   * fully synced. Falls back to the local duration-based whitelist only if that
+   * filter is ever rejected by the API. Deliberately has no unfiltered
+   * channel-wide fallback -- that previously caused Shorts to silently blend
+   * into every "long-form" stat below.
+   */
+  async function queryLongFormOnly(baseParams, label) {
+    let res = await queryAnalyticsSafe(
+      ytAnalytics,
+      { ...baseParams, filters: "creatorContentType==video_on_demand" },
+      `${label} (Content-Type Filtered)`
+    );
+    if (res?.rows?.length > 0) return res;
+
+    if (topLongFilter) {
+      res = await queryAnalyticsSafe(
+        ytAnalytics,
+        { ...baseParams, filters: topLongFilter },
+        `${label} (Long-Form Whitelist Filtered)`
+      );
+      if (res?.rows?.length > 0) return res;
+    }
+
+    return null;
+  }
 
   // 2. YouTube Analytics API: Trailing 90 Days (Strictly Long Videos Only)
   onProgress("querying_trailing_90d", "Querying trailing 90-day engagement metrics for long-form videos…");
   const effectiveEndDateObj = new Date(`${effectiveEnd}T00:00:00Z`);
   const t90Start = formatDateStr(new Date(effectiveEndDateObj.getTime() - 90 * 86400000));
 
-  const t90VideoRes = await queryAnalyticsSafe(
-    ytAnalytics,
+  const t90VideoRes = await queryLongFormOnly(
     {
       ids: "channel==MINE",
       startDate: t90Start,
@@ -434,8 +472,9 @@ async function generateMediaKitSnapshot(onProgress = () => {}) {
         avgRetentionPct: vAvp != null ? Number(vAvp.toFixed(1)) : null,
       });
 
-      // Include in 90d engagement only if it is a verified long-form video
-      if (longVideoIdSet.has(vId)) {
+      // The query above is already restricted to long-form video_on_demand
+      // content; only exclude videos we know for certain are unlisted/private.
+      if (!nonPublicVideoIds.has(vId)) {
         totalLongViews += vViews;
         totalLongMinutes += vMin;
         totalLongLikes += vLikes;
@@ -457,42 +496,6 @@ async function generateMediaKitSnapshot(onProgress = () => {}) {
         comments: totalLongComments,
         shares: totalLongShares,
         engagementRate: Number(((totalEngagement / totalLongViews) * 100).toFixed(2)),
-      };
-    }
-  }
-
-  // Fallback to channel-level 90d if per-video had zero long views
-  if (!trailing90d) {
-    const t90ChannelRes = await queryAnalyticsSafe(
-      ytAnalytics,
-      {
-        ids: "channel==MINE",
-        startDate: t90Start,
-        endDate: effectiveEnd,
-        metrics: "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,likes,comments,shares",
-      },
-      "Trailing 90 Days Channel Fallback"
-    );
-    if (t90ChannelRes?.rows?.[0]) {
-      const row = t90ChannelRes.rows[0];
-      const views = row[0] || 0;
-      const estMinutes = row[1] || 0;
-      const avdSec = row[2] || 0;
-      const avpPct = row[3] || 0;
-      const likes = row[4] || 0;
-      const comments = row[5] || 0;
-      const shares = row[6] || 0;
-      const totalEngagement = likes + comments + shares;
-
-      trailing90d = {
-        views: views || null,
-        watchHours: estMinutes > 0 ? Math.round(estMinutes / 60) : null,
-        avgViewDurationSec: avdSec || null,
-        avgViewPercentage: avpPct > 0 ? Number(avpPct.toFixed(1)) : null,
-        likes,
-        comments,
-        shares,
-        engagementRate: views > 0 ? Number(((totalEngagement / views) * 100).toFixed(2)) : null,
       };
     }
   }
@@ -574,38 +577,18 @@ async function generateMediaKitSnapshot(onProgress = () => {}) {
 
   // 4. YouTube Analytics API: Trailing 365 Days Top Markets (Country Names, Exclude IN)
   onProgress("querying_demographics", "Querying audience markets and demographics for long-form content…");
-  let countryRes = null;
-  if (topLongFilter) {
-    countryRes = await queryAnalyticsSafe(
-      ytAnalytics,
-      {
-        ids: "channel==MINE",
-        startDate: t365Start,
-        endDate: effectiveEnd,
-        dimensions: "country",
-        metrics: "views",
-        filters: topLongFilter,
-        sort: "-views",
-        maxResults: 15,
-      },
-      "Top Markets Filtered"
-    );
-  }
-  if (!countryRes || !countryRes.rows || countryRes.rows.length === 0) {
-    countryRes = await queryAnalyticsSafe(
-      ytAnalytics,
-      {
-        ids: "channel==MINE",
-        startDate: t365Start,
-        endDate: effectiveEnd,
-        dimensions: "country",
-        metrics: "views",
-        sort: "-views",
-        maxResults: 15,
-      },
-      "Top Markets Channel"
-    );
-  }
+  const countryRes = await queryLongFormOnly(
+    {
+      ids: "channel==MINE",
+      startDate: t365Start,
+      endDate: effectiveEnd,
+      dimensions: "country",
+      metrics: "views",
+      sort: "-views",
+      maxResults: 15,
+    },
+    "Top Markets"
+  );
 
   let topMarkets = [];
   if (countryRes?.rows && countryRes.rows.length > 0) {
@@ -628,36 +611,17 @@ async function generateMediaKitSnapshot(onProgress = () => {}) {
   }
 
   // 5. YouTube Analytics API: Age & Gender Breakdown (365d) -> Highlight Buying Power
-  let ageGenderRes = null;
-  if (topLongFilter) {
-    ageGenderRes = await queryAnalyticsSafe(
-      ytAnalytics,
-      {
-        ids: "channel==MINE",
-        startDate: t365Start,
-        endDate: effectiveEnd,
-        dimensions: "ageGroup,gender",
-        metrics: "viewerPercentage",
-        filters: topLongFilter,
-        sort: "ageGroup,gender",
-      },
-      "Age and Gender Filtered"
-    );
-  }
-  if (!ageGenderRes || !ageGenderRes.rows || ageGenderRes.rows.length === 0) {
-    ageGenderRes = await queryAnalyticsSafe(
-      ytAnalytics,
-      {
-        ids: "channel==MINE",
-        startDate: t365Start,
-        endDate: effectiveEnd,
-        dimensions: "ageGroup,gender",
-        metrics: "viewerPercentage",
-        sort: "ageGroup,gender",
-      },
-      "Age and Gender Channel"
-    );
-  }
+  const ageGenderRes = await queryLongFormOnly(
+    {
+      ids: "channel==MINE",
+      startDate: t365Start,
+      endDate: effectiveEnd,
+      dimensions: "ageGroup,gender",
+      metrics: "viewerPercentage",
+      sort: "ageGroup,gender",
+    },
+    "Age and Gender"
+  );
 
   let ageDistribution = {};
   let genderDistribution = { male: null, female: null };
@@ -708,34 +672,16 @@ async function generateMediaKitSnapshot(onProgress = () => {}) {
   }
 
   // 6. YouTube Analytics API: Device Types (365d) -> Clean Real Percentages
-  let deviceRes = null;
-  if (topLongFilter) {
-    deviceRes = await queryAnalyticsSafe(
-      ytAnalytics,
-      {
-        ids: "channel==MINE",
-        startDate: t365Start,
-        endDate: effectiveEnd,
-        dimensions: "deviceType",
-        metrics: "views",
-        filters: topLongFilter,
-      },
-      "Device Breakdown Filtered"
-    );
-  }
-  if (!deviceRes || !deviceRes.rows || deviceRes.rows.length === 0) {
-    deviceRes = await queryAnalyticsSafe(
-      ytAnalytics,
-      {
-        ids: "channel==MINE",
-        startDate: t365Start,
-        endDate: effectiveEnd,
-        dimensions: "deviceType",
-        metrics: "views",
-      },
-      "Device Breakdown Channel"
-    );
-  }
+  const deviceRes = await queryLongFormOnly(
+    {
+      ids: "channel==MINE",
+      startDate: t365Start,
+      endDate: effectiveEnd,
+      dimensions: "deviceType",
+      metrics: "views",
+    },
+    "Device Breakdown"
+  );
 
   let deviceBreakdown = [];
   const DEVICE_LABEL_MAP = {
@@ -758,34 +704,16 @@ async function generateMediaKitSnapshot(onProgress = () => {}) {
   }
 
   // 7. YouTube Analytics API: Subscriber Status (365d) -> Fixed Non-Subscriber Calculation
-  let subStatusRes = null;
-  if (topLongFilter) {
-    subStatusRes = await queryAnalyticsSafe(
-      ytAnalytics,
-      {
-        ids: "channel==MINE",
-        startDate: t365Start,
-        endDate: effectiveEnd,
-        dimensions: "subscribedStatus",
-        metrics: "views",
-        filters: topLongFilter,
-      },
-      "Subscriber Status Filtered"
-    );
-  }
-  if (!subStatusRes || !subStatusRes.rows || subStatusRes.rows.length === 0) {
-    subStatusRes = await queryAnalyticsSafe(
-      ytAnalytics,
-      {
-        ids: "channel==MINE",
-        startDate: t365Start,
-        endDate: effectiveEnd,
-        dimensions: "subscribedStatus",
-        metrics: "views",
-      },
-      "Subscriber Status Channel"
-    );
-  }
+  const subStatusRes = await queryLongFormOnly(
+    {
+      ids: "channel==MINE",
+      startDate: t365Start,
+      endDate: effectiveEnd,
+      dimensions: "subscribedStatus",
+      metrics: "views",
+    },
+    "Subscriber Status"
+  );
 
   let subscriberStatus = {
     subscriberViews: null,
@@ -817,34 +745,16 @@ async function generateMediaKitSnapshot(onProgress = () => {}) {
   }
 
   // 8. YouTube Analytics API: Traffic Sources (365d)
-  let trafficRes = null;
-  if (topLongFilter) {
-    trafficRes = await queryAnalyticsSafe(
-      ytAnalytics,
-      {
-        ids: "channel==MINE",
-        startDate: t365Start,
-        endDate: effectiveEnd,
-        dimensions: "insightTrafficSourceType",
-        metrics: "views",
-        filters: topLongFilter,
-      },
-      "Traffic Sources Filtered"
-    );
-  }
-  if (!trafficRes || !trafficRes.rows || trafficRes.rows.length === 0) {
-    trafficRes = await queryAnalyticsSafe(
-      ytAnalytics,
-      {
-        ids: "channel==MINE",
-        startDate: t365Start,
-        endDate: effectiveEnd,
-        dimensions: "insightTrafficSourceType",
-        metrics: "views",
-      },
-      "Traffic Sources Channel"
-    );
-  }
+  const trafficRes = await queryLongFormOnly(
+    {
+      ids: "channel==MINE",
+      startDate: t365Start,
+      endDate: effectiveEnd,
+      dimensions: "insightTrafficSourceType",
+      metrics: "views",
+    },
+    "Traffic Sources"
+  );
 
   let trafficBreakdown = {
     searchPercent: null,
