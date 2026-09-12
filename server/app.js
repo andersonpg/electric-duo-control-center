@@ -2788,6 +2788,85 @@ app.get("/api/comparison/reports/:id/export-csv", auth.requireAuth(), (req, res,
 /* ---------------- Ford Fathom News Endpoints ---------------- */
 app.use("/api/fathom-news", auth.requireAuth(), fathomNewsRouter);
 
+/* ---------------- Media Kit Endpoints ---------------- */
+const mediaKit = require("./media-kit");
+const { initMediaKitScheduler } = require("./media-kit-scheduler");
+
+// 1. Get latest media kit snapshot and manual off-platform data
+app.get("/api/media-kit", auth.requireAuth(), (req, res, next) => {
+  try {
+    const latestSnapshot = mediaKit.getLatestSnapshot();
+    const manualData = mediaKit.getManualData();
+    res.json({
+      success: true,
+      snapshot: latestSnapshot,
+      manual: manualData,
+      effectiveEndDate: mediaKit.getEffectiveEndDate(),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// 2. Trigger asynchronous snapshot generation ("Refresh now")
+app.post("/api/media-kit/snapshot", auth.requireAuth(), (req, res, next) => {
+  try {
+    const job = mediaKit.startSnapshotJob();
+    res.status(202).json({
+      success: true,
+      ...job,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// 3. Poll snapshot job status
+app.get("/api/media-kit/snapshot/status/:jobId?", auth.requireAuth(), (req, res, next) => {
+  try {
+    const job = mediaKit.getSnapshotJobStatus(req.params.jobId);
+    if (!job) {
+      return res.status(404).json({ error: "Snapshot job not found." });
+    }
+    res.json({ success: true, job });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// 4. Get & update off-platform manual data
+app.get("/api/media-kit/manual", auth.requireAuth(), (req, res, next) => {
+  try {
+    const data = mediaKit.getManualData();
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.put("/api/media-kit/manual", auth.requireAuth(), (req, res, next) => {
+  try {
+    const updated = mediaKit.saveManualData(req.body);
+    res.json({ success: true, data: updated });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// 5. Upload partner logo (stored on disk under public/uploads/media-kit/)
+app.post("/api/media-kit/upload-logo", auth.requireAuth(), (req, res, next) => {
+  try {
+    const { imageBase64, filename } = req.body || {};
+    if (!imageBase64) {
+      return res.status(400).json({ error: "Missing imageBase64 payload." });
+    }
+    const result = mediaKit.savePartnerLogo(imageBase64, filename);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 /* ---------------- static files & SPA fallback ---------------- */
 
 app.get("/login.html", (req, res) => res.sendFile(path.join(PUBLIC_DIR, "login.html")));
@@ -2822,6 +2901,7 @@ const PORT = process.env.PORT || 3000;
 if (require.main === module) {
   app.listen(PORT, () => {
     console.log(`Electric Duo Command Center running on port ${PORT}`);
+    initMediaKitScheduler();
   });
 }
 

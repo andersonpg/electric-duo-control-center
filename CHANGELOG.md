@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.4.0] - 2026-09-11
+
+### Added
+- **Partnership Media Kit Module (`/media-kit`)**:
+  - Added dedicated, high-impact sales document designed specifically for prospective sponsors and automotive brand partners.
+  - Sourced completely from cached snapshot data (`media_kit_snapshots`) with zero live API calls on page load for instant rendering.
+  - Adheres strictly to the sales document principle: displays no diagnostic flags, no period-over-period deltas, no underperforming videos, and renders missing metrics as clean em dashes (`—`) without fabricating numbers.
+  - Integrated into the top-level **Analytics** navigation group across desktop dropdown and mobile drawer menus.
+- **Automated Snapshot Background Jobs & Cron Scheduling**:
+  - Implemented `node-cron` with `America/Los_Angeles` timezone:
+    - **Job A (Nightly 3:00 AM)**: Captures closed 28-day and 365-day view windows for public long-form videos ($\ge 240$ seconds) into `video_28day_views`.
+    - **Job B (Weekly Monday 4:00 AM)**: Computes comprehensive metrics snapshot, appends to `media_kit_snapshots`, and prunes history to the most recent 24 rows.
+  - Added non-blocking asynchronous snapshot generation for on-demand **"Refresh now"** with real-time job status polling (`GET /api/media-kit/snapshot/status/:jobId`) to avoid proxy timeouts.
+  - Implemented one-off throttled CLI backfill utility (`scripts/backfill-28day-views.js`).
+- **Reporting Lag & Data Integrity Engine**:
+  - Standardized all YouTube Analytics query date ranges to end 3 days before run date ($T - 3\text{d}$) to eliminate incomplete metric reporting.
+  - Sourced video performance and retention directly from trailing 90-day per-video queries (`dimensions=video, metrics=views,averageViewPercentage`).
+  - Computed 28-day median, 25th, and 75th percentiles across the trailing 12 months, and calculated evergreen long-tail multiples (`views_365d / views_28d`).
+  - Aggregated Content Pillars based on qualified video categories ($\ge 4$ videos and $\ge 10{,}000$ views) with proportional visual bar widths.
+- **Editable Off-Platform Information & Partner Logos**:
+  - Added interactive **"Edit off-platform data"** drawer to manage email newsletter counts, cross-platform social followings (Facebook, Instagram, Threads), EV club network reach, editorial standing bullets, and case studies.
+  - Stored partner logo uploads directly on disk under `public/uploads/media-kit/` with a 100KB size cap.
+- **Dedicated Print & PDF Route (`/media-kit/print`)**:
+  - Designed print stylesheet with Letter page size, forced color printing (`-webkit-print-color-adjust: exact`), automatic card page-break prevention (`break-inside: avoid`), stripped app chrome, and automated `window.print()` trigger.
+
+---
+
 ## [2.3.7] - 2026-09-11
 
 ### Fixed

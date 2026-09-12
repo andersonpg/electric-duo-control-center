@@ -327,6 +327,32 @@ articleDb.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_classification_runs_created ON classification_runs(created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_channel_health_reports_created ON channel_health_reports(period_days, created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS media_kit_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_date DATE NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    data_json TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_media_kit_snapshots_date ON media_kit_snapshots(snapshot_date DESC, id DESC);
+
+  CREATE TABLE IF NOT EXISTS video_28day_views (
+    video_id TEXT PRIMARY KEY,
+    published_at DATETIME NOT NULL,
+    window_start DATE NOT NULL,
+    window_end DATE NOT NULL,
+    views_28d INTEGER NOT NULL,
+    captured_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    views_365d INTEGER DEFAULT NULL,
+    captured_365d_at DATETIME DEFAULT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_video_28day_views_published ON video_28day_views(published_at DESC);
+
+  CREATE TABLE IF NOT EXISTS media_kit_manual (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    data_json TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 function addColumnIfNotExists(targetDb, table, column, definition) {
@@ -367,6 +393,50 @@ addColumnIfNotExists(articleDb, "content_categories", "avg_ctr", "REAL");
 addColumnIfNotExists(articleDb, "content_categories", "avg_retention", "REAL");
 addColumnIfNotExists(articleDb, "content_categories", "avg_view_duration", "TEXT");
 addColumnIfNotExists(articleDb, "content_categories", "traffic_share_json", "TEXT");
+
+// Media Kit columns
+addColumnIfNotExists(articleDb, "video_28day_views", "views_365d", "INTEGER DEFAULT NULL");
+addColumnIfNotExists(articleDb, "video_28day_views", "captured_365d_at", "DATETIME DEFAULT NULL");
+
+// Seed default off-platform values for Media Kit if missing
+try {
+  const existingManual = articleDb.prepare("SELECT id FROM media_kit_manual WHERE id = 1").get();
+  if (!existingManual) {
+    const defaultManualData = {
+      email_list_size: "1,200+",
+      facebook_followers: 1850,
+      instagram_followers: 2400,
+      threads_followers: 950,
+      club_network_description: "FordEVClubs.org & Mustang Mach-E Club: 14 regional club chapters nationwide connecting verified EV owners and reservation holders.",
+      website_description: "The Electric Duo (theelectricduo.com) — hands-on real-world electric vehicle road tests, high-power DC fast-charging guides, and deep-dive automotive tech analysis.",
+      industry_standing_bullets: [
+        "Motor Press Guild Vice President",
+        "Electric Vehicle Association (EVA) Board of Directors",
+        "Direct OEM Press Fleet Credentialed & First-Drive Participant"
+      ],
+      past_partners: [
+        { name: "Ford Motor Company", logo_url: "" },
+        { name: "Electrify America", logo_url: "" }
+      ],
+      case_study: {
+        title: "Ford F-150 Lightning Cross-Country Towing & Road Test",
+        body: "Generated 85,000+ targeted impressions and 4,200+ watch hours within the first 60 days, driving sustained community discussions and long-tail organic search traffic among prospective electric truck buyers."
+      },
+      audience_survey_stats: [
+        { label: "Own or lease an EV", value: "88%" },
+        { label: "Plan next vehicle to be an EV", value: "94%" }
+      ],
+      contact_details: {
+        name: "Patrick & The Electric Duo Team",
+        email: "partnerships@theelectricduo.com",
+        cta_text: "Partner with The Electric Duo to place your brand directly in front of the most engaged EV owners, buyers, and industry decision-makers in North America."
+      }
+    };
+    articleDb.prepare("INSERT INTO media_kit_manual (id, data_json) VALUES (1, ?)").run(JSON.stringify(defaultManualData));
+  }
+} catch (err) {
+  console.warn("Could not seed media_kit_manual:", err.message);
+}
 addColumnIfNotExists(articleDb, "content_categories", "benchmarks_updated_at", "DATETIME");
 addColumnIfNotExists(articleDb, "content_categories", "is_fallback", "INTEGER DEFAULT 0");
 

@@ -15,6 +15,7 @@ import {
   X,
   Layers,
   FileText,
+  Briefcase,
 } from "lucide-react";
 import PlanChecklist from "./PlanChecklist";
 import ArticleGenerator from "./ArticleGenerator";
@@ -23,12 +24,19 @@ import VideoAudit from "./VideoAudit";
 import Transcripts from "./Transcripts";
 import ChannelHealth from "./ChannelHealth";
 import CompetitorComparison from "./CompetitorComparison";
+import MediaKit from "./MediaKit";
+import MediaKitPrint from "./MediaKitPrint";
 import AdminSettings from "./AdminSettings";
 import pkg from "../package.json";
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState(null);
   const [activeModule, setActiveModule] = useState(() => {
+    if (typeof window !== "undefined") {
+      if (window.location.pathname === "/media-kit" || window.location.pathname === "/media-kit/") {
+        return "media-kit";
+      }
+    }
     return localStorage.getItem("ed_active_module") || "checklist";
   });
   const [isLoadingUser, setIsLoadingUser] = useState(true);
@@ -39,6 +47,17 @@ export default function App() {
   const [openDropdown, setOpenDropdown] = useState(null); // 'content' | 'analytics' | null
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const navRef = useRef(null);
+
+  // Handle popstate for back/forward navigation
+  useEffect(() => {
+    const handlePopState = () => {
+      if (window.location.pathname === "/media-kit" || window.location.pathname === "/media-kit/") {
+        setActiveModule("media-kit");
+      }
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
 
   useEffect(() => {
     fetch("/api/me", { credentials: "same-origin" })
@@ -77,6 +96,13 @@ export default function App() {
     localStorage.setItem("ed_active_module", mod);
     setOpenDropdown(null);
     setMobileMenuOpen(false);
+    if (mod === "media-kit") {
+      if (typeof window !== "undefined") {
+        window.history.pushState({}, "", "/media-kit");
+      }
+    } else if (typeof window !== "undefined" && window.location.pathname.startsWith("/media-kit")) {
+      window.history.pushState({}, "", "/");
+    }
   };
 
   const handleSelectVideoForAudit = (youtubeId) => {
@@ -96,6 +122,10 @@ export default function App() {
     window.location.href = "/login.html";
   };
 
+  if (typeof window !== "undefined" && window.location.pathname === "/media-kit/print") {
+    return <MediaKitPrint currentUser={currentUser} />;
+  }
+
   if (isLoadingUser) {
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center">
@@ -109,7 +139,7 @@ export default function App() {
 
   const isContentActive = activeModule === "article" || activeModule === "fathom";
   const isVideoAuditActive = activeModule === "audit" || activeModule === "transcripts";
-  const isAnalyticsActive = activeModule === "channel" || activeModule === "comparison";
+  const isAnalyticsActive = activeModule === "channel" || activeModule === "comparison" || activeModule === "media-kit";
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-cyan-500 selection:text-slate-950">
@@ -289,6 +319,8 @@ export default function App() {
             >
               {activeModule === "comparison" ? (
                 <Users className="w-3.5 h-3.5" />
+              ) : activeModule === "media-kit" ? (
+                <Briefcase className="w-3.5 h-3.5" />
               ) : (
                 <Activity className="w-3.5 h-3.5" />
               )}
@@ -297,13 +329,15 @@ export default function App() {
                   ? "Channel Health"
                   : activeModule === "comparison"
                   ? "Competitors"
+                  : activeModule === "media-kit"
+                  ? "Media Kit"
                   : "Analytics"}
               </span>
               <ChevronDown className={`w-3 h-3 transition-transform ${openDropdown === "analytics" ? "rotate-180" : ""}`} />
             </button>
 
             {openDropdown === "analytics" && (
-              <div className="absolute left-0 mt-2 w-60 rounded-2xl bg-slate-900 border border-slate-700/80 shadow-2xl p-2 z-50 flex flex-col gap-1 backdrop-blur-xl">
+              <div className="absolute left-0 mt-2 w-64 rounded-2xl bg-slate-900 border border-slate-700/80 shadow-2xl p-2 z-50 flex flex-col gap-1 backdrop-blur-xl">
                 <button
                   onClick={() => handleModuleSwitch("channel")}
                   className={`flex items-center gap-2.5 w-full text-left px-3 py-2.5 rounded-xl text-xs font-bold transition-all ${
@@ -331,6 +365,21 @@ export default function App() {
                   <div>
                     <div>Competitor Comparison</div>
                     <div className="text-[10px] font-normal text-slate-400">Benchmark vs rivals</div>
+                  </div>
+                </button>
+
+                <button
+                  onClick={() => handleModuleSwitch("media-kit")}
+                  className={`flex items-center gap-2.5 w-full text-left px-3 py-2.5 rounded-xl text-xs font-bold transition-all ${
+                    activeModule === "media-kit"
+                      ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/30"
+                      : "text-slate-300 hover:bg-slate-800/80 hover:text-white"
+                  }`}
+                >
+                  <Briefcase className="w-4 h-4 text-cyan-400 shrink-0" />
+                  <div>
+                    <div>Media Kit</div>
+                    <div className="text-[10px] font-normal text-slate-400">Sales deck for sponsors & partners</div>
                   </div>
                 </button>
               </div>
@@ -482,6 +531,18 @@ export default function App() {
           </button>
 
           <button
+            onClick={() => handleModuleSwitch("media-kit")}
+            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-bold text-left ${
+              activeModule === "media-kit"
+                ? "bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950"
+                : "text-slate-300 hover:bg-slate-800"
+            }`}
+          >
+            <Briefcase className="w-4 h-4" />
+            <span>Media Kit</span>
+          </button>
+
+          <button
             onClick={() => handleModuleSwitch("admin")}
             className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-bold text-left ${
               activeModule === "admin"
@@ -535,6 +596,7 @@ export default function App() {
           />
         )}
         {activeModule === "comparison" && <CompetitorComparison currentUser={currentUser} />}
+        {activeModule === "media-kit" && <MediaKit currentUser={currentUser} />}
         {activeModule === "admin" && <AdminSettings currentUser={currentUser} />}
       </main>
     </div>
