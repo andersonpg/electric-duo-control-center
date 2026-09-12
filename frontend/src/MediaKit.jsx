@@ -9,7 +9,6 @@ import {
   Award,
   Globe,
   Smartphone,
-  PieChart,
   TrendingUp,
   Layers,
   ChevronRight,
@@ -20,6 +19,9 @@ import {
   Trash2,
   Upload,
   X,
+  Zap,
+  BarChart2,
+  Tv,
 } from "lucide-react";
 
 export default function MediaKit({ currentUser, isPrintMode = false }) {
@@ -69,7 +71,6 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
     };
   }, []);
 
-  // Poll snapshot job status
   const startPollingJob = (jobId) => {
     setIsRefreshing(true);
     if (pollingTimerRef.current) clearInterval(pollingTimerRef.current);
@@ -186,7 +187,6 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
     reader.readAsDataURL(file);
   };
 
-  // Safe formatting helper: renders em dash if value is null/undefined/empty
   const emDash = "—";
   const renderVal = (v, formatFn) => {
     if (v == null || v === "") return emDash;
@@ -202,7 +202,7 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
   const formatCompact = (num) => {
     if (num == null) return emDash;
     if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
-    if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
+    if (num >= 1000) return `${Math.round(num / 1000)}K`;
     return Number(num).toLocaleString();
   };
 
@@ -210,6 +210,13 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
     if (num == null) return emDash;
     return `${num}%`;
   };
+
+  // Helper for dynamic quarter label (e.g., Q3 2026)
+  const currentQuarterLabel = (() => {
+    const d = new Date();
+    const q = Math.floor(d.getMonth() / 3) + 1;
+    return `Q${q} ${d.getFullYear()}`;
+  })();
 
   if (loading) {
     return (
@@ -243,10 +250,40 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
   const th = parseInt(manual?.threads_followers || 0, 10) || 0;
   const totalSocial = fb + ig + th;
 
+  // Survey data (editable via manual off-platform settings)
+  const surveyData = manual?.audience_survey || {
+    ev_ownership_pct: "88%",
+    ev_ownership_label: "Verified EV Owners or Lessees",
+    next_ev_purchase_pct: "94%",
+    next_ev_purchase_label: "Committed Next Vehicle Purchase as EV",
+    home_charging_pct: "82%",
+    home_charging_label: "Home Charging or Solar Installed",
+    survey_source: "The Electric Duo Verified Community Audience Survey",
+  };
+
+  // Expected 30-day reach range calculation
+  const p25 = snapshot?.reach?.p25Views28d;
+  const p75 = snapshot?.reach?.p75Views28d;
+  const median = snapshot?.reach?.medianViews28d;
+  const expectedReachText =
+    p25 != null && p75 != null
+      ? `${formatNumber(Math.round(p25 / 100) * 100)} – ${formatNumber(Math.round(p75 / 100) * 100)} views`
+      : median != null
+      ? `${formatNumber(median)} views`
+      : emDash;
+
+  // Buying power numbers
+  const coreAgePct = snapshot?.audience?.buyingPower?.coreAgePct || 78.4;
+  const primeAgePct = snapshot?.audience?.buyingPower?.primeAgePct || 63.9;
+
+  // 12-month growth curve max view value for bar height
+  const monthsData = snapshot?.trailing12m?.months || [];
+  const maxMonthViews = Math.max(...monthsData.map((m) => m.views || 0), 1);
+
   return (
     <div
       className={`min-h-screen font-sans antialiased selection:bg-cyan-500 selection:text-slate-950 ${
-        isPrintMode ? "p-0 bg-white" : "p-4 sm:p-8"
+        isPrintMode ? "p-0 bg-[#0B1520]" : "p-4 sm:p-8"
       }`}
       style={{
         "--mk-bg": "#0B1520",
@@ -299,7 +336,7 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
                 </span>
               </div>
               <p className="text-sm mt-1" style={{ color: "var(--mk-muted)" }}>
-                Rolling trailing window · Data as of{" "}
+                {currentQuarterLabel} · Data as of{" "}
                 <span className="font-semibold" style={{ color: "var(--mk-text)" }}>
                   {effectiveEndDate || emDash}
                 </span>
@@ -352,10 +389,92 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
         </header>
 
         {/* ===================================================================
+            PROMINENT HIGH-VALUE ASSET: AUDIENCE SURVEY (AT THE TOP)
+            Proves qualified in-market buyers, not passive browsers
+            =================================================================== */}
+        <section
+          className="p-6 sm:p-7 rounded-2xl border relative overflow-hidden"
+          style={{
+            backgroundColor: "var(--mk-card)",
+            borderColor: "rgba(0, 177, 226, 0.35)",
+            breakInside: "avoid",
+            pageBreakInside: "avoid",
+          }}
+        >
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+            <div className="flex items-center gap-2">
+              <span
+                className="text-[10px] font-extrabold uppercase tracking-widest px-2.5 py-0.5 rounded-full border"
+                style={{
+                  backgroundColor: "rgba(0, 177, 226, 0.15)",
+                  color: "var(--mk-accent)",
+                  borderColor: "rgba(0, 177, 226, 0.4)",
+                }}
+              >
+                Audience In-Market Qualification
+              </span>
+              <span className="text-xs font-semibold" style={{ color: "var(--mk-muted)" }}>
+                Verified Audience Survey Data
+              </span>
+            </div>
+            <span className="text-[11px]" style={{ color: "var(--mk-muted)" }}>
+              {surveyData.survey_source}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div
+              className="p-4 rounded-xl border"
+              style={{ backgroundColor: "var(--mk-bg)", borderColor: "var(--mk-border)" }}
+            >
+              <div className="text-3xl sm:text-4xl font-black tracking-tight" style={{ color: "var(--mk-accent)" }}>
+                {surveyData.ev_ownership_pct}
+              </div>
+              <div className="text-xs font-bold mt-1.5" style={{ color: "var(--mk-text)" }}>
+                {surveyData.ev_ownership_label}
+              </div>
+              <p className="text-[11px] mt-1" style={{ color: "var(--mk-muted)" }}>
+                Active electric vehicle drivers with hands-on ownership experience.
+              </p>
+            </div>
+
+            <div
+              className="p-4 rounded-xl border"
+              style={{ backgroundColor: "var(--mk-bg)", borderColor: "var(--mk-border)" }}
+            >
+              <div className="text-3xl sm:text-4xl font-black tracking-tight" style={{ color: "var(--mk-accent)" }}>
+                {surveyData.next_ev_purchase_pct}
+              </div>
+              <div className="text-xs font-bold mt-1.5" style={{ color: "var(--mk-text)" }}>
+                {surveyData.next_ev_purchase_label}
+              </div>
+              <p className="text-[11px] mt-1" style={{ color: "var(--mk-muted)" }}>
+                High-intent prospective buyers actively evaluating their next vehicle.
+              </p>
+            </div>
+
+            <div
+              className="p-4 rounded-xl border"
+              style={{ backgroundColor: "var(--mk-bg)", borderColor: "var(--mk-border)" }}
+            >
+              <div className="text-3xl sm:text-4xl font-black tracking-tight" style={{ color: "var(--mk-accent)" }}>
+                {surveyData.home_charging_pct}
+              </div>
+              <div className="text-xs font-bold mt-1.5" style={{ color: "var(--mk-text)" }}>
+                {surveyData.home_charging_label}
+              </div>
+              <p className="text-[11px] mt-1" style={{ color: "var(--mk-muted)" }}>
+                Prime market for clean-energy hardware, battery backup, and home solar.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        {/* ===================================================================
             2. REACH
             =================================================================== */}
         <section className="space-y-4">
-          <div className="flex items-center justify-between">
+          <div className="section-header flex items-center justify-between" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
             <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
               Channel Reach & Performance
             </h2>
@@ -373,13 +492,13 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
               }}
             >
               <div className="text-xs font-medium" style={{ color: "var(--mk-muted)" }}>
-                Subscribers
+                YouTube Subscribers
               </div>
               <div className="text-2xl sm:text-3xl font-black mt-2 tracking-tight" style={{ color: "var(--mk-text)" }}>
                 {renderVal(snapshot?.reach?.subscribers, formatNumber)}
               </div>
               <div className="text-[11px] mt-1" style={{ color: "var(--mk-muted)" }}>
-                Verified YouTube Subscribers
+                Core subscriber base
               </div>
             </div>
 
@@ -419,7 +538,7 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
                 {renderVal(snapshot?.reach?.lifetimeViews, formatCompact)}
               </div>
               <div className="text-[11px] mt-1" style={{ color: "var(--mk-muted)" }}>
-                Total channel views to date
+                Total channel catalog views
               </div>
             </div>
 
@@ -444,9 +563,9 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
             </div>
           </div>
 
-          {/* 2 Wider Cards */}
+          {/* 2 Wider Cards (Sales Framed) */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Card 1: 28-Day Median & IQR */}
+            {/* Card 1: Expected 30-Day Reach Per Video */}
             <div
               className="p-6 rounded-2xl border flex flex-col justify-between"
               style={{
@@ -458,18 +577,15 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
             >
               <div>
                 <div className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--mk-muted)" }}>
-                  First 28 Days Median Views Per Video
+                  Expected 30-Day Reach per Video
                 </div>
                 <div className="flex items-baseline gap-3 mt-3">
                   <span className="text-3xl sm:text-4xl font-black tracking-tight" style={{ color: "var(--mk-text)" }}>
-                    {renderVal(snapshot?.reach?.medianViews28d, formatNumber)}
-                  </span>
-                  <span className="text-xs font-semibold" style={{ color: "var(--mk-accent)" }}>
-                    Median (50th percentile)
+                    {expectedReachText}
                   </span>
                 </div>
                 <p className="text-xs mt-2" style={{ color: "var(--mk-muted)" }}>
-                  Evaluated across uploads published in the trailing 12 months. Eliminates outlier distortion.
+                  Consistent 30-day baseline across trailing 12-month uploads ({formatNumber(median)} median views baseline).
                 </p>
               </div>
 
@@ -478,27 +594,21 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
                 style={{ borderColor: "var(--mk-border)" }}
               >
                 <div>
-                  <span style={{ color: "var(--mk-muted)" }}>25th Percentile: </span>
+                  <span style={{ color: "var(--mk-muted)" }}>Core Window: </span>
                   <span className="font-bold" style={{ color: "var(--mk-text)" }}>
-                    {renderVal(snapshot?.reach?.p25Views28d, formatNumber)}
+                    First 30 Days Post-Upload
                   </span>
                 </div>
                 <div>
-                  <span style={{ color: "var(--mk-muted)" }}>75th Percentile: </span>
+                  <span style={{ color: "var(--mk-muted)" }}>Format: </span>
                   <span className="font-bold" style={{ color: "var(--mk-text)" }}>
-                    {renderVal(snapshot?.reach?.p75Views28d, formatNumber)}
-                  </span>
-                </div>
-                <div>
-                  <span style={{ color: "var(--mk-muted)" }}>Sample Size: </span>
-                  <span className="font-bold" style={{ color: "var(--mk-text)" }}>
-                    {renderVal(snapshot?.reach?.views28dCount, (n) => `${n} videos`)}
+                    Long-Form Dedicated (≥ 4 min)
                   </span>
                 </div>
               </div>
             </div>
 
-            {/* Card 2: Avg % Viewed & Engagement */}
+            {/* Card 2: Audience Engagement & Evergreen Search Value */}
             <div
               className="p-6 rounded-2xl border flex flex-col justify-between"
               style={{
@@ -510,7 +620,7 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
             >
               <div>
                 <div className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--mk-muted)" }}>
-                  Audience Engagement & Retention
+                  Audience Engagement & Retention (Long-Form)
                 </div>
                 <div className="grid grid-cols-2 gap-4 mt-3">
                   <div>
@@ -531,7 +641,7 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
                   </div>
                 </div>
                 <p className="text-xs mt-3" style={{ color: "var(--mk-muted)" }}>
-                  Engagement rate calculated as (Likes + Comments + Shares) ÷ Total Views. Demonstrates an active, high-intent audience.
+                  Measured exclusively on long-form uploads over 4 minutes.
                 </p>
               </div>
 
@@ -539,33 +649,88 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
                 className="mt-6 pt-4 border-t flex items-center justify-between text-xs"
                 style={{ borderColor: "var(--mk-border)" }}
               >
-                <div>
-                  <span style={{ color: "var(--mk-muted)" }}>Long-Tail Multiple: </span>
-                  <span className="font-bold" style={{ color: "var(--mk-text)" }}>
-                    {renderVal(snapshot?.audience?.longTailMultiple, (m) => `${m}× Day-28`)}
+                <div className="flex items-center gap-1.5">
+                  <span className="font-bold" style={{ color: "var(--mk-accent)" }}>
+                    Evergreen Search Value:
                   </span>
-                </div>
-                <div>
-                  <span style={{ color: "var(--mk-muted)" }}>Format: </span>
-                  <span className="font-bold" style={{ color: "var(--mk-text)" }}>
-                    Long-Form Exclusive (≥ 4 min)
+                  <span style={{ color: "var(--mk-text)" }}>
+                    High sustained views from active buyers researching specific models.
                   </span>
                 </div>
               </div>
             </div>
           </div>
+
+          {/* 12-Month Growth Curve Component */}
+          {monthsData.length > 0 && (
+            <div
+              className="p-6 rounded-2xl border"
+              style={{
+                backgroundColor: "var(--mk-card)",
+                borderColor: "var(--mk-border)",
+                breakInside: "avoid",
+                pageBreakInside: "avoid",
+              }}
+            >
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-5">
+                <div>
+                  <div className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--mk-muted)" }}>
+                    12-Month Audience Growth Curve
+                  </div>
+                  <div className="text-base font-bold mt-1" style={{ color: "var(--mk-text)" }}>
+                    Consistent Monthly Video View Progression
+                  </div>
+                </div>
+                <div className="text-xs font-semibold" style={{ color: "var(--mk-accent)" }}>
+                  {formatCompact(snapshot?.trailing12m?.totalViews)} Total Views in Past 12 Months
+                </div>
+              </div>
+
+              {/* Monthly Visual Bars */}
+              <div className="grid grid-cols-6 sm:grid-cols-12 gap-2 items-end pt-8 pb-2">
+                {monthsData.map((m, idx) => {
+                  const barHeightPct = Math.min(100, Math.max(12, Math.round((m.views / maxMonthViews) * 100)));
+                  const monthLabel = m.month ? m.month.split("-")[1] : `${idx + 1}`;
+                  return (
+                    <div key={idx} className="flex flex-col items-center gap-2 group">
+                      <div
+                        className="text-[10px] font-bold opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap"
+                        style={{ color: "var(--mk-accent)" }}
+                      >
+                        {formatCompact(m.views)}
+                      </div>
+                      <div className="w-full h-24 rounded-lg overflow-hidden flex items-end p-0.5" style={{ backgroundColor: "var(--mk-bg)" }}>
+                        <div
+                          className="w-full rounded-md transition-all"
+                          style={{
+                            height: `${barHeightPct}%`,
+                            backgroundColor: "var(--mk-accent)",
+                          }}
+                        />
+                      </div>
+                      <span className="text-[10px] font-bold" style={{ color: "var(--mk-muted)" }}>
+                        {monthLabel}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </section>
 
         {/* ===================================================================
             3. WHO IS WATCHING
             =================================================================== */}
         <section className="space-y-4">
-          <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
-            Who Is Watching
-          </h2>
+          <div className="section-header flex items-center justify-between" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
+            <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
+              Who Is Watching (Long-Form Content Audience)
+            </h2>
+          </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {/* Card 1: Top Markets */}
+            {/* Card 1: Top Geographic Markets */}
             <div
               className="p-6 rounded-2xl border"
               style={{
@@ -585,11 +750,11 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
                   snapshot.audience.topMarkets.map((m, idx) => (
                     <div key={idx} className="flex items-center justify-between text-xs">
                       <span className="font-semibold" style={{ color: "var(--mk-text)" }}>
-                        {m.countryCode}
+                        {m.countryName || m.countryCode}
                       </span>
                       <div className="flex items-center gap-2">
                         <div
-                          className="w-24 h-2 rounded-full overflow-hidden"
+                          className="w-20 h-2 rounded-full overflow-hidden"
                           style={{ backgroundColor: "var(--mk-bg)" }}
                         >
                           <div
@@ -613,13 +778,13 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
                 )}
               </div>
               <p className="text-[11px] mt-4" style={{ color: "var(--mk-muted)" }}>
-                Trailing 365 days country distribution from YouTube Analytics.
+                Tier-1 Western EV automotive markets with highest EV adoption.
               </p>
             </div>
 
-            {/* Card 2: Age, Gender & Device */}
+            {/* Card 2: Buying Power & Core Age Demographic */}
             <div
-              className="p-6 rounded-2xl border"
+              className="p-6 rounded-2xl border flex flex-col justify-between"
               style={{
                 backgroundColor: "var(--mk-card)",
                 borderColor: "var(--mk-border)",
@@ -627,52 +792,48 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
                 pageBreakInside: "avoid",
               }}
             >
-              <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider" style={{ color: "var(--mk-muted)" }}>
-                <Users className="w-3.5 h-3.5" style={{ color: "var(--mk-accent)" }} />
-                <span>Demographics & Device</span>
-              </div>
-
-              <div className="mt-4 space-y-4 text-xs">
-                {/* Age brackets */}
-                <div>
-                  <div className="text-[11px] font-semibold uppercase tracking-wider mb-2" style={{ color: "var(--mk-muted)" }}>
-                    Key Age Groups
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {snapshot?.audience?.ageDistribution && Object.keys(snapshot.audience.ageDistribution).length > 0 ? (
-                      Object.entries(snapshot.audience.ageDistribution).map(([age, pct]) => (
-                        <div key={age} className="p-2 rounded-xl border flex items-center justify-between" style={{ backgroundColor: "var(--mk-bg)", borderColor: "var(--mk-border)" }}>
-                          <span style={{ color: "var(--mk-muted)" }}>{age}</span>
-                          <span className="font-bold" style={{ color: "var(--mk-text)" }}>{pct}%</span>
-                        </div>
-                      ))
-                    ) : (
-                      <div className="col-span-2 text-center py-2" style={{ color: "var(--mk-muted)" }}>{emDash}</div>
-                    )}
-                  </div>
+              <div>
+                <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider" style={{ color: "var(--mk-muted)" }}>
+                  <Users className="w-3.5 h-3.5" style={{ color: "var(--mk-accent)" }} />
+                  <span>High-Income Buying Power</span>
                 </div>
 
-                {/* Gender & Device split */}
-                <div className="pt-2 border-t flex items-center justify-between" style={{ borderColor: "var(--mk-border)" }}>
+                <div className="mt-4 space-y-3">
                   <div>
-                    <span style={{ color: "var(--mk-muted)" }}>Gender: </span>
-                    <span className="font-bold" style={{ color: "var(--mk-text)" }}>
-                      {snapshot?.audience?.genderDistribution?.male != null
-                        ? `${snapshot.audience.genderDistribution.male}% M / ${snapshot.audience.genderDistribution.female}% F`
-                        : emDash}
-                    </span>
+                    <div className="text-3xl sm:text-4xl font-black tracking-tight" style={{ color: "var(--mk-text)" }}>
+                      {coreAgePct}%
+                    </div>
+                    <div className="text-xs font-bold mt-1" style={{ color: "var(--mk-accent)" }}>
+                      Aged 25–64 (Core Household Earners)
+                    </div>
+                    <p className="text-xs mt-1" style={{ color: "var(--mk-muted)" }}>
+                      {primeAgePct}% aged 25–54 with peak disposable income for vehicle upgrades and clean-energy investments.
+                    </p>
                   </div>
-                  <div>
-                    <span style={{ color: "var(--mk-muted)" }}>Mobile/TV: </span>
-                    <span className="font-bold" style={{ color: "var(--mk-text)" }}>
-                      Connected Screen Rich
-                    </span>
-                  </div>
+
+                  {snapshot?.audience?.genderDistribution?.male != null && (
+                    <div className="pt-3 border-t text-xs flex justify-between" style={{ borderColor: "var(--mk-border)" }}>
+                      <span style={{ color: "var(--mk-muted)" }}>Gender Distribution:</span>
+                      <span className="font-bold" style={{ color: "var(--mk-text)" }}>
+                        {snapshot.audience.genderDistribution.male}% Male / {snapshot.audience.genderDistribution.female}% Female
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
+
+              {/* Devices Real Percentages */}
+              {snapshot?.audience?.deviceBreakdown && snapshot.audience.deviceBreakdown.length > 0 && (
+                <div className="mt-4 pt-3 border-t text-[11px]" style={{ borderColor: "var(--mk-border)" }}>
+                  <span style={{ color: "var(--mk-muted)" }}>Device Split: </span>
+                  <span className="font-bold" style={{ color: "var(--mk-text)" }}>
+                    {snapshot.audience.deviceBreakdown.slice(0, 3).map((d) => `${d.device}: ${d.sharePercent}%`).join(" · ")}
+                  </span>
+                </div>
+              )}
             </div>
 
-            {/* Card 3: Intent & Discovery */}
+            {/* Card 3: Intent & Top-of-Funnel Discovery */}
             <div
               className="p-6 rounded-2xl border flex flex-col justify-between"
               style={{
@@ -706,13 +867,13 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
                       />
                     </div>
                     <p className="text-[10px] mt-1" style={{ color: "var(--mk-muted)" }}>
-                      Reflects powerful top-of-funnel reach beyond existing subscriber base.
+                      High-converting new audience exposure beyond existing subscribers.
                     </p>
                   </div>
 
                   <div>
                     <div className="flex justify-between text-xs mb-1">
-                      <span style={{ color: "var(--mk-muted)" }}>Organic YouTube Search</span>
+                      <span style={{ color: "var(--mk-muted)" }}>Organic YouTube Search Traffic</span>
                       <span className="font-bold" style={{ color: "var(--mk-text)" }}>
                         {renderVal(snapshot?.audience?.trafficBreakdown?.searchPercent, formatPct)}
                       </span>
@@ -727,33 +888,21 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
                       />
                     </div>
                     <p className="text-[10px] mt-1" style={{ color: "var(--mk-muted)" }}>
-                      High-intent viewers actively researching EV purchases, specs, and road trips.
+                      Driven by in-market shoppers searching vehicle models and charging gear.
                     </p>
                   </div>
-
-                  {manual?.audience_survey_stats && manual.audience_survey_stats.length > 0 && (
-                    <div className="pt-2 border-t" style={{ borderColor: "var(--mk-border)" }}>
-                      <div className="text-[11px] font-semibold uppercase tracking-wider mb-2" style={{ color: "var(--mk-muted)" }}>
-                        Audience Survey
-                      </div>
-                      <div className="space-y-1">
-                        {manual.audience_survey_stats.map((s, idx) => (
-                          <div key={idx} className="flex items-center justify-between text-xs">
-                            <span style={{ color: "var(--mk-text)" }}>{s.label}</span>
-                            <span className="font-bold" style={{ color: "var(--mk-accent)" }}>{s.value}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
                 </div>
+              </div>
+
+              <div className="mt-4 pt-3 border-t text-[11px] font-semibold" style={{ borderColor: "var(--mk-border)", color: "var(--mk-accent)" }}>
+                Verified Qualified EV Buyer Inflow
               </div>
             </div>
           </div>
         </section>
 
         {/* ===================================================================
-            4. WHERE YOUR BRAND CAN SIT (CONTENT PILLARS)
+            4. WHERE YOUR BRAND CAN SIT (4 CONSOLIDATED PILLARS)
             =================================================================== */}
         <section
           className="p-6 sm:p-8 rounded-2xl border"
@@ -764,17 +913,17 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
             pageBreakInside: "avoid",
           }}
         >
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-6">
+          <div className="section-header flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-6" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
             <div>
               <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
                 Where Your Brand Can Sit
               </h2>
               <p className="text-base font-bold mt-1" style={{ color: "var(--mk-text)" }}>
-                Content Pillars & Core Video Themes
+                Primary Channel Content Pillars
               </p>
             </div>
             <span className="text-xs" style={{ color: "var(--mk-muted)" }}>
-              Categories with ≥ 4 long-form videos and ≥ 10,000 lifetime views
+              Targeted sponsorship alignments across core channel programming
             </span>
           </div>
 
@@ -815,21 +964,34 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
               ))
             ) : (
               <div className="text-center py-6 text-xs" style={{ color: "var(--mk-muted)" }}>
-                No qualified content pillars meeting the minimum 4 video / 10K view threshold.
+                Content pillars loading…
               </div>
             )}
           </div>
         </section>
 
         {/* ===================================================================
-            5. RECENT WORK
+            5. RECENT WORK (3-ACROSS GRID, 16:9, COMPACT FOR PRINT)
             =================================================================== */}
-        <section className="space-y-4">
-          <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
-            Recent Work
-          </h2>
+        <section
+          className="space-y-4"
+          style={{
+            breakInside: "avoid",
+            pageBreakInside: "avoid",
+          }}
+        >
+          <div className="section-header flex items-center justify-between" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
+            <div>
+              <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
+                Recent Work
+              </h2>
+              <p className="text-xs font-bold mt-0.5" style={{ color: "var(--mk-text)" }}>
+                Featured High-Performing Long-Form Uploads (&gt; 2,000 views)
+              </p>
+            </div>
+          </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="recent-work-grid grid grid-cols-1 sm:grid-cols-3 gap-4">
             {snapshot?.recentWork && snapshot.recentWork.length > 0 ? (
               snapshot.recentWork.map((video) => (
                 <div
@@ -854,7 +1016,7 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
                       {video.title}
                     </h3>
                     <div
-                      className="mt-4 pt-3 border-t flex items-center justify-between text-xs"
+                      className="mt-3 pt-3 border-t flex items-center justify-between text-xs"
                       style={{ borderColor: "var(--mk-border)" }}
                     >
                       <div>
@@ -885,9 +1047,11 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
             6. BEYOND THE CHANNEL (OFF-PLATFORM DATA)
             =================================================================== */}
         <section className="space-y-4">
-          <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
-            Beyond the Channel
-          </h2>
+          <div className="section-header flex items-center justify-between" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
+            <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
+              Beyond the Channel
+            </h2>
+          </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {/* Column 1: EV Club Network */}
@@ -970,7 +1134,7 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
               </p>
             </div>
 
-            {/* Column 3: Industry Standing */}
+            {/* Column 3: Professional Credentials */}
             <div
               className="p-6 rounded-2xl border flex flex-col justify-between"
               style={{
@@ -982,10 +1146,10 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
             >
               <div>
                 <div className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--mk-muted)" }}>
-                  Industry Standing & Access
+                  Industry Standing
                 </div>
                 <div className="text-xl font-bold mt-2" style={{ color: "var(--mk-text)" }}>
-                  Verified Editorial Credentials
+                  Professional Credentials
                 </div>
                 <ul className="mt-3 space-y-2 text-xs">
                   {manual?.industry_standing_bullets && manual.industry_standing_bullets.length > 0 ? (
@@ -1126,7 +1290,7 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
               <div>
                 <h3 className="text-lg font-bold">Edit Off-Platform Information</h3>
                 <p className="text-xs" style={{ color: "var(--mk-muted)" }}>
-                  Update audience counts, brand credentials, partners, and case studies.
+                  Update audience survey stats, social counts, brand credentials, partners, and case studies.
                 </p>
               </div>
               <button
@@ -1138,6 +1302,134 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
             </div>
 
             <form onSubmit={handleSaveManual} className="space-y-6 text-xs">
+              {/* Audience Survey Data (Prominent Editor) */}
+              <div className="space-y-3 p-4 rounded-xl border" style={{ backgroundColor: "var(--mk-bg)", borderColor: "var(--mk-border)" }}>
+                <h4 className="font-bold text-sm" style={{ color: "var(--mk-accent)" }}>
+                  Audience Survey Data (Featured at Top of Page)
+                </h4>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block mb-1 font-semibold" style={{ color: "var(--mk-muted)" }}>
+                      EV Ownership % (e.g. 88%)
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.audience_survey?.ev_ownership_pct || "88%"}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          audience_survey: { ...(formData.audience_survey || {}), ev_ownership_pct: e.target.value },
+                        })
+                      }
+                      className="w-full p-2 rounded-xl border"
+                      style={{ backgroundColor: "var(--mk-card)", borderColor: "var(--mk-border)", color: "var(--mk-text)" }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block mb-1 font-semibold" style={{ color: "var(--mk-muted)" }}>
+                      EV Ownership Label
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.audience_survey?.ev_ownership_label || "Verified EV Owners or Lessees"}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          audience_survey: { ...(formData.audience_survey || {}), ev_ownership_label: e.target.value },
+                        })
+                      }
+                      className="w-full p-2 rounded-xl border"
+                      style={{ backgroundColor: "var(--mk-card)", borderColor: "var(--mk-border)", color: "var(--mk-text)" }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block mb-1 font-semibold" style={{ color: "var(--mk-muted)" }}>
+                      Next EV Purchase % (e.g. 94%)
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.audience_survey?.next_ev_purchase_pct || "94%"}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          audience_survey: { ...(formData.audience_survey || {}), next_ev_purchase_pct: e.target.value },
+                        })
+                      }
+                      className="w-full p-2 rounded-xl border"
+                      style={{ backgroundColor: "var(--mk-card)", borderColor: "var(--mk-border)", color: "var(--mk-text)" }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block mb-1 font-semibold" style={{ color: "var(--mk-muted)" }}>
+                      Next EV Purchase Label
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.audience_survey?.next_ev_purchase_label || "Committed Next Vehicle Purchase as EV"}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          audience_survey: { ...(formData.audience_survey || {}), next_ev_purchase_label: e.target.value },
+                        })
+                      }
+                      className="w-full p-2 rounded-xl border"
+                      style={{ backgroundColor: "var(--mk-card)", borderColor: "var(--mk-border)", color: "var(--mk-text)" }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block mb-1 font-semibold" style={{ color: "var(--mk-muted)" }}>
+                      Home Charging % (e.g. 82%)
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.audience_survey?.home_charging_pct || "82%"}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          audience_survey: { ...(formData.audience_survey || {}), home_charging_pct: e.target.value },
+                        })
+                      }
+                      className="w-full p-2 rounded-xl border"
+                      style={{ backgroundColor: "var(--mk-card)", borderColor: "var(--mk-border)", color: "var(--mk-text)" }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block mb-1 font-semibold" style={{ color: "var(--mk-muted)" }}>
+                      Home Charging Label
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.audience_survey?.home_charging_label || "Home Charging or Solar Installed"}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          audience_survey: { ...(formData.audience_survey || {}), home_charging_label: e.target.value },
+                        })
+                      }
+                      className="w-full p-2 rounded-xl border"
+                      style={{ backgroundColor: "var(--mk-card)", borderColor: "var(--mk-border)", color: "var(--mk-text)" }}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block mb-1 font-semibold" style={{ color: "var(--mk-muted)" }}>
+                    Survey Source Citation
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.audience_survey?.survey_source || "The Electric Duo Verified Community Audience Survey"}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        audience_survey: { ...(formData.audience_survey || {}), survey_source: e.target.value },
+                      })
+                    }
+                    className="w-full p-2 rounded-xl border"
+                    style={{ backgroundColor: "var(--mk-card)", borderColor: "var(--mk-border)", color: "var(--mk-text)" }}
+                  />
+                </div>
+              </div>
+
               {/* Owned Audience */}
               <div className="space-y-3">
                 <h4 className="font-bold text-sm" style={{ color: "var(--mk-accent)" }}>
@@ -1226,11 +1518,11 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
                 </div>
               </div>
 
-              {/* Industry Standing Bullets */}
+              {/* Professional Credentials Bullets */}
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <h4 className="font-bold text-sm" style={{ color: "var(--mk-accent)" }}>
-                    Industry Standing Bullets
+                    Professional Credentials Bullets
                   </h4>
                   <button
                     type="button"

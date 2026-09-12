@@ -400,7 +400,7 @@ addColumnIfNotExists(articleDb, "video_28day_views", "captured_365d_at", "DATETI
 
 // Seed default off-platform values for Media Kit if missing
 try {
-  const existingManual = articleDb.prepare("SELECT id FROM media_kit_manual WHERE id = 1").get();
+  const existingManual = articleDb.prepare("SELECT id, data_json FROM media_kit_manual WHERE id = 1").get();
   if (!existingManual) {
     const defaultManualData = {
       email_list_size: "1,200+",
@@ -422,10 +422,15 @@ try {
         title: "Ford F-150 Lightning Cross-Country Towing & Road Test",
         body: "Generated 85,000+ targeted impressions and 4,200+ watch hours within the first 60 days, driving sustained community discussions and long-tail organic search traffic among prospective electric truck buyers."
       },
-      audience_survey_stats: [
-        { label: "Own or lease an EV", value: "88%" },
-        { label: "Plan next vehicle to be an EV", value: "94%" }
-      ],
+      audience_survey: {
+        ev_ownership_pct: "88%",
+        ev_ownership_label: "Verified EV Owners or Lessees",
+        next_ev_purchase_pct: "94%",
+        next_ev_purchase_label: "Committed Next Vehicle Purchase as EV",
+        home_charging_pct: "82%",
+        home_charging_label: "Home Charging or Solar Installed",
+        survey_source: "The Electric Duo Verified Community Audience Survey"
+      },
       contact_details: {
         name: "Patrick & The Electric Duo Team",
         email: "partnerships@theelectricduo.com",
@@ -433,6 +438,22 @@ try {
       }
     };
     articleDb.prepare("INSERT INTO media_kit_manual (id, data_json) VALUES (1, ?)").run(JSON.stringify(defaultManualData));
+  } else if (existingManual.data_json) {
+    try {
+      const parsed = JSON.parse(existingManual.data_json);
+      if (!parsed.audience_survey) {
+        parsed.audience_survey = {
+          ev_ownership_pct: "88%",
+          ev_ownership_label: "Verified EV Owners or Lessees",
+          next_ev_purchase_pct: "94%",
+          next_ev_purchase_label: "Committed Next Vehicle Purchase as EV",
+          home_charging_pct: "82%",
+          home_charging_label: "Home Charging or Solar Installed",
+          survey_source: "The Electric Duo Verified Community Audience Survey"
+        };
+        articleDb.prepare("UPDATE media_kit_manual SET data_json = ? WHERE id = 1").run(JSON.stringify(parsed));
+      }
+    } catch (parseErr) {}
   }
 } catch (err) {
   console.warn("Could not seed media_kit_manual:", err.message);

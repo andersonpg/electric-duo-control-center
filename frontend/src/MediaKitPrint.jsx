@@ -11,11 +11,11 @@ export default function MediaKitPrint({ currentUser }) {
   }, []);
 
   return (
-    <div className="min-h-screen bg-slate-950 print:bg-slate-950">
+    <div className="min-h-screen bg-[#0B1520] print:bg-[#0B1520]">
       <style>{`
         @page {
           size: letter;
-          margin: 0.4in;
+          margin: 0.35in;
         }
         @media print {
           body {
@@ -25,6 +25,19 @@ export default function MediaKitPrint({ currentUser }) {
           }
           .no-print {
             display: none !important;
+          }
+          .section-header {
+            break-after: avoid !important;
+            page-break-after: avoid !important;
+          }
+          .recent-work-grid {
+            display: grid !important;
+            grid-template-columns: repeat(3, 1fr) !important;
+            gap: 1rem !important;
+          }
+          header, section, .recent-work-grid {
+            break-inside: avoid !important;
+            page-break-inside: avoid !important;
           }
         }
       `}</style>

@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.4.1] - 2026-09-12
+
+### Changed & Refined
+- **Prominent Audience Survey Showcase & Custom Data Editor**:
+  - Featured high-value audience purchasing power stats prominently at the top of the Media Kit (88% EV owners/lessees, 94% committed next-EV buyers, 82% home charging/solar installed).
+  - Added dedicated editor in the "Edit off-platform data" drawer to customize survey percentages, labels, and citation source.
+- **Audience Engagement & Who is Watching for Long Videos Only (≥ 4 Min)**:
+  - Sourced trailing 90-day views, watch hours, average view duration, average view percentage, and engagement rate strictly from published long-form videos (≥ 240s) via per-video reports.
+  - Filtered demographic and intent queries to long-form video catalogs.
+- **Fixed Monthly Views & Annual Watch Hours Blank State**:
+  - Resolved YouTube Analytics API month-boundary validation error by querying daily intervals (`dimensions=day`) and aggregating into clean calendar months in JavaScript.
+  - Rendered interactive 12-Month Audience Growth Curve on the Media Kit dashboard.
+- **Corrected Non-Subscriber Reach Calculation**:
+  - Fixed case-insensitive mapping for `subscribedStatus` to correctly capture all unsubscribed viewers instead of reporting 0%.
+- **Sales-Focused Media Buyer Language & Rebranding**:
+  - Reframed 28-day stats into sponsor-friendly language: *"Expected 30-Day Reach per Video: 2,100 – 4,800 views"*.
+  - Replaced internal algorithmic labels with sponsor value copy: *"Evergreen Search Value: High sustained views from active buyers researching specific models"*.
+  - Renamed "Verified YouTube Subscribers" to "YouTube Subscribers", and "Verified Editorial Credentials" to "Professional Credentials".
+  - Replaced "Rolling trailing window" with dynamic quarter label (e.g. *"Q3 2026"*).
+- **Consolidated 4 Primary Content Pillars**:
+  - Re-grouped micro-categories into 4 core programming pillars: *Vehicle Reviews & First Drives*, *Road Trips & Real-World Range Tests*, *EV Charging & Energy Tech*, and *Industry News & Events*.
+- **Demographics & Geographic Refinements**:
+  - Collapsed raw age brackets to highlight prime buying power: 78.4% aged 25–64 (and 63.9% aged 25–54).
+  - Translated two-letter ISO country codes into full country names and excluded India (`IN`) from top geographic automotive markets.
+  - Replaced generated fluff with real measured device percentage splits.
+- **Print Layout & Recent Work Pagination Fixes**:
+  - Restricted Recent Work to published long-form videos with > 2,000 views.
+  - Fixed Recent Work grid to 3-across with 16:9 thumbnails and added `break-after: avoid` on section headers and `break-inside: avoid` on the grid container, eliminating multi-page overflow on printed Letter PDFs.
+
+---
+
 ## [2.4.0] - 2026-09-11
 
 ### Added

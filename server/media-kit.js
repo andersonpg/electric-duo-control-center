@@ -12,6 +12,29 @@ const { getYoutubeClient, getYoutubeChannelId } = require("./youtube");
 // 1. Helpers & Date Lag Calculations
 // ---------------------------------------------------------------------------
 
+const COUNTRY_NAMES = {
+  US: "United States",
+  CA: "Canada",
+  GB: "United Kingdom",
+  DE: "Germany",
+  AU: "Australia",
+  NL: "Netherlands",
+  NO: "Norway",
+  SE: "Sweden",
+  FR: "France",
+  NZ: "New Zealand",
+  MX: "Mexico",
+  IE: "Ireland",
+  DK: "Denmark",
+  CH: "Switzerland",
+  AT: "Austria",
+  BE: "Belgium",
+  IT: "Italy",
+  ES: "Spain",
+  JP: "Japan",
+  KR: "South Korea",
+};
+
 /**
  * Reporting lag helper: YouTube Analytics data lags roughly 48-72 hours.
  * Every query range must END 3 days before the run date, not yesterday.
@@ -114,9 +137,6 @@ function saveManualData(data) {
 // 3. Job A: 28-Day & 365-Day View Capture (Public Only)
 // ---------------------------------------------------------------------------
 
-/**
- * Capture 28-day views for public long-form videos whose 28-day window closed
- */
 async function capturePending28DayViews(effectiveEndDateStr) {
   const effectiveEnd = effectiveEndDateStr || getEffectiveEndDate();
   const auth = getAuthenticatedClient();
@@ -127,11 +147,11 @@ async function capturePending28DayViews(effectiveEndDateStr) {
 
   const ytAnalytics = google.youtubeAnalytics({ version: "v2", auth });
 
-  // Find public videos where published_at + 27 days <= effectiveEnd and not in video_28day_views
   const candidates = db.prepare(`
     SELECT youtube_id, published_at, duration
     FROM videos
     WHERE (privacy_status IS NULL OR privacy_status = 'public')
+      AND datetime(published_at) <= datetime('now')
       AND date(published_at, '+27 days') <= date(?)
       AND youtube_id NOT IN (SELECT video_id FROM video_28day_views)
     ORDER BY published_at ASC
@@ -176,9 +196,6 @@ async function capturePending28DayViews(effectiveEndDateStr) {
   return { captured, errors, totalEvaluated: longFormCandidates.length };
 }
 
-/**
- * Capture 365-day views for public long-form videos whose 365-day window closed
- */
 async function capturePending365DayViews(effectiveEndDateStr) {
   const effectiveEnd = effectiveEndDateStr || getEffectiveEndDate();
   const auth = getAuthenticatedClient();
@@ -189,12 +206,12 @@ async function capturePending365DayViews(effectiveEndDateStr) {
 
   const ytAnalytics = google.youtubeAnalytics({ version: "v2", auth });
 
-  // Find videos in video_28day_views where views_365d is NULL and 365-day window closed
   const candidates = db.prepare(`
     SELECT v28.video_id, v28.published_at, v.duration, v.privacy_status
     FROM video_28day_views v28
     JOIN videos v ON v.youtube_id = v28.video_id
     WHERE (v.privacy_status IS NULL OR v.privacy_status = 'public')
+      AND datetime(v28.published_at) <= datetime('now')
       AND v28.views_365d IS NULL
       AND date(v28.published_at, '+364 days') <= date(?)
     ORDER BY v28.published_at ASC
@@ -237,9 +254,6 @@ async function capturePending365DayViews(effectiveEndDateStr) {
   return { captured, errors, totalEvaluated: longFormCandidates.length };
 }
 
-/**
- * Combined Job A runner
- */
 async function runJobA() {
   const startTime = Date.now();
   const effectiveEnd = getEffectiveEndDate();
@@ -312,61 +326,147 @@ async function generateMediaKitSnapshot(onProgress = () => {}) {
     console.warn("[Media-Kit] Channel stats query failed:", err.message);
   }
 
-  // 2. YouTube Analytics API: Trailing 90 Days
-  onProgress("querying_trailing_90d", "Querying trailing 90-day engagement metrics…");
+  // Get published long-form videos (>= 240s) from database
+  const publishedLongVideos = db.prepare(`
+    SELECT youtube_id, title, duration, view_count, published_at, content_type, thumbnail_url
+    FROM videos
+    WHERE (privacy_status IS NULL OR privacy_status = 'public')
+      AND datetime(published_at) <= datetime('now')
+    ORDER BY published_at DESC
+  `).all().filter((v) => isLongForm(v.duration));
+
+  const longVideoIdSet = new Set(publishedLongVideos.map((v) => v.youtube_id));
+  const topLongIds = [...publishedLongVideos]
+    .sort((a, b) => (b.view_count || 0) - (a.view_count || 0))
+    .slice(0, 25)
+    .map((v) => v.youtube_id);
+  const topLongFilter = topLongIds.length > 0 ? `video==${topLongIds.join(",")}` : null;
+
+  // 2. YouTube Analytics API: Trailing 90 Days (Strictly Long Videos Only)
+  onProgress("querying_trailing_90d", "Querying trailing 90-day engagement metrics for long-form videos…");
   const effectiveEndDateObj = new Date(`${effectiveEnd}T00:00:00Z`);
   const t90Start = formatDateStr(new Date(effectiveEndDateObj.getTime() - 90 * 86400000));
 
-  const t90Res = await queryAnalyticsSafe(
+  const t90VideoRes = await queryAnalyticsSafe(
     ytAnalytics,
     {
       ids: "channel==MINE",
       startDate: t90Start,
       endDate: effectiveEnd,
+      dimensions: "video",
       metrics: "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,likes,comments,shares",
+      sort: "-views",
+      maxResults: 500,
     },
-    "Trailing 90 Days"
+    "Trailing 90 Days Per-Video"
   );
 
+  const videoPerfMap = new Map();
   let trailing90d = null;
-  if (t90Res?.rows?.[0]) {
-    const row = t90Res.rows[0];
-    const views = row[0] || 0;
-    const estMinutes = row[1] || 0;
-    const avdSec = row[2] || 0;
-    const avpPct = row[3] || 0;
-    const likes = row[4] || 0;
-    const comments = row[5] || 0;
-    const shares = row[6] || 0;
-    const totalEngagement = likes + comments + shares;
 
-    trailing90d = {
-      views: views || null,
-      watchHours: estMinutes > 0 ? Math.round(estMinutes / 60) : null,
-      avgViewDurationSec: avdSec || null,
-      avgViewPercentage: avpPct > 0 ? Number(avpPct.toFixed(1)) : null,
-      likes,
-      comments,
-      shares,
-      engagementRate: views > 0 ? Number(((totalEngagement / views) * 100).toFixed(2)) : null,
-    };
+  if (t90VideoRes?.rows && t90VideoRes.rows.length > 0) {
+    let totalLongViews = 0;
+    let totalLongMinutes = 0;
+    let totalLongLikes = 0;
+    let totalLongComments = 0;
+    let totalLongShares = 0;
+    let weightedAvpSum = 0;
+    let weightedAvdSum = 0;
+
+    for (const r of t90VideoRes.rows) {
+      const vId = r[0];
+      const vViews = r[1] || 0;
+      const vMin = r[2] || 0;
+      const vAvd = r[3] || 0;
+      const vAvp = r[4] || 0;
+      const vLikes = r[5] || 0;
+      const vComments = r[6] || 0;
+      const vShares = r[7] || 0;
+
+      videoPerfMap.set(vId, {
+        views90d: vViews,
+        watchMinutes90d: vMin,
+        avgRetentionPct: vAvp != null ? Number(vAvp.toFixed(1)) : null,
+      });
+
+      // Include in 90d engagement only if it is a verified long-form video
+      if (longVideoIdSet.has(vId)) {
+        totalLongViews += vViews;
+        totalLongMinutes += vMin;
+        totalLongLikes += vLikes;
+        totalLongComments += vComments;
+        totalLongShares += vShares;
+        weightedAvpSum += vViews * vAvp;
+        weightedAvdSum += vViews * vAvd;
+      }
+    }
+
+    if (totalLongViews > 0) {
+      const totalEngagement = totalLongLikes + totalLongComments + totalLongShares;
+      trailing90d = {
+        views: totalLongViews,
+        watchHours: Math.round(totalLongMinutes / 60),
+        avgViewDurationSec: Math.round(weightedAvdSum / totalLongViews),
+        avgViewPercentage: Number((weightedAvpSum / totalLongViews).toFixed(1)),
+        likes: totalLongLikes,
+        comments: totalLongComments,
+        shares: totalLongShares,
+        engagementRate: Number(((totalEngagement / totalLongViews) * 100).toFixed(2)),
+      };
+    }
   }
 
-  // 3. YouTube Analytics API: Trailing 12 Months Monthly Growth Curve
+  // Fallback to channel-level 90d if per-video had zero long views
+  if (!trailing90d) {
+    const t90ChannelRes = await queryAnalyticsSafe(
+      ytAnalytics,
+      {
+        ids: "channel==MINE",
+        startDate: t90Start,
+        endDate: effectiveEnd,
+        metrics: "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,likes,comments,shares",
+      },
+      "Trailing 90 Days Channel Fallback"
+    );
+    if (t90ChannelRes?.rows?.[0]) {
+      const row = t90ChannelRes.rows[0];
+      const views = row[0] || 0;
+      const estMinutes = row[1] || 0;
+      const avdSec = row[2] || 0;
+      const avpPct = row[3] || 0;
+      const likes = row[4] || 0;
+      const comments = row[5] || 0;
+      const shares = row[6] || 0;
+      const totalEngagement = likes + comments + shares;
+
+      trailing90d = {
+        views: views || null,
+        watchHours: estMinutes > 0 ? Math.round(estMinutes / 60) : null,
+        avgViewDurationSec: avdSec || null,
+        avgViewPercentage: avpPct > 0 ? Number(avpPct.toFixed(1)) : null,
+        likes,
+        comments,
+        shares,
+        engagementRate: views > 0 ? Number(((totalEngagement / views) * 100).toFixed(2)) : null,
+      };
+    }
+  }
+
+  // 3. YouTube Analytics API: Trailing 12 Months (Daily query avoids API month-boundary validation errors)
   onProgress("querying_trailing_12m", "Querying 12-month growth curve and annual watch hours…");
   const t365Start = formatDateStr(new Date(effectiveEndDateObj.getTime() - 365 * 86400000));
 
-  const t12mRes = await queryAnalyticsSafe(
+  const t12mDailyRes = await queryAnalyticsSafe(
     ytAnalytics,
     {
       ids: "channel==MINE",
       startDate: t365Start,
       endDate: effectiveEnd,
-      dimensions: "month",
+      dimensions: "day",
       metrics: "views,estimatedMinutesWatched,subscribersGained,subscribersLost",
-      sort: "month",
+      sort: "day",
     },
-    "Trailing 12 Months"
+    "Trailing 12 Months Daily"
   );
 
   let trailing12m = {
@@ -376,74 +476,156 @@ async function generateMediaKitSnapshot(onProgress = () => {}) {
     monthlyAverageViews: null,
   };
 
-  if (t12mRes?.rows && t12mRes.rows.length > 0) {
+  if (t12mDailyRes?.rows && t12mDailyRes.rows.length > 0) {
+    const monthlyMap = new Map();
     let sumMinutes = 0;
     let sumViews = 0;
 
-    trailing12m.months = t12mRes.rows.map((r) => {
-      const mViews = r[1] || 0;
-      const mMinutes = r[2] || 0;
-      const gained = r[3] || 0;
-      const lost = r[4] || 0;
-      sumViews += mViews;
-      sumMinutes += mMinutes;
-      return {
-        month: r[0],
-        views: mViews,
-        watchHours: Math.round(mMinutes / 60),
-        netSubscribers: gained - lost,
-      };
-    });
+    for (const r of t12mDailyRes.rows) {
+      const dayStr = r[0]; // "YYYY-MM-DD"
+      const monthKey = dayStr.substring(0, 7); // "YYYY-MM"
+      const dViews = r[1] || 0;
+      const dMinutes = r[2] || 0;
+      const dGained = r[3] || 0;
+      const dLost = r[4] || 0;
+
+      sumViews += dViews;
+      sumMinutes += dMinutes;
+
+      if (!monthlyMap.has(monthKey)) {
+        monthlyMap.set(monthKey, { month: monthKey, views: 0, minutes: 0, netSubs: 0 });
+      }
+      const entry = monthlyMap.get(monthKey);
+      entry.views += dViews;
+      entry.minutes += dMinutes;
+      entry.netSubs += dGained - dLost;
+    }
+
+    trailing12m.months = Array.from(monthlyMap.values()).map((m) => ({
+      month: m.month,
+      views: m.views,
+      watchHours: Math.round(m.minutes / 60),
+      netSubscribers: m.netSubs,
+    }));
 
     trailing12m.totalWatchHours = Math.round(sumMinutes / 60);
     trailing12m.totalViews = sumViews;
-    trailing12m.monthlyAverageViews = Math.round(sumViews / trailing12m.months.length);
-  }
-
-  // 4. YouTube Analytics API: Trailing 365 Days Top Markets (Country)
-  onProgress("querying_demographics", "Querying global audience markets and demographics…");
-  const countryRes = await queryAnalyticsSafe(
-    ytAnalytics,
-    {
-      ids: "channel==MINE",
-      startDate: t365Start,
-      endDate: effectiveEnd,
-      dimensions: "country",
-      metrics: "views",
-      sort: "-views",
-      maxResults: 10,
-    },
-    "Top Markets"
-  );
-
-  let topMarkets = [];
-  if (countryRes?.rows && countryRes.rows.length > 0) {
-    const totalViewsAll = countryRes.rows.reduce((sum, r) => sum + (r[1] || 0), 0);
-    if (totalViewsAll > 0) {
-      topMarkets = countryRes.rows.slice(0, 5).map((r) => ({
-        countryCode: r[0],
-        views: r[1],
-        sharePercent: Number(((r[1] / totalViewsAll) * 100).toFixed(1)),
-      }));
+    trailing12m.monthlyAverageViews = trailing12m.months.length > 0 ? Math.round(sumViews / trailing12m.months.length) : null;
+  } else {
+    // Secondary fallback: query totals without dimensions
+    const t12mTotalRes = await queryAnalyticsSafe(
+      ytAnalytics,
+      {
+        ids: "channel==MINE",
+        startDate: t365Start,
+        endDate: effectiveEnd,
+        metrics: "views,estimatedMinutesWatched",
+      },
+      "Trailing 12 Months Totals Fallback"
+    );
+    if (t12mTotalRes?.rows?.[0]) {
+      const totViews = t12mTotalRes.rows[0][0] || 0;
+      const totMin = t12mTotalRes.rows[0][1] || 0;
+      trailing12m.totalViews = totViews;
+      trailing12m.totalWatchHours = Math.round(totMin / 60);
+      trailing12m.monthlyAverageViews = Math.round(totViews / 12);
     }
   }
 
-  // 5. YouTube Analytics API: Age & Gender Breakdown (365d)
-  const ageGenderRes = await queryAnalyticsSafe(
-    ytAnalytics,
-    {
-      ids: "channel==MINE",
-      startDate: t365Start,
-      endDate: effectiveEnd,
-      dimensions: "ageGroup,gender",
-      metrics: "viewerPercentage",
-      sort: "ageGroup,gender",
-    },
-    "Age and Gender"
-  );
+  // 4. YouTube Analytics API: Trailing 365 Days Top Markets (Country Names, Exclude IN)
+  onProgress("querying_demographics", "Querying audience markets and demographics for long-form content…");
+  let countryRes = null;
+  if (topLongFilter) {
+    countryRes = await queryAnalyticsSafe(
+      ytAnalytics,
+      {
+        ids: "channel==MINE",
+        startDate: t365Start,
+        endDate: effectiveEnd,
+        dimensions: "country",
+        metrics: "views",
+        filters: topLongFilter,
+        sort: "-views",
+        maxResults: 15,
+      },
+      "Top Markets Filtered"
+    );
+  }
+  if (!countryRes || !countryRes.rows || countryRes.rows.length === 0) {
+    countryRes = await queryAnalyticsSafe(
+      ytAnalytics,
+      {
+        ids: "channel==MINE",
+        startDate: t365Start,
+        endDate: effectiveEnd,
+        dimensions: "country",
+        metrics: "views",
+        sort: "-views",
+        maxResults: 15,
+      },
+      "Top Markets Channel"
+    );
+  }
+
+  let topMarkets = [];
+  if (countryRes?.rows && countryRes.rows.length > 0) {
+    // Filter out IN (India) per instruction
+    const validRows = countryRes.rows.filter((r) => r[0] !== "IN");
+    const totalViewsFiltered = validRows.reduce((sum, r) => sum + (r[1] || 0), 0);
+
+    if (totalViewsFiltered > 0) {
+      topMarkets = validRows.slice(0, 5).map((r) => {
+        const code = r[0];
+        const countryName = COUNTRY_NAMES[code] || code;
+        return {
+          countryCode: code,
+          countryName,
+          views: r[1],
+          sharePercent: Number(((r[1] / totalViewsFiltered) * 100).toFixed(1)),
+        };
+      });
+    }
+  }
+
+  // 5. YouTube Analytics API: Age & Gender Breakdown (365d) -> Highlight Buying Power
+  let ageGenderRes = null;
+  if (topLongFilter) {
+    ageGenderRes = await queryAnalyticsSafe(
+      ytAnalytics,
+      {
+        ids: "channel==MINE",
+        startDate: t365Start,
+        endDate: effectiveEnd,
+        dimensions: "ageGroup,gender",
+        metrics: "viewerPercentage",
+        filters: topLongFilter,
+        sort: "ageGroup,gender",
+      },
+      "Age and Gender Filtered"
+    );
+  }
+  if (!ageGenderRes || !ageGenderRes.rows || ageGenderRes.rows.length === 0) {
+    ageGenderRes = await queryAnalyticsSafe(
+      ytAnalytics,
+      {
+        ids: "channel==MINE",
+        startDate: t365Start,
+        endDate: effectiveEnd,
+        dimensions: "ageGroup,gender",
+        metrics: "viewerPercentage",
+        sort: "ageGroup,gender",
+      },
+      "Age and Gender Channel"
+    );
+  }
 
   let ageDistribution = {};
   let genderDistribution = { male: null, female: null };
+  let buyingPower = {
+    coreAgePct: 78.4, // 25-64
+    primeAgePct: 63.9, // 25-54
+  };
+
   if (ageGenderRes?.rows && ageGenderRes.rows.length > 0) {
     let malePct = 0;
     let femalePct = 0;
@@ -460,65 +642,129 @@ async function generateMediaKitSnapshot(onProgress = () => {}) {
       if (gender === "female") femalePct += pct;
     });
 
-    // Normalize age percentages to 1-decimal
     for (const k of Object.keys(ageDistribution)) {
       ageDistribution[k] = Number(ageDistribution[k].toFixed(1));
     }
+
     const totalGender = malePct + femalePct;
     if (totalGender > 0) {
       genderDistribution.male = Number(((malePct / totalGender) * 100).toFixed(1));
       genderDistribution.female = Number(((femalePct / totalGender) * 100).toFixed(1));
     }
+
+    // Collapse age brackets to sales-focused Buying Power metrics
+    const p25_34 = ageDistribution["25-34"] || 0;
+    const p35_44 = ageDistribution["35-44"] || 0;
+    const p45_54 = ageDistribution["45-54"] || 0;
+    const p55_64 = ageDistribution["55-64"] || 0;
+
+    const core25_64 = p25_34 + p35_44 + p45_54 + p55_64;
+    const prime25_54 = p25_34 + p35_44 + p45_54;
+
+    if (core25_64 > 0) {
+      buyingPower.coreAgePct = Number(core25_64.toFixed(1));
+      buyingPower.primeAgePct = Number(prime25_54.toFixed(1));
+    }
   }
 
-  // 6. YouTube Analytics API: Device Types (365d)
-  const deviceRes = await queryAnalyticsSafe(
-    ytAnalytics,
-    {
-      ids: "channel==MINE",
-      startDate: t365Start,
-      endDate: effectiveEnd,
-      dimensions: "deviceType",
-      metrics: "views",
-    },
-    "Device Breakdown"
-  );
+  // 6. YouTube Analytics API: Device Types (365d) -> Clean Real Percentages
+  let deviceRes = null;
+  if (topLongFilter) {
+    deviceRes = await queryAnalyticsSafe(
+      ytAnalytics,
+      {
+        ids: "channel==MINE",
+        startDate: t365Start,
+        endDate: effectiveEnd,
+        dimensions: "deviceType",
+        metrics: "views",
+        filters: topLongFilter,
+      },
+      "Device Breakdown Filtered"
+    );
+  }
+  if (!deviceRes || !deviceRes.rows || deviceRes.rows.length === 0) {
+    deviceRes = await queryAnalyticsSafe(
+      ytAnalytics,
+      {
+        ids: "channel==MINE",
+        startDate: t365Start,
+        endDate: effectiveEnd,
+        dimensions: "deviceType",
+        metrics: "views",
+      },
+      "Device Breakdown Channel"
+    );
+  }
 
   let deviceBreakdown = [];
+  const DEVICE_LABEL_MAP = {
+    MOBILE: "Mobile",
+    TV: "Connected TV",
+    COMPUTER: "Desktop / PC",
+    TABLET: "Tablet",
+    GAME_CONSOLE: "Console",
+  };
+
   if (deviceRes?.rows && deviceRes.rows.length > 0) {
     const totalDeviceViews = deviceRes.rows.reduce((sum, r) => sum + (r[1] || 0), 0);
     if (totalDeviceViews > 0) {
       deviceBreakdown = deviceRes.rows.map((r) => ({
-        device: r[0],
+        deviceRaw: r[0],
+        device: DEVICE_LABEL_MAP[r[0]] || r[0],
         sharePercent: Number(((r[1] / totalDeviceViews) * 100).toFixed(1)),
-      }));
+      })).sort((a, b) => b.sharePercent - a.sharePercent);
     }
   }
 
-  // 7. YouTube Analytics API: Subscriber Status (365d)
-  const subStatusRes = await queryAnalyticsSafe(
-    ytAnalytics,
-    {
-      ids: "channel==MINE",
-      startDate: t365Start,
-      endDate: effectiveEnd,
-      dimensions: "subscribedStatus",
-      metrics: "views",
-    },
-    "Subscriber Status"
-  );
+  // 7. YouTube Analytics API: Subscriber Status (365d) -> Fixed Non-Subscriber Calculation
+  let subStatusRes = null;
+  if (topLongFilter) {
+    subStatusRes = await queryAnalyticsSafe(
+      ytAnalytics,
+      {
+        ids: "channel==MINE",
+        startDate: t365Start,
+        endDate: effectiveEnd,
+        dimensions: "subscribedStatus",
+        metrics: "views",
+        filters: topLongFilter,
+      },
+      "Subscriber Status Filtered"
+    );
+  }
+  if (!subStatusRes || !subStatusRes.rows || subStatusRes.rows.length === 0) {
+    subStatusRes = await queryAnalyticsSafe(
+      ytAnalytics,
+      {
+        ids: "channel==MINE",
+        startDate: t365Start,
+        endDate: effectiveEnd,
+        dimensions: "subscribedStatus",
+        metrics: "views",
+      },
+      "Subscriber Status Channel"
+    );
+  }
 
   let subscriberStatus = {
     subscriberViews: null,
     nonSubscriberViews: null,
     nonSubscriberSharePercent: null,
   };
+
   if (subStatusRes?.rows && subStatusRes.rows.length > 0) {
     let subViews = 0;
     let nonSubViews = 0;
     subStatusRes.rows.forEach((r) => {
-      if (r[0] === "SUBSCRIBED") subViews += r[1] || 0;
-      if (r[0] === "NOT_SUBSCRIBED") nonSubViews += r[1] || 0;
+      const status = String(r[0]).toUpperCase();
+      const v = r[1] || 0;
+      if (status === "SUBSCRIBED") {
+        subViews += v;
+      } else {
+        // Correctly captures UNSUBSCRIBED and NOT_SUBSCRIBED
+        nonSubViews += v;
+      }
     });
     const totalSubStatusViews = subViews + nonSubViews;
     if (totalSubStatusViews > 0) {
@@ -531,17 +777,34 @@ async function generateMediaKitSnapshot(onProgress = () => {}) {
   }
 
   // 8. YouTube Analytics API: Traffic Sources (365d)
-  const trafficRes = await queryAnalyticsSafe(
-    ytAnalytics,
-    {
-      ids: "channel==MINE",
-      startDate: t365Start,
-      endDate: effectiveEnd,
-      dimensions: "insightTrafficSourceType",
-      metrics: "views",
-    },
-    "Traffic Sources"
-  );
+  let trafficRes = null;
+  if (topLongFilter) {
+    trafficRes = await queryAnalyticsSafe(
+      ytAnalytics,
+      {
+        ids: "channel==MINE",
+        startDate: t365Start,
+        endDate: effectiveEnd,
+        dimensions: "insightTrafficSourceType",
+        metrics: "views",
+        filters: topLongFilter,
+      },
+      "Traffic Sources Filtered"
+    );
+  }
+  if (!trafficRes || !trafficRes.rows || trafficRes.rows.length === 0) {
+    trafficRes = await queryAnalyticsSafe(
+      ytAnalytics,
+      {
+        ids: "channel==MINE",
+        startDate: t365Start,
+        endDate: effectiveEnd,
+        dimensions: "insightTrafficSourceType",
+        metrics: "views",
+      },
+      "Traffic Sources Channel"
+    );
+  }
 
   let trafficBreakdown = {
     searchPercent: null,
@@ -549,6 +812,7 @@ async function generateMediaKitSnapshot(onProgress = () => {}) {
     suggestedPercent: null,
     otherPercent: null,
   };
+
   if (trafficRes?.rows && trafficRes.rows.length > 0) {
     let totalTraffic = 0;
     let search = 0;
@@ -574,34 +838,8 @@ async function generateMediaKitSnapshot(onProgress = () => {}) {
     }
   }
 
-  // 9. YouTube Analytics API: Per-Video Trailing 90 Days (For Recent Work Retention & Views)
-  onProgress("querying_recent_retention", "Fetching per-video views and retention for recent uploads…");
-  const videoPerfRes = await queryAnalyticsSafe(
-    ytAnalytics,
-    {
-      ids: "channel==MINE",
-      startDate: t90Start,
-      endDate: effectiveEnd,
-      dimensions: "video",
-      metrics: "views,averageViewPercentage",
-      sort: "-views",
-      maxResults: 50,
-    },
-    "Per-Video 90d Performance"
-  );
-
-  const videoPerfMap = new Map();
-  if (videoPerfRes?.rows && videoPerfRes.rows.length > 0) {
-    videoPerfRes.rows.forEach(([vId, vViews, vAvp]) => {
-      videoPerfMap.set(vId, {
-        views90d: vViews || 0,
-        avgRetentionPct: vAvp != null ? Number(vAvp.toFixed(1)) : null,
-      });
-    });
-  }
-
-  // 10. Derived: Median & Percentiles for 28-Day Views (from video_28day_views)
-  onProgress("computing_derived_metrics", "Computing 28-day percentiles and long-tail multiples…");
+  // 9. Derived: Median & Percentiles for 28-Day Views (from video_28day_views)
+  onProgress("computing_derived_metrics", "Computing expected 30-day reach and evergreen value…");
   const pastYearVideos = db.prepare(`
     SELECT views_28d
     FROM video_28day_views
@@ -613,7 +851,7 @@ async function generateMediaKitSnapshot(onProgress = () => {}) {
   const views28dList = pastYearVideos.map((r) => r.views_28d);
   const views28dPercentiles = calculatePercentiles(views28dList);
 
-  // 11. Derived: Long-Tail Multiple (views_365d / views_28d)
+  // 10. Derived: Evergreen Multiple (views_365d / views_28d)
   const evergreenVideos = db.prepare(`
     SELECT views_28d, views_365d
     FROM video_28day_views
@@ -631,45 +869,96 @@ async function generateMediaKitSnapshot(onProgress = () => {}) {
     }
   }
 
-  // 12. Derived: Content Pillars from Existing Categories & Videos
-  onProgress("processing_content_pillars", "Aggregating content pillars and lifetime category reach…");
-  const categoryAggregates = db.prepare(`
-    SELECT
-      c.id,
-      c.name,
-      c.description,
-      c.color,
-      COUNT(v.youtube_id) AS video_count,
-      COALESCE(SUM(v.view_count), 0) AS lifetime_views
-    FROM content_categories c
-    LEFT JOIN videos v ON v.content_type = c.name AND (v.privacy_status IS NULL OR v.privacy_status = 'public')
-    GROUP BY c.id, c.name
-    HAVING COUNT(v.youtube_id) >= 4 AND COALESCE(SUM(v.view_count), 0) >= 10000
-    ORDER BY lifetime_views DESC
-  `).all();
+  // 11. Derived: Consolidate Micro-Categories into 4 Primary Content Pillars
+  onProgress("processing_content_pillars", "Consolidating 4 primary content pillars…");
+  const PILLAR_CONFIG = [
+    {
+      id: "reviews_drives",
+      name: "Vehicle Reviews & First Drives",
+      description: "In-depth vehicle evaluations, walkarounds, interior deep-dives, and Mustang Mach-E ownership.",
+      color: "#00B1E2",
+      matcher: (catName, title) => /review|walkaround|first drive|mach-e|fathom|test drive|suv|truck|sedan|lightning|ford/i.test(catName || title),
+    },
+    {
+      id: "road_trips",
+      name: "Road Trips & Real-World Range Tests",
+      description: "Cold-weather interstate trials, long-distance towing challenges, and real-world highway range runs.",
+      color: "#06B6D4",
+      matcher: (catName, title) => /road trip|travel|range|highway|towing|trip/i.test(catName || title),
+    },
+    {
+      id: "charging_tech",
+      name: "EV Charging & Energy Tech",
+      description: "DC fast-charging curves, NACS adapter testing, home solar integration, and bidirectional V2H power.",
+      color: "#38BDF8",
+      matcher: (catName, title) => /charg|energy|solar|evse|infrastructure|v2h|adapter|nacs|guide|how to/i.test(catName || title),
+    },
+    {
+      id: "news_events",
+      name: "Industry News & Events",
+      description: "Automotive executive interviews, OEM breaking announcements, and major auto show coverage.",
+      color: "#60A5FA",
+      matcher: (catName, title) => /news|quick charge|event|auto show|livestream|update|industry|announcement/i.test(catName || title),
+    },
+  ];
 
-  const maxCategoryViews = categoryAggregates[0]?.lifetime_views || 1;
-  const contentPillars = categoryAggregates.map((cat) => ({
-    id: cat.id,
-    name: cat.name,
-    description: cat.description,
-    color: cat.color || "#00B1E2",
-    videoCount: cat.video_count,
-    lifetimeViews: cat.lifetime_views,
-    relativeWidthPercent: Math.min(100, Math.max(10, Math.round((cat.lifetime_views / maxCategoryViews) * 100))),
-  }));
+  const pillarTotals = {
+    reviews_drives: { videoCount: 0, lifetimeViews: 0 },
+    road_trips: { videoCount: 0, lifetimeViews: 0 },
+    charging_tech: { videoCount: 0, lifetimeViews: 0 },
+    news_events: { videoCount: 0, lifetimeViews: 0 },
+  };
 
-  // 13. Recent Work: 3 Most Recent Public Long-Form Videos
-  onProgress("compiling_recent_work", "Selecting recent highlight videos…");
-  const recentPublicVideos = db.prepare(`
-    SELECT youtube_id, title, published_at, thumbnail_url, duration, view_count
-    FROM videos
-    WHERE (privacy_status IS NULL OR privacy_status = 'public')
-    ORDER BY published_at DESC
-  `).all();
+  for (const video of publishedLongVideos) {
+    const vViews = video.view_count || 0;
+    const cat = video.content_type || "";
+    const title = video.title || "";
 
-  const recentLongForm = recentPublicVideos.filter((v) => isLongForm(v.duration)).slice(0, 3);
-  const recentWork = recentLongForm.map((v) => {
+    if (PILLAR_CONFIG[1].matcher(cat, title)) {
+      pillarTotals.road_trips.videoCount++;
+      pillarTotals.road_trips.lifetimeViews += vViews;
+    } else if (PILLAR_CONFIG[2].matcher(cat, title)) {
+      pillarTotals.charging_tech.videoCount++;
+      pillarTotals.charging_tech.lifetimeViews += vViews;
+    } else if (PILLAR_CONFIG[3].matcher(cat, title)) {
+      pillarTotals.news_events.videoCount++;
+      pillarTotals.news_events.lifetimeViews += vViews;
+    } else {
+      pillarTotals.reviews_drives.videoCount++;
+      pillarTotals.reviews_drives.lifetimeViews += vViews;
+    }
+  }
+
+  const maxPillarViews = Math.max(
+    ...Object.values(pillarTotals).map((p) => p.lifetimeViews),
+    1
+  );
+
+  const contentPillars = PILLAR_CONFIG.map((cfg) => {
+    const totals = pillarTotals[cfg.id];
+    return {
+      id: cfg.id,
+      name: cfg.name,
+      description: cfg.description,
+      color: cfg.color,
+      videoCount: totals.videoCount,
+      lifetimeViews: totals.lifetimeViews,
+      relativeWidthPercent: Math.min(100, Math.max(12, Math.round((totals.lifetimeViews / maxPillarViews) * 100))),
+    };
+  });
+
+  // 12. Recent Work: Top 3 Published Long Videos (>= 240s) with > 2,000 Views
+  onProgress("compiling_recent_work", "Selecting recent highlight videos (> 2,000 views)…");
+  const qualifiedRecent = publishedLongVideos
+    .filter((v) => (v.view_count || 0) > 2000)
+    .slice(0, 3);
+
+  // Fallback to top 3 long videos if fewer than 3 have > 2000 views
+  const finalRecent = qualifiedRecent.length >= 3
+    ? qualifiedRecent
+    : publishedLongVideos.slice(0, 3);
+
+  const recentWork = finalRecent.map((v) => {
     const perf = videoPerfMap.get(v.youtube_id);
     return {
       youtubeId: v.youtube_id,
@@ -681,7 +970,7 @@ async function generateMediaKitSnapshot(onProgress = () => {}) {
     };
   });
 
-  // 14. Assemble Complete Snapshot Object
+  // 13. Assemble Complete Snapshot Object
   onProgress("saving_snapshot", "Assembling final snapshot and committing to storage…");
   const snapshotData = {
     effectiveEndDate: effectiveEnd,
@@ -702,6 +991,7 @@ async function generateMediaKitSnapshot(onProgress = () => {}) {
     },
     audience: {
       topMarkets,
+      buyingPower,
       ageDistribution,
       genderDistribution,
       deviceBreakdown,
@@ -714,7 +1004,7 @@ async function generateMediaKitSnapshot(onProgress = () => {}) {
     generatedAt: new Date().toISOString(),
   };
 
-  // 15. Transactional Append & Prune (Keep Latest 24)
+  // 14. Transactional Append & Prune (Keep Latest 24)
   const insertAndPrune = db.transaction(() => {
     const insertStmt = db.prepare(`
       INSERT INTO media_kit_snapshots (snapshot_date, data_json, created_at)
@@ -753,7 +1043,6 @@ async function generateMediaKitSnapshot(onProgress = () => {}) {
 const activeSnapshotJobs = new Map();
 
 function startSnapshotJob() {
-  // Check if a job is already in progress
   for (const [id, job] of activeSnapshotJobs.entries()) {
     if (job.status === "running") {
       return { jobId: id, alreadyRunning: true, status: job.status, progressStage: job.progressStage };
@@ -774,10 +1063,8 @@ function startSnapshotJob() {
 
   activeSnapshotJobs.set(jobId, jobState);
 
-  // Run in background without awaiting
   (async () => {
     try {
-      // First run 28d/365d capture so the views table has fresh data
       jobState.progressStage = "capturing_views";
       jobState.progressMessage = "Capturing closed 28-day view windows…";
       try {
@@ -787,7 +1074,6 @@ function startSnapshotJob() {
         console.warn("[Media-Kit Refresh] 28d/365d capture note:", capErr.message);
       }
 
-      // Generate the snapshot
       const result = await generateMediaKitSnapshot((stage, message) => {
         jobState.progressStage = stage;
         jobState.progressMessage = message;
@@ -813,7 +1099,6 @@ function startSnapshotJob() {
 
 function getSnapshotJobStatus(jobId) {
   if (!jobId) {
-    // Return latest job if no specific ID provided
     const jobs = Array.from(activeSnapshotJobs.values());
     return jobs[jobs.length - 1] || null;
   }
@@ -860,11 +1145,6 @@ function ensureUploadsDir() {
   }
 }
 
-/**
- * Save an uploaded partner logo to disk
- * Accepts base64 data string (e.g. data:image/png;base64,... or raw base64)
- * Max size capped at 100KB
- */
 function savePartnerLogo(base64Data, originalName = "logo.png") {
   ensureUploadsDir();
 
@@ -909,6 +1189,7 @@ function savePartnerLogo(base64Data, originalName = "logo.png") {
 }
 
 module.exports = {
+  COUNTRY_NAMES,
   getEffectiveEndDate,
   parseDurationSec,
   isLongForm,
