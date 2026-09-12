@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.4.2] - 2026-09-12
+
+### Added
+- **New Section: Featured In**:
+  - Compact horizontal strip highlighting media coverage (outlet name, article title, URL, outlet logo) directly below the Reach section.
+  - Includes an optional Industry Recognition line for awards and journalistic honors.
+  - Backed by manual data array seeded completely empty; renders nothing if unpopulated.
+- **New Section: Meet the Duo**:
+  - Two-column biographical showcase for Patrick and team with photo, name, role line, bio paragraph, credential list, and external links.
+  - Seeded completely empty with placeholder labels.
+  - Hardened with `break-inside: avoid` to guarantee bio cards are never split across pages in print.
+- **New Section: Event & Trade Show Coverage**:
+  - Dense credibility inventory directly after "Beyond the Channel" detailing major auto shows covered, industry trade events attended, on-site booth/launch coverage scope, and speaking/panel appearances.
+  - Backed by manual data seeded completely empty; renders nothing if unpopulated.
+- **New Section: Website Resources**:
+  - Evergreen tools and guides on `theelectricduo.com` rendered cleanly within "Beyond the Channel".
+  - Seeded completely empty; renders nothing if unpopulated.
+- **New Proof Block: Who We Reach**:
+  - Two-column audience breakdown (Primary: EV Owners & Near-Term Buyers; Secondary: Home Energy & Smart Home) positioned directly after Content Pillars bars.
+  - Live aggregate proof stats (lifetime views and video counts) computed directly from the snapshot based on a configurable pillar-to-audience mapping.
+  - Configurable in the manual edit drawer: defaults all pillars to Primary except "Solar & Home Energy", which defaults to Secondary.
+
+### Changed & Refined
+- **Audience Reach Trailing 12 Complete Months Stat Block**:
+  - Replaced the 12-month bar chart component and "Consistent Monthly Video View Progression" heading with a clean, factual Audience Reach stat block.
+  - Strictly queries the 12 most recently complete calendar months relative to the effective end date, excluding the current partial month.
+  - Verifies exactly 12 month entries before computing total views and average monthly views (rounded to the nearest thousand).
+  - Synchronized this figure with the "Monthly Views" card in the Reach section.
+  - Preserved the raw 12-month series in the snapshot JSON for historical trend analysis across snapshots.
+- **Removed Industry Standing / Professional Credentials Section**:
+  - Deleted Column 3 from "Beyond the Channel" so credentials live cleanly within the new Duo member bios.
+- **Manual Data & Seeding**:
+  - All new manual fields seed completely empty with placeholder labels and zero fabricated content.
+  - Sections with no entered data render `null`, completely eliminating empty container shells and orphaned headers.
+- **Print Layout Hardening**:
+  - Enforced `break-inside: avoid` on duo cards, featured in strip, reach stat block, and event lists, ensuring clean multi-page pagination targeting 4 to 6 pages.
+
+---
+
 ## [2.4.1] - 2026-09-12
 
 ### Changed & Refined

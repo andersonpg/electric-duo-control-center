@@ -1,6 +1,6 @@
 {
   "name": "electric-duo-control-center",
-  "version": "2.4.1",
+  "version": "2.4.2",
   "description": "The Electric Duo Master Command Center — Plan Checklist & Article Generator",
   "private": true,
   "main": "server/app.js",

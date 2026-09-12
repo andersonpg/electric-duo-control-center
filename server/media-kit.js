@@ -104,6 +104,51 @@ function calculatePercentiles(values) {
   };
 }
 
+/**
+ * Calculate the exact date range for the 12 most recently COMPLETE calendar months.
+ * Excludes the current partial month relative to effectiveEndDateStr.
+ * Example: for 2026-09-09, returns startDate: 2025-09-01, endDate: 2026-08-31,
+ * with expectedMonths containing exactly 12 'YYYY-MM' strings.
+ */
+function getTrailing12CompleteMonthRange(effectiveEndDateStr) {
+  const [yearStr, monthStr] = effectiveEndDateStr.split("-");
+  const year = parseInt(yearStr, 10);
+  const month = parseInt(monthStr, 10);
+
+  let endYear = year;
+  let endMonth = month - 1;
+  if (endMonth === 0) {
+    endMonth = 12;
+    endYear -= 1;
+  }
+
+  // Day 0 of next month is the last day of endMonth
+  const lastDay = new Date(Date.UTC(endYear, endMonth, 0)).getUTCDate();
+  const endDate = `${endYear}-${String(endMonth).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+
+  let startYear = endYear - 1;
+  let startMonth = endMonth + 1;
+  if (startMonth > 12) {
+    startMonth = 1;
+    startYear = endYear;
+  }
+  const startDate = `${startYear}-${String(startMonth).padStart(2, "0")}-01`;
+
+  const expectedMonths = [];
+  let curY = startYear;
+  let curM = startMonth;
+  for (let i = 0; i < 12; i++) {
+    expectedMonths.push(`${curY}-${String(curM).padStart(2, "0")}`);
+    curM++;
+    if (curM > 12) {
+      curM = 1;
+      curY++;
+    }
+  }
+
+  return { startDate, endDate, expectedMonths };
+}
+
 // ---------------------------------------------------------------------------
 // 2. Off-Platform Manual Data
 // ---------------------------------------------------------------------------
@@ -452,21 +497,22 @@ async function generateMediaKitSnapshot(onProgress = () => {}) {
     }
   }
 
-  // 3. YouTube Analytics API: Trailing 12 Months (Daily query avoids API month-boundary validation errors)
-  onProgress("querying_trailing_12m", "Querying 12-month growth curve and annual watch hours…");
+  // 3. YouTube Analytics API: Trailing 12 Complete Months (excluding current partial month)
+  onProgress("querying_trailing_12m", "Querying trailing 12 complete months and annual watch hours…");
   const t365Start = formatDateStr(new Date(effectiveEndDateObj.getTime() - 365 * 86400000));
+  const { startDate: t12mStart, endDate: t12mEnd, expectedMonths } = getTrailing12CompleteMonthRange(effectiveEnd);
 
   const t12mDailyRes = await queryAnalyticsSafe(
     ytAnalytics,
     {
       ids: "channel==MINE",
-      startDate: t365Start,
-      endDate: effectiveEnd,
+      startDate: t12mStart,
+      endDate: t12mEnd,
       dimensions: "day",
       metrics: "views,estimatedMinutesWatched,subscribersGained,subscribersLost",
       sort: "day",
     },
-    "Trailing 12 Months Daily"
+    "Trailing 12 Complete Months Daily"
   );
 
   let trailing12m = {
@@ -474,16 +520,23 @@ async function generateMediaKitSnapshot(onProgress = () => {}) {
     totalWatchHours: null,
     totalViews: null,
     monthlyAverageViews: null,
+    dateRange: { startDate: t12mStart, endDate: t12mEnd },
   };
 
   if (t12mDailyRes?.rows && t12mDailyRes.rows.length > 0) {
     const monthlyMap = new Map();
+    for (const mKey of expectedMonths) {
+      monthlyMap.set(mKey, { month: mKey, views: 0, minutes: 0, netSubs: 0 });
+    }
+
     let sumMinutes = 0;
     let sumViews = 0;
 
     for (const r of t12mDailyRes.rows) {
       const dayStr = r[0]; // "YYYY-MM-DD"
       const monthKey = dayStr.substring(0, 7); // "YYYY-MM"
+      if (!monthlyMap.has(monthKey)) continue;
+
       const dViews = r[1] || 0;
       const dMinutes = r[2] || 0;
       const dGained = r[3] || 0;
@@ -492,43 +545,30 @@ async function generateMediaKitSnapshot(onProgress = () => {}) {
       sumViews += dViews;
       sumMinutes += dMinutes;
 
-      if (!monthlyMap.has(monthKey)) {
-        monthlyMap.set(monthKey, { month: monthKey, views: 0, minutes: 0, netSubs: 0 });
-      }
       const entry = monthlyMap.get(monthKey);
       entry.views += dViews;
       entry.minutes += dMinutes;
       entry.netSubs += dGained - dLost;
     }
 
-    trailing12m.months = Array.from(monthlyMap.values()).map((m) => ({
-      month: m.month,
-      views: m.views,
-      watchHours: Math.round(m.minutes / 60),
-      netSubscribers: m.netSubs,
-    }));
+    const monthEntries = expectedMonths.map((mKey) => {
+      const m = monthlyMap.get(mKey);
+      return {
+        month: m.month,
+        views: m.views,
+        watchHours: Math.round(m.minutes / 60),
+        netSubscribers: m.netSubs,
+      };
+    });
 
-    trailing12m.totalWatchHours = Math.round(sumMinutes / 60);
-    trailing12m.totalViews = sumViews;
-    trailing12m.monthlyAverageViews = trailing12m.months.length > 0 ? Math.round(sumViews / trailing12m.months.length) : null;
-  } else {
-    // Secondary fallback: query totals without dimensions
-    const t12mTotalRes = await queryAnalyticsSafe(
-      ytAnalytics,
-      {
-        ids: "channel==MINE",
-        startDate: t365Start,
-        endDate: effectiveEnd,
-        metrics: "views,estimatedMinutesWatched",
-      },
-      "Trailing 12 Months Totals Fallback"
-    );
-    if (t12mTotalRes?.rows?.[0]) {
-      const totViews = t12mTotalRes.rows[0][0] || 0;
-      const totMin = t12mTotalRes.rows[0][1] || 0;
-      trailing12m.totalViews = totViews;
-      trailing12m.totalWatchHours = Math.round(totMin / 60);
-      trailing12m.monthlyAverageViews = Math.round(totViews / 12);
+    trailing12m.months = monthEntries;
+
+    // Verify exactly 12 complete month entries before computing
+    if (monthEntries.length === 12) {
+      trailing12m.totalWatchHours = Math.round(sumMinutes / 60);
+      trailing12m.totalViews = sumViews;
+      // Average monthly views (total / 12), rounded to nearest thousand
+      trailing12m.monthlyAverageViews = Math.round((sumViews / 12) / 1000) * 1000;
     }
   }
 
@@ -869,8 +909,8 @@ async function generateMediaKitSnapshot(onProgress = () => {}) {
     }
   }
 
-  // 11. Derived: Consolidate Micro-Categories into 4 Primary Content Pillars
-  onProgress("processing_content_pillars", "Consolidating 4 primary content pillars…");
+  // 11. Derived: Consolidate Content Pillars (including Solar & Home Energy)
+  onProgress("processing_content_pillars", "Consolidating primary content pillars…");
   const PILLAR_CONFIG = [
     {
       id: "reviews_drives",
@@ -887,11 +927,18 @@ async function generateMediaKitSnapshot(onProgress = () => {}) {
       matcher: (catName, title) => /road trip|travel|range|highway|towing|trip/i.test(catName || title),
     },
     {
-      id: "charging_tech",
-      name: "EV Charging & Energy Tech",
-      description: "DC fast-charging curves, NACS adapter testing, home solar integration, and bidirectional V2H power.",
+      id: "charging_infrastructure",
+      name: "EV Charging & Infrastructure",
+      description: "DC fast-charging curves, NACS adapter testing, public charging networks, and Level 2 setups.",
       color: "#38BDF8",
-      matcher: (catName, title) => /charg|energy|solar|evse|infrastructure|v2h|adapter|nacs|guide|how to/i.test(catName || title),
+      matcher: (catName, title) => /charg|evse|infrastructure|adapter|nacs|supercharg|electrify america|fast charg/i.test(catName || title),
+    },
+    {
+      id: "solar_home_energy",
+      name: "Solar & Home Energy",
+      description: "Home solar installations, battery backup systems, bidirectional V2H power, and smart home energy.",
+      color: "#F59E0B",
+      matcher: (catName, title) => /solar|home energy|battery backup|v2h|bidirectional|smart home|powerwall|generator/i.test(catName || title),
     },
     {
       id: "news_events",
@@ -905,7 +952,8 @@ async function generateMediaKitSnapshot(onProgress = () => {}) {
   const pillarTotals = {
     reviews_drives: { videoCount: 0, lifetimeViews: 0 },
     road_trips: { videoCount: 0, lifetimeViews: 0 },
-    charging_tech: { videoCount: 0, lifetimeViews: 0 },
+    charging_infrastructure: { videoCount: 0, lifetimeViews: 0 },
+    solar_home_energy: { videoCount: 0, lifetimeViews: 0 },
     news_events: { videoCount: 0, lifetimeViews: 0 },
   };
 
@@ -914,13 +962,16 @@ async function generateMediaKitSnapshot(onProgress = () => {}) {
     const cat = video.content_type || "";
     const title = video.title || "";
 
-    if (PILLAR_CONFIG[1].matcher(cat, title)) {
+    if (PILLAR_CONFIG[3].matcher(cat, title)) {
+      pillarTotals.solar_home_energy.videoCount++;
+      pillarTotals.solar_home_energy.lifetimeViews += vViews;
+    } else if (PILLAR_CONFIG[2].matcher(cat, title)) {
+      pillarTotals.charging_infrastructure.videoCount++;
+      pillarTotals.charging_infrastructure.lifetimeViews += vViews;
+    } else if (PILLAR_CONFIG[1].matcher(cat, title)) {
       pillarTotals.road_trips.videoCount++;
       pillarTotals.road_trips.lifetimeViews += vViews;
-    } else if (PILLAR_CONFIG[2].matcher(cat, title)) {
-      pillarTotals.charging_tech.videoCount++;
-      pillarTotals.charging_tech.lifetimeViews += vViews;
-    } else if (PILLAR_CONFIG[3].matcher(cat, title)) {
+    } else if (PILLAR_CONFIG[4].matcher(cat, title)) {
       pillarTotals.news_events.videoCount++;
       pillarTotals.news_events.lifetimeViews += vViews;
     } else {

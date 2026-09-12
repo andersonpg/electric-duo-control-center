@@ -435,12 +435,45 @@ try {
         name: "Patrick & The Electric Duo Team",
         email: "partnerships@theelectricduo.com",
         cta_text: "Partner with The Electric Duo to place your brand directly in front of the most engaged EV owners, buyers, and industry decision-makers in North America."
+      },
+      audience_reach_caption: "",
+      featured_in: [],
+      industry_recognition: "",
+      duo_bios: [],
+      auto_shows: [],
+      industry_events: [],
+      event_coverage_description: "",
+      speaking_appearances: [],
+      website_resources: [],
+      who_we_reach: {
+        primary_description: "",
+        secondary_description: "",
+        pillar_mapping: {}
       }
     };
     articleDb.prepare("INSERT INTO media_kit_manual (id, data_json) VALUES (1, ?)").run(JSON.stringify(defaultManualData));
   } else if (existingManual.data_json) {
     try {
       const parsed = JSON.parse(existingManual.data_json);
+      let updated = false;
+
+      if (parsed.audience_reach_caption === undefined) { parsed.audience_reach_caption = ""; updated = true; }
+      if (parsed.featured_in === undefined) { parsed.featured_in = []; updated = true; }
+      if (parsed.industry_recognition === undefined) { parsed.industry_recognition = ""; updated = true; }
+      if (parsed.duo_bios === undefined) { parsed.duo_bios = []; updated = true; }
+      if (parsed.auto_shows === undefined) { parsed.auto_shows = []; updated = true; }
+      if (parsed.industry_events === undefined) { parsed.industry_events = []; updated = true; }
+      if (parsed.event_coverage_description === undefined) { parsed.event_coverage_description = ""; updated = true; }
+      if (parsed.speaking_appearances === undefined) { parsed.speaking_appearances = []; updated = true; }
+      if (parsed.website_resources === undefined) { parsed.website_resources = []; updated = true; }
+      if (parsed.who_we_reach === undefined) {
+        parsed.who_we_reach = {
+          primary_description: "",
+          secondary_description: "",
+          pillar_mapping: {}
+        };
+        updated = true;
+      }
       if (!parsed.audience_survey) {
         parsed.audience_survey = {
           ev_ownership_pct: "88%",
@@ -451,6 +484,10 @@ try {
           home_charging_label: "Home Charging or Solar Installed",
           survey_source: "The Electric Duo Verified Community Audience Survey"
         };
+        updated = true;
+      }
+
+      if (updated) {
         articleDb.prepare("UPDATE media_kit_manual SET data_json = ? WHERE id = 1").run(JSON.stringify(parsed));
       }
     } catch (parseErr) {}

@@ -35,7 +35,7 @@ export default function MediaKitPrint({ currentUser }) {
             grid-template-columns: repeat(3, 1fr) !important;
             gap: 1rem !important;
           }
-          header, section, .recent-work-grid {
+          header, section, .recent-work-grid, .duo-card {
             break-inside: avoid !important;
             page-break-inside: avoid !important;
           }
