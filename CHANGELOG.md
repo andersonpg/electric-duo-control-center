@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.4.5] - 2026-09-12
+
+### Fixed
+- **Channel Health Scorecard Silently Included Shorts**:
+  - The main "Total Views," "Watch Time (Hours)," "Avg % Viewed," and "Net Subscribers" tiles at the top of Channel Health were computed from a raw, unfiltered channel-wide YouTube Analytics query — Shorts and Live included — even though the page is headed "Long-form content (excludes < 4 min Shorts)."
+  - Replaced that query with the same long-form-only (`creatorContentType==video_on_demand`) query already added for the Viewer Satisfaction Score in v2.4.4, so both sections now derive from one consistent, correctly-scoped data source. The "Avg % Viewed" scorecard tile and the Satisfaction Score's retention component now always agree, instead of silently disagreeing depending on how much Shorts activity happened to occur in the window.
+  - This also removed two redundant Analytics API calls per page load (the old unfiltered current/prior period queries), since the long-form query already covers everything the scorecard needs.
+
+---
+
 ## [2.4.4] - 2026-09-12
 
 ### Added

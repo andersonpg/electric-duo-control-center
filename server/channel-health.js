@@ -945,10 +945,12 @@ async function queryAnalytics(ytAnalytics, params, label) {
   }
 }
 
-// Long-form-only (Shorts and Live excluded) channel totals for the Viewer
-// Satisfaction Score. Filtered server-side via YouTube's own creatorContentType
-// classification rather than joined against the local video catalog, so it
-// stays correct even if the local catalog's duration data is incomplete.
+// Long-form-only (Shorts and Live excluded) channel totals, used for both the
+// main scorecard and the Viewer Satisfaction Score below it. Filtered
+// server-side via YouTube's own creatorContentType classification rather than
+// joined against the local video catalog, so it stays correct even if the
+// local catalog's duration data is incomplete -- the same class of bug fixed
+// in server/media-kit.js.
 async function queryLongFormChannelMetrics(ytAnalytics, startDate, endDate, label) {
   const data = await queryAnalytics(
     ytAnalytics,
@@ -956,7 +958,7 @@ async function queryLongFormChannelMetrics(ytAnalytics, startDate, endDate, labe
       ids: "channel==MINE",
       startDate,
       endDate,
-      metrics: "views,likes,comments,shares,averageViewPercentage,subscribersGained,subscribersLost",
+      metrics: "views,estimatedMinutesWatched,likes,comments,shares,averageViewPercentage,subscribersGained,subscribersLost",
       filters: "creatorContentType==video_on_demand",
     },
     `${label} (Long-Form)`
@@ -964,13 +966,17 @@ async function queryLongFormChannelMetrics(ytAnalytics, startDate, endDate, labe
   return data?.rows?.[0] || null;
 }
 
-// Derives retention %, engagement rate %, and net subscriber conversion rate %
-// from one long-form channel metrics row. Any missing input yields a null
-// component rather than a guessed one.
-function deriveSatisfactionInputs(row) {
-  if (!row) return { views: null, retention: null, engagementRate: null, subConversionRate: null };
+// Derives every value the scorecard and Viewer Satisfaction Score need from
+// one long-form channel metrics row: views, watch hours, retention %,
+// engagement rate %, net subscribers, and net subscriber conversion rate %.
+// Any missing input yields a null component rather than a guessed one.
+function deriveLongFormMetrics(row) {
+  if (!row) {
+    return { views: null, watchHours: null, retention: null, engagementRate: null, netSubs: null, subConversionRate: null };
+  }
 
-  const [views, likes, comments, shares, avp, subsGained, subsLost] = row;
+  const [views, estMinutes, likes, comments, shares, avp, subsGained, subsLost] = row;
+  const watchHours = estMinutes != null ? Number((estMinutes / 60).toFixed(1)) : null;
   const retention = avp != null ? Number(avp.toFixed(1)) : null;
   const engagementRate = views > 0
     ? Number((((likes || 0) + (comments || 0) + (shares || 0)) / views * 100).toFixed(2))
@@ -980,7 +986,7 @@ function deriveSatisfactionInputs(row) {
     ? Number((netSubs / views * 100).toFixed(3))
     : null;
 
-  return { views: views ?? null, retention, engagementRate, subConversionRate };
+  return { views: views ?? null, watchHours, retention, engagementRate, netSubs, subConversionRate };
 }
 
 // Maps each measured input onto a disclosed 0-100 point scale and averages
@@ -1036,8 +1042,6 @@ async function getChannelHealthReport(periodDays = 28) {
   const startDateStr = new Date(now.getTime() - periodDays * 86400000).toISOString().split("T")[0];
   const priorStartDateStr = new Date(now.getTime() - 2 * periodDays * 86400000).toISOString().split("T")[0];
 
-  let liveReport = null;
-  let priorLiveReport = null;
   let topVideosLive = null;
   let trafficLive = null;
   let priorTrafficLive = null;
@@ -1057,11 +1061,7 @@ async function getChannelHealthReport(periodDays = 28) {
       console.warn("Could not fetch channel subscriber count:", e.message);
     }
 
-    const coreMetrics = "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained,subscribersLost";
-
-    const [curr, prior, top, traffic, priorTraffic, longFormCurr, longFormPrior] = await Promise.all([
-      queryAnalytics(ytAnalytics, { ids: "channel==MINE", startDate: startDateStr, endDate: endDateStr, metrics: coreMetrics }, "current period"),
-      queryAnalytics(ytAnalytics, { ids: "channel==MINE", startDate: priorStartDateStr, endDate: startDateStr, metrics: coreMetrics }, "prior period"),
+    const [top, traffic, priorTraffic, longFormCurr, longFormPrior] = await Promise.all([
       queryAnalytics(ytAnalytics, {
         ids: "channel==MINE", startDate: startDateStr, endDate: endDateStr,
         dimensions: "video", metrics: "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage",
@@ -1081,8 +1081,6 @@ async function getChannelHealthReport(periodDays = 28) {
       queryLongFormChannelMetrics(ytAnalytics, priorStartDateStr, startDateStr, "prior period"),
     ]);
 
-    if (curr?.rows?.[0]) liveReport = curr.rows[0];
-    if (prior?.rows?.[0]) priorLiveReport = prior.rows[0];
     if (top?.rows) topVideosLive = top.rows;
     if (traffic?.rows) trafficLive = traffic.rows;
     if (priorTraffic?.rows) priorTrafficLive = priorTraffic.rows;
@@ -1090,18 +1088,23 @@ async function getChannelHealthReport(periodDays = 28) {
     longFormPriorRow = longFormPrior;
   }
 
-  const isLive = !!liveReport;
+  const isLive = !!longFormCurrRow;
 
-  // ---- 1. Scorecard (measured only) ----
-  const currViews = isLive ? liveReport[0] ?? null : null;
-  const currWatchHours = isLive && liveReport[1] != null ? Number((liveReport[1] / 60).toFixed(1)) : null;
-  const currAvgRetention = isLive && liveReport[3] != null ? Number(liveReport[3].toFixed(1)) : null;
-  const currNetSubs = isLive && liveReport[4] != null && liveReport[5] != null ? liveReport[4] - liveReport[5] : null;
+  // ---- 1. Scorecard (measured only, long-form video-on-demand content only:
+  // Shorts and Live are excluded via YouTube's own creatorContentType
+  // classification, the same fix applied in server/media-kit.js) ----
+  const lfCurrInputs = deriveLongFormMetrics(longFormCurrRow);
+  const lfPriorInputs = deriveLongFormMetrics(longFormPriorRow);
 
-  const priorViews = priorLiveReport ? priorLiveReport[0] ?? null : null;
-  const priorWatchHours = priorLiveReport && priorLiveReport[1] != null ? Number((priorLiveReport[1] / 60).toFixed(1)) : null;
-  const priorAvgRetention = priorLiveReport && priorLiveReport[3] != null ? Number(priorLiveReport[3].toFixed(1)) : null;
-  const priorNetSubs = priorLiveReport && priorLiveReport[4] != null && priorLiveReport[5] != null ? priorLiveReport[4] - priorLiveReport[5] : null;
+  const currViews = lfCurrInputs.views;
+  const currWatchHours = lfCurrInputs.watchHours;
+  const currAvgRetention = lfCurrInputs.retention;
+  const currNetSubs = lfCurrInputs.netSubs;
+
+  const priorViews = lfPriorInputs.views;
+  const priorWatchHours = lfPriorInputs.watchHours;
+  const priorAvgRetention = lfPriorInputs.retention;
+  const priorNetSubs = lfPriorInputs.netSubs;
 
   const trafficShare = summariseTraffic(trafficLive);
   const priorTrafficShare = summariseTraffic(priorTrafficLive);
@@ -1120,8 +1123,7 @@ async function getChannelHealthReport(periodDays = 28) {
   // creators. This is a disclosed proxy built from three measured signals
   // YouTube has publicly tied to satisfaction, restricted to long-form
   // video-on-demand content the same way the fix in server/media-kit.js is.
-  const lfCurrInputs = deriveSatisfactionInputs(longFormCurrRow);
-  const lfPriorInputs = deriveSatisfactionInputs(longFormPriorRow);
+  // Reuses the lfCurrInputs/lfPriorInputs already derived for the scorecard.
   const satisfactionScoreValue = scoreSatisfactionInputs(lfCurrInputs);
   const satisfactionScorePrior = scoreSatisfactionInputs(lfPriorInputs);
 
