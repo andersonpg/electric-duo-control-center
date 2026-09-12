@@ -945,6 +945,61 @@ async function queryAnalytics(ytAnalytics, params, label) {
   }
 }
 
+// Long-form-only (Shorts and Live excluded) channel totals for the Viewer
+// Satisfaction Score. Filtered server-side via YouTube's own creatorContentType
+// classification rather than joined against the local video catalog, so it
+// stays correct even if the local catalog's duration data is incomplete.
+async function queryLongFormChannelMetrics(ytAnalytics, startDate, endDate, label) {
+  const data = await queryAnalytics(
+    ytAnalytics,
+    {
+      ids: "channel==MINE",
+      startDate,
+      endDate,
+      metrics: "views,likes,comments,shares,averageViewPercentage,subscribersGained,subscribersLost",
+      filters: "creatorContentType==video_on_demand",
+    },
+    `${label} (Long-Form)`
+  );
+  return data?.rows?.[0] || null;
+}
+
+// Derives retention %, engagement rate %, and net subscriber conversion rate %
+// from one long-form channel metrics row. Any missing input yields a null
+// component rather than a guessed one.
+function deriveSatisfactionInputs(row) {
+  if (!row) return { views: null, retention: null, engagementRate: null, subConversionRate: null };
+
+  const [views, likes, comments, shares, avp, subsGained, subsLost] = row;
+  const retention = avp != null ? Number(avp.toFixed(1)) : null;
+  const engagementRate = views > 0
+    ? Number((((likes || 0) + (comments || 0) + (shares || 0)) / views * 100).toFixed(2))
+    : null;
+  const netSubs = subsGained != null && subsLost != null ? subsGained - subsLost : null;
+  const subConversionRate = netSubs != null && views > 0
+    ? Number((netSubs / views * 100).toFixed(3))
+    : null;
+
+  return { views: views ?? null, retention, engagementRate, subConversionRate };
+}
+
+// Maps each measured input onto a disclosed 0-100 point scale and averages
+// whichever components are available. The ceilings are not official YouTube
+// figures -- they are the same rule-of-thumb "strong performance" benchmarks
+// used elsewhere in this app (~50% avg. viewed, ~6% engagement rate), applied
+// consistently and shown in full in the UI's methodology note. A net
+// subscriber loss floors at 0 points rather than going negative.
+function scoreSatisfactionInputs({ retention, engagementRate, subConversionRate }) {
+  const clamp = (n) => Math.max(0, Math.min(100, n));
+  const subScores = [];
+  if (retention != null) subScores.push(clamp(Math.round((retention / 50) * 100)));
+  if (engagementRate != null) subScores.push(clamp(Math.round((engagementRate / 6) * 100)));
+  if (subConversionRate != null) subScores.push(clamp(Math.round((Math.max(0, subConversionRate) / 1) * 100)));
+
+  if (subScores.length === 0) return null;
+  return Math.round(subScores.reduce((a, b) => a + b, 0) / subScores.length);
+}
+
 function summariseTraffic(rows) {
   if (!rows || rows.length === 0) return null;
   const total = rows.reduce((s, r) => s + (r[1] || 0), 0);
@@ -987,6 +1042,8 @@ async function getChannelHealthReport(periodDays = 28) {
   let trafficLive = null;
   let priorTrafficLive = null;
   let totalSubscribers = null;
+  let longFormCurrRow = null;
+  let longFormPriorRow = null;
 
   if (auth) {
     const ytAnalytics = google.youtubeAnalytics({ version: "v2", auth });
@@ -1002,7 +1059,7 @@ async function getChannelHealthReport(periodDays = 28) {
 
     const coreMetrics = "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained,subscribersLost";
 
-    const [curr, prior, top, traffic, priorTraffic] = await Promise.all([
+    const [curr, prior, top, traffic, priorTraffic, longFormCurr, longFormPrior] = await Promise.all([
       queryAnalytics(ytAnalytics, { ids: "channel==MINE", startDate: startDateStr, endDate: endDateStr, metrics: coreMetrics }, "current period"),
       queryAnalytics(ytAnalytics, { ids: "channel==MINE", startDate: priorStartDateStr, endDate: startDateStr, metrics: coreMetrics }, "prior period"),
       queryAnalytics(ytAnalytics, {
@@ -1020,6 +1077,8 @@ async function getChannelHealthReport(periodDays = 28) {
         ids: "channel==MINE", startDate: priorStartDateStr, endDate: startDateStr,
         dimensions: "insightTrafficSourceType", metrics: "views", sort: "-views",
       }, "prior traffic sources"),
+      queryLongFormChannelMetrics(ytAnalytics, startDateStr, endDateStr, "current period"),
+      queryLongFormChannelMetrics(ytAnalytics, priorStartDateStr, startDateStr, "prior period"),
     ]);
 
     if (curr?.rows?.[0]) liveReport = curr.rows[0];
@@ -1027,6 +1086,8 @@ async function getChannelHealthReport(periodDays = 28) {
     if (top?.rows) topVideosLive = top.rows;
     if (traffic?.rows) trafficLive = traffic.rows;
     if (priorTraffic?.rows) priorTrafficLive = priorTraffic.rows;
+    longFormCurrRow = longFormCurr;
+    longFormPriorRow = longFormPrior;
   }
 
   const isLive = !!liveReport;
@@ -1053,6 +1114,31 @@ async function getChannelHealthReport(periodDays = 28) {
     available: value != null,
     note: note || null,
   });
+
+  // ---- Viewer Satisfaction Score (long-form only) ----
+  // YouTube never exposes its internal viewer-satisfaction survey score to
+  // creators. This is a disclosed proxy built from three measured signals
+  // YouTube has publicly tied to satisfaction, restricted to long-form
+  // video-on-demand content the same way the fix in server/media-kit.js is.
+  const lfCurrInputs = deriveSatisfactionInputs(longFormCurrRow);
+  const lfPriorInputs = deriveSatisfactionInputs(longFormPriorRow);
+  const satisfactionScoreValue = scoreSatisfactionInputs(lfCurrInputs);
+  const satisfactionScorePrior = scoreSatisfactionInputs(lfPriorInputs);
+
+  const satisfactionScore = {
+    score: satisfactionScoreValue,
+    scorePrior: satisfactionScorePrior,
+    scoreDelta: satisfactionScoreValue != null && satisfactionScorePrior != null
+      ? satisfactionScoreValue - satisfactionScorePrior
+      : null,
+    available: satisfactionScoreValue != null,
+    components: {
+      retention: metric(lfCurrInputs.retention, lfPriorInputs.retention, "Avg % Viewed (Long-Form)"),
+      engagementRate: metric(lfCurrInputs.engagementRate, lfPriorInputs.engagementRate, "Engagement Rate (Long-Form)"),
+      subConversionRate: metric(lfCurrInputs.subConversionRate, lfPriorInputs.subConversionRate, "Net Subscriber Conversion (Long-Form)"),
+    },
+    methodology: "Composite of three long-form-only signals YouTube has publicly tied to viewer satisfaction: average percentage viewed (50% = a 100-point ceiling), engagement rate — likes + comments + shares per view (6% = a 100-point ceiling), and net subscriber conversion per view (1% = a 100-point ceiling). Each is capped at 100 points and averaged; a net subscriber loss floors at 0 rather than going negative. Shorts, Live, and non-video-on-demand content are excluded via YouTube's own content-type classification, independent of the local video catalog. YouTube's internal viewer-satisfaction survey score is never exposed to creators, so this is a disclosed proxy, not an official YouTube metric.",
+  };
 
   const currReach = getChannelReachSummary(startDateStr, endDateStr);
   const priorReach = getChannelReachSummary(priorStartDateStr, startDateStr);
@@ -1246,6 +1332,7 @@ async function getChannelHealthReport(periodDays = 28) {
     bottomUnderperformers,
     flags,
     audienceShift,
+    satisfactionScore,
     uploadsThisPeriod,
     uploadsPriorPeriod,
     unavailableMetrics,

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.4.4] - 2026-09-12
+
+### Added
+- **Viewer Satisfaction Score (Channel Health)**:
+  - New card on the Channel Health page, directly below the period scorecard, showing a composite 0-100 score built from three long-form-only signals YouTube has publicly tied to viewer satisfaction: average percentage viewed, engagement rate (likes+comments+shares per view), and net subscriber conversion per view.
+  - Each component is capped at a disclosed 100-point ceiling (50% retention, 6% engagement rate, 1% net subscriber conversion) and averaged; a net subscriber loss floors at 0 rather than scoring negative. The full methodology is shown in-app (a hover tooltip on desktop, inline text on mobile).
+  - Sourced via YouTube's own `creatorContentType==video_on_demand` classification (the same fix applied to the Media Kit in v2.4.3), so Shorts and Live content cannot blend into the score — it does not depend on the local video catalog's duration data being complete.
+  - Headline score is color-banded (emerald/amber/red) and shows a point-change delta against the prior comparable period; each of the three components renders using the existing scorecard tile style, with its own prior-period trend.
+  - Explicitly labeled as a disclosed proxy, not an official YouTube metric — YouTube never exposes its internal viewer-satisfaction survey score to creators.
+
+---
+
 ## [2.4.3] - 2026-09-12
 
 ### Fixed

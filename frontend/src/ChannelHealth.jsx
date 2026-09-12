@@ -38,6 +38,8 @@ import {
   Loader2,
   RotateCcw,
   ChevronLeft,
+  Heart,
+  Info,
 } from "lucide-react";
 
 export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
@@ -449,7 +451,7 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
     );
   }
 
-  const { scorecard, categoryStats, topByViews, topByWatchTime, bottomUnderperformers, flags, audienceShift } = report || {};
+  const { scorecard, categoryStats, topByViews, topByWatchTime, bottomUnderperformers, flags, audienceShift, satisfactionScore } = report || {};
 
   return (
     <div className="w-full max-w-7xl mx-auto px-6 py-8 flex flex-col gap-8 font-sans text-slate-100 selection:bg-cyan-500 selection:text-slate-950">
@@ -618,6 +620,48 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
             <ScoreCard metric={scorecard.avgRetention} icon={Activity} accent="text-pink-400/80" suffix="%" />
             <ScoreCard metric={scorecard.netSubs} icon={UserPlus} accent="text-teal-400/80" signed />
           </div>
+        </div>
+      )}
+
+      {/* 3a. Viewer Satisfaction Score (long-form only) */}
+      {satisfactionScore && (
+        <div className="bg-slate-900/80 border border-slate-800 rounded-3xl p-6 sm:p-7">
+          <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 border-b border-slate-800 pb-4 mb-6">
+            <div className="flex items-start gap-2.5">
+              <Heart className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
+              <div>
+                <h3 className="text-base font-bold text-white">Viewer Satisfaction Score</h3>
+                <p className="text-xs text-slate-400 mt-0.5 max-w-2xl leading-relaxed">
+                  YouTube never exposes its internal viewer-satisfaction survey score to creators. This is a
+                  disclosed proxy built from three measured long-form signals it has publicly tied to
+                  satisfaction &mdash; not an official YouTube metric.
+                </p>
+              </div>
+            </div>
+            <div
+              className="hidden sm:flex items-center gap-1.5 text-[10px] text-slate-500 shrink-0 mt-1 cursor-help"
+              title={satisfactionScore.methodology}
+            >
+              <Info className="w-3.5 h-3.5" />
+              <span>Methodology</span>
+            </div>
+          </div>
+
+          <div className="flex flex-col lg:flex-row gap-6 items-stretch">
+            <SatisfactionScoreBadge
+              score={satisfactionScore.score}
+              scoreDelta={satisfactionScore.scoreDelta}
+              available={satisfactionScore.available}
+            />
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 flex-1">
+              <ScoreCard metric={satisfactionScore.components.retention} icon={Activity} accent="text-pink-400/80" suffix="%" />
+              <ScoreCard metric={satisfactionScore.components.engagementRate} icon={Heart} accent="text-rose-400/80" suffix="%" />
+              <ScoreCard metric={satisfactionScore.components.subConversionRate} icon={UserPlus} accent="text-teal-400/80" suffix="%" />
+            </div>
+          </div>
+
+          <p className="sm:hidden text-[10px] text-slate-500 mt-4 leading-relaxed">{satisfactionScore.methodology}</p>
         </div>
       )}
 
@@ -1407,6 +1451,53 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
   );
 }
 
+
+// Headline badge for the Viewer Satisfaction Score. Colors by band (>=70
+// strong, >=40 mixed, below that soft) rather than a fixed pass/fail line,
+// since the underlying scale is a disclosed heuristic, not an official cutoff.
+function SatisfactionScoreBadge({ score, scoreDelta, available }) {
+  if (!available || score == null) {
+    return (
+      <div className="w-full lg:w-40 shrink-0 rounded-3xl bg-slate-950/60 border border-slate-800 flex flex-col items-center justify-center text-center p-5 gap-2">
+        <MinusCircle className="w-6 h-6 text-slate-600" />
+        <span className="text-[11px] text-slate-500 leading-snug">Not enough measured long-form data yet</span>
+      </div>
+    );
+  }
+
+  const band =
+    score >= 70 ? "emerald" :
+    score >= 40 ? "amber" :
+    "red";
+
+  const bandClasses = {
+    emerald: "from-emerald-500/25 to-emerald-500/5 border-emerald-500/40",
+    amber: "from-amber-500/25 to-amber-500/5 border-amber-500/40",
+    red: "from-red-500/25 to-red-500/5 border-red-500/40",
+  }[band];
+
+  const deltaClasses =
+    scoreDelta == null ? null :
+    scoreDelta >= 0 ? "text-emerald-300 bg-emerald-950/40" :
+    "text-red-300 bg-red-950/40";
+
+  return (
+    <div
+      className={`w-full lg:w-40 shrink-0 rounded-3xl bg-gradient-to-br ${bandClasses} border flex flex-col items-center justify-center text-center p-5 gap-1.5`}
+    >
+      <div className="text-4xl font-black tracking-tight text-white">{score}</div>
+      <div className="text-[10px] font-bold uppercase tracking-wider text-slate-300/80">out of 100</div>
+      {scoreDelta != null ? (
+        <span className={`inline-flex items-center gap-1 mt-1 text-[10px] font-bold px-1.5 py-0.5 rounded ${deltaClasses}`}>
+          {scoreDelta >= 0 ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
+          {scoreDelta >= 0 ? `+${scoreDelta}` : scoreDelta} pts vs prior
+        </span>
+      ) : (
+        <span className="text-[10px] text-slate-500 mt-1">No prior period to compare</span>
+      )}
+    </div>
+  );
+}
 
 // A scorecard tile that renders a metric's availability honestly. A metric with
 // no measured value shows an em dash and the reason, never a filled-in number.

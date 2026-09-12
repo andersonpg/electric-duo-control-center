@@ -6,3 +6,4 @@ data/
 scratch/
 public/uploads/
 .DS_Store
+.claude/
