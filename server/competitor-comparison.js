@@ -1108,7 +1108,7 @@ function computeSideBySideSummary(duoVideos, compVideos, duoSubs, compSubs) {
 function getReportingApiCtr() {
   try {
     const row = db.prepare(`
-      SELECT ROUND(SUM(impressions * impressions_ctr) / NULLIF(SUM(impressions), 0), 2) AS weighted_ctr
+      SELECT ROUND(SUM(impressions * impressions_ctr) * 100.0 / NULLIF(SUM(impressions), 0), 2) AS weighted_ctr
       FROM video_reach_daily
     `).get();
     if (row && row.weighted_ctr != null) {

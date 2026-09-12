@@ -237,7 +237,7 @@ function getChannelReachSummary(startDateStr, endDateStr) {
         SUM(impressions) AS total_impressions,
         COUNT(DISTINCT video_id) AS videos_with_reach,
         COUNT(DISTINCT date) AS active_days,
-        ROUND(SUM(impressions * impressions_ctr) / NULLIF(SUM(impressions), 0), 2) AS weighted_ctr
+        ROUND(SUM(impressions * impressions_ctr) * 100.0 / NULLIF(SUM(impressions), 0), 2) AS weighted_ctr
       FROM video_reach_daily
       WHERE date >= ? AND date <= ?
     `).get(startDateStr, endDateStr);

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.3.7] - 2026-09-11
+
+### Fixed
+- **Channel Health & Benchmarks Impressions CTR Calculation**:
+  - Corrected weighted Impressions CTR calculation from YouTube Reporting API (`video_reach_daily`). The API provides `video_thumbnail_impressions_ctr` as a decimal ratio (0..1); multiplied by `100.0` in the weighted sum aggregate so CTR correctly formats as a percentage (e.g. `5.x%` instead of `0.05%`).
+  - Fixed weighted CTR calculation in `server/youtube-reach.js` (`getChannelReachSummary`) used by the Channel Health scorecard and AI narrative briefing.
+  - Fixed weighted CTR calculation in `server/competitor-comparison.js` (`getReportingApiCtr`) used for competitor comparison benchmarks and baseline reporting.
+  - Added unit suffixes (`%`, `h`) in `server/channel-health.js` prompt data block formatting to ensure the AI narrative generator receives clear unit context.
+
+---
+
 ## [2.3.6] - 2026-09-08
 
 ### Added

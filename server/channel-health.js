@@ -1275,7 +1275,8 @@ function buildHealthDataBlock(report) {
   const line = (m) => {
     if (!m || !m.available) return `- ${m ? m.label : "Metric"}: UNAVAILABLE${m && m.note ? ` (${m.note})` : ""}`;
     const change = m.pctChange != null ? ` (${m.pctChange >= 0 ? "+" : ""}${m.pctChange}% vs prior period)` : "";
-    return `- ${m.label}: ${typeof m.value === "number" ? m.value.toLocaleString() : m.value}${change}`;
+    const suffix = (m.label.includes("CTR") || m.label.includes("Share") || m.label.includes("%")) ? "%" : (m.label.includes("Hours") ? "h" : "");
+    return `- ${m.label}: ${typeof m.value === "number" ? m.value.toLocaleString() : m.value}${suffix}${change}`;
   };
 
   const parts = [];
