@@ -673,6 +673,10 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                                   metrics.durationSec
                                     ? `for a ${Math.round(metrics.durationSec / 60)}-minute video`
                                     : "for this length"
+                                }${
+                                  metrics.satisfactionScore.components?.retention?.watchDurationCredit
+                                    ? ` · +${metrics.satisfactionScore.components.retention.watchDurationCredit} watch time credit`
+                                    : ""
                                 }`
                               : null
                           }

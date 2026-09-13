@@ -484,7 +484,15 @@ async function generateAIEvaluation(video, metrics) {
     dataSafeguards.push(`- Measured retention rate: ${metrics.retentionRate}%${expNote}. If retention is significantly below expected, mark scorecard.retention_status as "warn".`);
   }
   if (metrics.satisfactionScore?.available) {
-    dataSafeguards.push(`- Viewer Satisfaction Score proxy: ${metrics.satisfactionScore.score}/100. This is an objective proxy based 70% on duration-adjusted retention and 30% on sub conversion.`);
+    const creditNote = metrics.satisfactionScore.components?.retention?.watchDurationCredit
+      ? ` (includes +${metrics.satisfactionScore.components.retention.watchDurationCredit} absolute watch duration credit)`
+      : "";
+    dataSafeguards.push(`- Viewer Satisfaction Score proxy: ${metrics.satisfactionScore.score}/100${creditNote}. This is an objective proxy based 70% on duration-adjusted retention and 30% on sub conversion.`);
+  }
+
+  if (metrics.durationSec && metrics.durationSec > 2700 && metrics.retentionRate != null) {
+    const avdMin = ((metrics.retentionRate / 100) * (metrics.durationSec / 60)).toFixed(1);
+    dataSafeguards.push(`- NOTE ON ULTRA-LONG DURATION: This video is ${Math.round(metrics.durationSec / 60)} minutes long. While percentage viewed (${metrics.retentionRate}%) appears low compared to shorter videos, it delivered ${avdMin} minutes of average view duration per viewer. Factor this absolute watch time into your editorial evaluation rather than treating percentage viewed in isolation.`);
   }
 
   if (!metrics.isLiveStudioData && metrics.isOAuthConnected) {

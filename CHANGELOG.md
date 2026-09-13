@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.5.2] - 2026-09-13
+
+### Added
+- **Option C: Absolute Watch Duration Credit for Ultra-Long Videos (>45m)**:
+  - **Empirical Rationale**: When video length exceeds 45 minutes (e.g. 60–90m deep dives, podcasts, and walkarounds), percentage retention naturally compresses into single digits due to casual viewer bounces. However, holding viewers for 5+ or 6+ continuous minutes generates substantial absolute watch time that YouTube algorithms heavily reward.
+  - **Blended Model Calibration**: In `server/satisfaction-score.js`, added `ultraLongCredit` configuration (`minDurationSec: 2700`, `maxDurationSec: 5400`, `maxAvdWeight: 0.40`, `avdNeutralSec: 300`, `avdScaleSec: 180`). For videos exceeding 45 minutes that achieve $\ge 4.0$ minutes of view duration, the retention subscore smoothly blends relative retention with absolute view duration, awarding up to $+15$ to $+20$ points of transparent watch time credit.
+  - **No Fluff for Shorter Videos**: Videos $\le 45$ minutes are 100% evaluated on the standard length-adjusted quadratic retention curve; median baseline remains strictly at 50 (Option A).
+  - **UI Transparency**: Displayed `· +X watch time credit` in the `Avg % Viewed` metric card in `AuditReportModal.jsx` and surfaced `watchDurationCredit` in the retention component payload.
+  - **Gemini AI Audit Safeguard**: Instructed Gemini in `server/audit.js` to account for absolute view duration (e.g. 6.5m) when evaluating ultra-long videos (>45m) rather than assessing percentage viewed in isolation.
+
 ## [2.5.1] - 2026-09-13
 
 ### Fixed

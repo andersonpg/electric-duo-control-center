@@ -180,6 +180,38 @@ const intensityNoViews = computeCoreAudienceIntensity({
 assert.strictEqual(intensityNoViews, null, "0 views must return null intensity");
 console.log("✓ Core-Audience Intensity verified");
 
+// 9. Option C: Absolute Watch Duration Credit for ultra-long videos (>45m)
+console.log("\n9. Testing Absolute Watch Duration Credit for ultra-long videos (>45m)...");
+// Video under 45m (e.g. 20m) receives no duration credit
+const normalVideo = scoreSatisfaction({
+  retentionPct: 26.3,
+  durationSec: 1200,
+  views: 1500,
+});
+assert.strictEqual(normalVideo.components.retention.watchDurationCredit, null, "Video <= 45m must not receive watchDurationCredit");
+
+// Ultra-long video (71m @ 9.1% retention = 6.5m AVD) receives positive credit
+const ultraLongGoodAvd = scoreSatisfaction({
+  retentionPct: 9.1,
+  durationSec: 4272,
+  views: 1500,
+});
+assert.ok(
+  ultraLongGoodAvd.components.retention.watchDurationCredit > 0,
+  `71m video with 6.5m AVD must receive positive watch duration credit (got ${ultraLongGoodAvd.components.retention.watchDurationCredit})`
+);
+assert.strictEqual(ultraLongGoodAvd.components.retention.watchDurationCredit, 15, "71m @ 9.1% must receive +15 credit");
+assert.strictEqual(ultraLongGoodAvd.score, 31, "71m @ 9.1% must score 31 (up from uncredited 20)");
+
+// Ultra-long video with poor AVD (60m @ 2% retention = 1.2m AVD) receives 0 credit
+const ultraLongPoorAvd = scoreSatisfaction({
+  retentionPct: 2.0,
+  durationSec: 3600,
+  views: 1500,
+});
+assert.strictEqual(ultraLongPoorAvd.components.retention.watchDurationCredit, null, "60m with low 1.2m AVD must not receive credit");
+console.log("✓ Absolute Watch Duration Credit for ultra-long videos verified");
+
 console.log("\n=========================================");
 console.log("ALL VIEWER SATISFACTION V2 TESTS PASSED!");
 console.log("=========================================\n");
