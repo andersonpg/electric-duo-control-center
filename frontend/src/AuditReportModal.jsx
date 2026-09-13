@@ -422,18 +422,21 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
               <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 sm:p-5 relative">
                 <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
                   {/* Score & Verdict */}
+                  {/* Score & Verdict */}
                   <div className="flex items-center gap-4 min-w-0">
                     <div
-                      className={`w-16 h-16 sm:w-18 sm:h-18 rounded-2xl flex flex-col items-center justify-center border shadow-xl shrink-0 ${
+                      className={`w-16 h-16 sm:w-20 sm:h-20 rounded-2xl flex flex-col items-center justify-center border shadow-xl shrink-0 p-1 text-center ${
                         isHealthy
                           ? "bg-emerald-950/60 border-emerald-500/40 text-emerald-300 shadow-emerald-500/10"
                           : isModerate
                           ? "bg-cyan-950/60 border-cyan-500/40 text-cyan-300 shadow-cyan-500/10"
                           : "bg-amber-950/60 border-amber-500/40 text-amber-300 shadow-amber-500/10"
                       }`}
+                      title="AI Audit Health Score — overall synthesized assessment out of 100"
                     >
-                      <span className="text-xl sm:text-2xl font-black">{healthScore}</span>
-                      <span className="text-[9px] uppercase font-bold tracking-wider opacity-80">/ 100</span>
+                      <span className="text-[8px] sm:text-[9px] uppercase font-bold tracking-wider opacity-70">Audit Health</span>
+                      <span className="text-xl sm:text-2xl font-black leading-none my-0.5">{healthScore}</span>
+                      <span className="text-[8px] uppercase font-bold tracking-wider opacity-60">/ 100</span>
                     </div>
 
                     <div className="min-w-0">
@@ -472,7 +475,11 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 shrink-0">
                     <StatusPill
                       label="Hook Gate (0:30)"
-                      status={metrics?.hookDropPercent == null ? "unavailable" : evaluation?.scorecard?.hook_status}
+                      status={
+                        metrics?.hookDropPercent == null
+                          ? "unavailable"
+                          : evaluation?.scorecard?.hook_status || (metrics.hookDropPercent <= 30 ? "pass" : "warn")
+                      }
                       detail={
                         metrics?.hookDropPercent == null
                           ? metrics?.isOAuthConnected
@@ -497,18 +504,26 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                       status={
                         metrics?.retentionRate == null
                           ? "unavailable"
-                          : metrics?.categoryBenchmark?.avgRetention == null
-                          ? "pass"
-                          : metrics.retentionRate >= metrics.categoryBenchmark.avgRetention
-                          ? "pass"
-                          : "warn"
+                          : (() => {
+                              const benchmark =
+                                metrics?.categoryBenchmark?.avgRetention ??
+                                metrics?.satisfactionScore?.components?.retention?.expected;
+                              if (benchmark == null) return metrics.retentionRate >= 30.0 ? "pass" : "warn";
+                              return metrics.retentionRate >= benchmark ? "pass" : "warn";
+                            })()
                       }
                       detail={
                         metrics?.retentionRate == null
                           ? metrics?.isOAuthConnected
                             ? "Awaiting data"
                             : "Not connected"
-                          : `${metrics.retentionRate}%${metrics?.categoryBenchmark?.avgRetention != null ? ` (Avg ${metrics.categoryBenchmark.avgRetention}%)` : ""}`
+                          : `${metrics.retentionRate}%${
+                              metrics?.categoryBenchmark?.avgRetention != null
+                                ? ` (Avg ${metrics.categoryBenchmark.avgRetention}%)`
+                                : metrics?.satisfactionScore?.components?.retention?.expected != null
+                                ? ` (Exp ${metrics.satisfactionScore.components.retention.expected}%)`
+                                : ""
+                            }`
                       }
                     />
                     <StatusPill
@@ -645,7 +660,13 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 flex-1">
                         <MetricCard
                           label="Avg % Viewed"
-                          value={`${metrics.satisfactionScore.components.retention?.value ?? metrics.satisfactionScore.components.retention}%`}
+                          value={
+                            metrics.satisfactionScore.components?.retention?.value != null
+                              ? `${metrics.satisfactionScore.components.retention.value}%`
+                              : typeof metrics.satisfactionScore.components?.retention === "number"
+                              ? `${metrics.satisfactionScore.components.retention}%`
+                              : "—"
+                          }
                           sub={
                             metrics.satisfactionScore.components?.retention?.expected != null
                               ? `vs ${metrics.satisfactionScore.components.retention.expected}% expected ${
@@ -683,11 +704,13 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                         </div>
                         <MetricCard
                           label="Net Sub Conversion"
-                          value={`${
+                          value={
                             metrics.satisfactionScore.components?.subConversion?.value != null
-                              ? metrics.satisfactionScore.components.subConversion.value
-                              : (metrics.satisfactionScore.components?.subConversionRate ?? "—")
-                          }%`}
+                              ? `${metrics.satisfactionScore.components.subConversion.value}%`
+                              : typeof metrics.satisfactionScore.components?.subConversionRate === "number"
+                              ? `${metrics.satisfactionScore.components.subConversionRate}%`
+                              : "—"
+                          }
                           sub={metrics.satisfactionScore.partial ? "calibrated neutral (no sub data)" : "subs / view"}
                           icon={Users}
                           color="text-teal-400"

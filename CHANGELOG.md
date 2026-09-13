@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.5.1] - 2026-09-13
+
+### Fixed
+- **Video Audit Header & Retention Benchmark Status**:
+  - **Retention % Status Benchmark Alignment**: Fixed logic in `AuditReportModal.jsx` where a missing category benchmark caused `Retention %` status to default to `pass` (green checkmark) regardless of how low the actual retention was (e.g. 9.1%). Now evaluates against the duration-adjusted expected retention baseline (`metrics.satisfactionScore.components.retention.expected`, e.g. 19.7% for a 71-minute video), displaying `warn` and `(Exp X.X%)` when retention falls below baseline.
+  - **Audit Health Badge Labeling**: Added clear `Audit Health` label to the top score badge (`/ 100`) so creators do not conflate the synthesized AI overall audit health score with the separate algorithmic Viewer Satisfaction Score.
+  - **Satisfaction Component Display Defenses**: Prevented `Net Sub Conversion` card from rendering `—%` when subscriber data is absent or uncalibrated; now cleanly displays `—` without extraneous percent symbols.
+  - **Scorecard Status Enforcement**: Server-side audit post-processing now guarantees that `hook_status`, `ctr_status`, and `retention_status` reflect real measured metrics and baselines rather than prompt schema defaults.
+
 ## [2.5.0] - 2026-09-13
 
 ### Changed

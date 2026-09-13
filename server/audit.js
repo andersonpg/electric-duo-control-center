@@ -478,6 +478,15 @@ async function generateAIEvaluation(video, metrics) {
     dataSafeguards.push(`- The retention curve is NOT available, so no mid-video retention cliff could be measured. Report retention_cliff.detected as false and say the curve was unavailable.`);
   }
 
+  if (metrics.retentionRate != null) {
+    const expRetention = metrics.categoryBenchmark?.avgRetention ?? metrics.satisfactionScore?.components?.retention?.expected;
+    const expNote = expRetention != null ? ` (expected duration baseline: ${expRetention}%)` : "";
+    dataSafeguards.push(`- Measured retention rate: ${metrics.retentionRate}%${expNote}. If retention is significantly below expected, mark scorecard.retention_status as "warn".`);
+  }
+  if (metrics.satisfactionScore?.available) {
+    dataSafeguards.push(`- Viewer Satisfaction Score proxy: ${metrics.satisfactionScore.score}/100. This is an objective proxy based 70% on duration-adjusted retention and 30% on sub conversion.`);
+  }
+
   if (!metrics.isLiveStudioData && metrics.isOAuthConnected) {
     dataSafeguards.push(`- NOTE ON INTEGRATION: The channel's YouTube Analytics API IS connected and active. However, this video was uploaded recently and YouTube Analytics typically requires 48-72 hours to aggregate video-level watch time, retention, and traffic metrics. DO NOT tell the user to connect their YouTube account or visit Admin Settings. Instead, explain that YouTube's reporting pipeline is still aggregating data for this recent upload.`);
   }
@@ -521,9 +530,9 @@ You MUST reply ONLY with a valid JSON object with this EXACT structure (no markd
   "health_score": 84,
   "health_tier": "Strong Performer",
   "scorecard": {
-    "hook_status": "pass",
-    "ctr_status": "unavailable",
-    "retention_status": "pass",
+    "hook_status": ${JSON.stringify(hasHookData ? (metrics.hookDropPercent <= 30 ? "pass" : "warn") : "unavailable")},
+    "ctr_status": ${JSON.stringify(hasDiscoveryData ? (metrics.ctr >= (metrics.channelBaselineCtr ?? 5.0) ? "pass" : "warn") : "unavailable")},
+    "retention_status": ${JSON.stringify(metrics.retentionRate != null ? (metrics.retentionRate >= (metrics.categoryBenchmark?.avgRetention ?? metrics.satisfactionScore?.components?.retention?.expected ?? 30.0) ? "pass" : "warn") : "unavailable")},
     "seo_status": "pass",
     "one_line_verdict": "Detailed one-line strategic verdict."
   },
@@ -658,6 +667,23 @@ You MUST reply ONLY with a valid JSON object with this EXACT structure (no markd
 
   if (evaluation) {
     if (!evaluation.scorecard) evaluation.scorecard = {};
+    // Ground scorecard statuses in authentic measured benchmarks rather than model hallucination
+    if (metrics.hookDropPercent != null) {
+      evaluation.scorecard.hook_status = metrics.hookDropPercent <= 30 ? "pass" : "warn";
+    }
+    if (metrics.ctr != null) {
+      evaluation.scorecard.ctr_status = metrics.ctr >= (metrics.channelBaselineCtr ?? 5.0) ? "pass" : "warn";
+    }
+    if (metrics.retentionRate != null) {
+      const bench = metrics.categoryBenchmark?.avgRetention ?? metrics.satisfactionScore?.components?.retention?.expected;
+      evaluation.scorecard.retention_status = bench != null
+        ? (metrics.retentionRate >= bench ? "pass" : "warn")
+        : (metrics.retentionRate >= 30.0 ? "pass" : "warn");
+    }
+    if (!evaluation.scorecard.seo_status) {
+      evaluation.scorecard.seo_status = "pass";
+    }
+
     // Record what the model was actually given, so the UI can show provenance
     // even if the model omits its own data_confidence block.
     if (!evaluation.data_confidence) {
