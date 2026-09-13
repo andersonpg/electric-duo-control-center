@@ -633,8 +633,8 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
                 <h3 className="text-base font-bold text-white">Viewer Satisfaction Score</h3>
                 <p className="text-xs text-slate-400 mt-0.5 max-w-2xl leading-relaxed">
                   YouTube never exposes its internal viewer-satisfaction survey score to creators. This is a
-                  disclosed proxy built from three measured long-form signals it has publicly tied to
-                  satisfaction &mdash; not an official YouTube metric.
+                  disclosed proxy calibrated to our long-form catalogue: retention scored against a duration-adjusted
+                  baseline (70%) and net subscriber conversion (30%) &mdash; not an official YouTube metric.
                 </p>
               </div>
             </div>
@@ -652,11 +652,14 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
               score={satisfactionScore.score}
               scoreDelta={satisfactionScore.scoreDelta}
               available={satisfactionScore.available}
+              videosScored={satisfactionScore.videosScored}
+              coverage={satisfactionScore.coverage}
+              scoreVersion={satisfactionScore.scoreVersion}
             />
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 flex-1">
               <ScoreCard metric={satisfactionScore.components.retention} icon={Activity} accent="text-pink-400/80" suffix="%" />
-              <ScoreCard metric={satisfactionScore.components.engagementRate} icon={Heart} accent="text-rose-400/80" suffix="%" />
+              <ScoreCard metric={satisfactionScore.components.coreAudienceIntensity || satisfactionScore.components.engagementRate} icon={Heart} accent="text-rose-400/80" suffix="%" />
               <ScoreCard metric={satisfactionScore.components.subConversionRate} icon={UserPlus} accent="text-teal-400/80" suffix="%" />
             </div>
           </div>
@@ -1455,10 +1458,12 @@ export default function ChannelHealth({ currentUser, onSelectVideoForAudit }) {
 // Headline badge for the Viewer Satisfaction Score. Colors by band (>=70
 // strong, >=40 mixed, below that soft) rather than a fixed pass/fail line,
 // since the underlying scale is a disclosed heuristic, not an official cutoff.
-function SatisfactionScoreBadge({ score, scoreDelta, available }) {
+function SatisfactionScoreBadge({ score, scoreDelta, available, videosScored, coverage, scoreVersion }) {
+  const isLegacy = available && score != null && (!scoreVersion || scoreVersion < 2);
+
   if (!available || score == null) {
     return (
-      <div className="w-full lg:w-40 shrink-0 rounded-3xl bg-slate-950/60 border border-slate-800 flex flex-col items-center justify-center text-center p-5 gap-2">
+      <div className="w-full lg:w-48 shrink-0 rounded-3xl bg-slate-950/60 border border-slate-800 flex flex-col items-center justify-center text-center p-5 gap-2">
         <MinusCircle className="w-6 h-6 text-slate-600" />
         <span className="text-[11px] text-slate-500 leading-snug">Not enough measured long-form data yet</span>
       </div>
@@ -1483,17 +1488,26 @@ function SatisfactionScoreBadge({ score, scoreDelta, available }) {
 
   return (
     <div
-      className={`w-full lg:w-40 shrink-0 rounded-3xl bg-gradient-to-br ${bandClasses} border flex flex-col items-center justify-center text-center p-5 gap-1.5`}
+      className={`w-full lg:w-48 shrink-0 rounded-3xl bg-gradient-to-br ${bandClasses} border flex flex-col items-center justify-center text-center p-5 gap-1.5`}
     >
       <div className="text-4xl font-black tracking-tight text-white">{score}</div>
       <div className="text-[10px] font-bold uppercase tracking-wider text-slate-300/80">out of 100</div>
-      {scoreDelta != null ? (
+      {isLegacy ? (
+        <span className="text-[10px] text-amber-300 bg-amber-950/40 border border-amber-500/30 rounded px-2 py-1 mt-1 font-medium leading-tight">
+          Scored under earlier methodology &mdash; refresh to update
+        </span>
+      ) : scoreDelta != null ? (
         <span className={`inline-flex items-center gap-1 mt-1 text-[10px] font-bold px-1.5 py-0.5 rounded ${deltaClasses}`}>
           {scoreDelta >= 0 ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
           {scoreDelta >= 0 ? `+${scoreDelta}` : scoreDelta} pts vs prior
         </span>
       ) : (
         <span className="text-[10px] text-slate-500 mt-1">No prior period to compare</span>
+      )}
+      {!isLegacy && videosScored != null && coverage != null && (
+        <div className="text-[10px] text-slate-400 mt-2 border-t border-slate-800/80 pt-2 w-full text-center leading-tight">
+          Across {videosScored} long-form videos &middot; {Math.round(coverage * 100)}% of window views
+        </div>
       )}
     </div>
   );
@@ -1511,15 +1525,26 @@ function ScoreCard({ metric, icon: Icon, accent, suffix = "", signed = false }) 
 
   const change = metric.pctChange;
   const hasChange = available && change != null;
+  const isContext = metric.isContextOnly;
 
   return (
-    <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 flex flex-col justify-between shadow-sm hover:border-slate-700 transition-colors">
+    <div className={`bg-slate-900/80 border ${isContext ? "border-slate-800/80 bg-slate-900/50" : "border-slate-800"} rounded-2xl p-4 flex flex-col justify-between shadow-sm hover:border-slate-700 transition-colors relative`}>
       <div className="flex items-center justify-between text-slate-400 mb-2">
-        <span className="text-[11px] font-semibold text-slate-400">{metric.label}</span>
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="text-[11px] font-semibold text-slate-400 truncate">{metric.label}</span>
+          {isContext && (
+            <span
+              className="text-[9px] font-bold uppercase tracking-wider px-1 py-0.2 rounded bg-slate-800/90 text-slate-400 border border-slate-700/60 shrink-0 cursor-help"
+              title="Display-only context metric. Not factored into the satisfaction composite score."
+            >
+              Context
+            </span>
+          )}
+        </div>
         {available ? (
-          <Icon className={`w-3.5 h-3.5 ${accent}`} />
+          <Icon className={`w-3.5 h-3.5 ${accent} shrink-0`} />
         ) : (
-          <MinusCircle className="w-3.5 h-3.5 text-slate-600" />
+          <MinusCircle className="w-3.5 h-3.5 text-slate-600 shrink-0" />
         )}
       </div>
       <div>

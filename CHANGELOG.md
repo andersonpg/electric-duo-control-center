@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.5.0] - 2026-09-13
+
+### Changed
+- **Viewer Satisfaction Score v2 Methodology Overhaul**:
+  - Replaced the v1 3-signal flat-ceiling heuristic with an empirical 2-signal model calibrated against the channel's catalogue (520 long-form VOD videos, $\ge 1000$ views):
+    - **Length-Adjusted Retention Component (Weight 0.70)**: Actual retention is scored against a duration-fitted quadratic baseline ($251.4371 - 54.2223 \ln(d) + 3.1695 (\ln(d))^2$) clamped between 3 minutes (180s) and 90 minutes (5400s), eliminating the structural penalty on long-form content.
+    - **Net Subscriber Conversion Component (Weight 0.30)**: Scaled via hyperbolic tangent ($\tanh$) with neutral centered at 50, rewarding high conversions (p90 0.647% lands at 85) while penalizing net subscriber losses below 50.
+    - **Removed Engagement Rate from Composite**: Raw engagement rate mechanically measures audience reach rather than viewer satisfaction (scaling inversely as views expand). Separated it into a standalone display-only context metric: **Core-Audience Intensity** (`(likes + comments + shares) / views * 100`, 1 decimal place).
+    - **Dedicated Rolling Window Baseline**: Addressed the launch vs back-catalogue retention gap with a $-3.242$ pp offset and calibrated window residual SD for 28-day Channel Health scoring.
+  - **Aggregated Channel Health Scoring**: Channel Health now derives its satisfaction score as the view-weighted mean across up to 200 long-form videos ($\ge 100$ window views) with video durations resolved in 50-ID batches via the YouTube Data API. Displays videos scored and view coverage percentage.
+  - **Precision & Threshold Safeguards**:
+    - Retention rate now preserves one decimal place (`retentionRate: Number((r[3] || 0).toFixed(1))`) across all analytics queries before scoring.
+    - Videos under 250 views return no score to avoid small-denominator noise; scores for videos between 250 and 999 views are labeled with `low confidence`.
+    - Where stored reports from v1 exist (`scoreVersion < 2`), the UI indicates "scored under earlier methodology — refresh to update" and suppresses delta comparisons.
+  - **Quarterly Calibration Tooling**: Added `scripts/calibrate-satisfaction.js` to refit regression curves and tanh scaling against live YouTube Analytics and print replacement configuration blocks.
+
 ## [2.4.8] - 2026-09-13
 
 ### Added

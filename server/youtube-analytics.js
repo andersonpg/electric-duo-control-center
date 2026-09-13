@@ -238,7 +238,7 @@ async function fetchLiveVideoAnalytics(youtubeId) {
         views,
         watchMinutes,
         avgViewDurationSec: Math.round(r[2] || 0),
-        retentionRate: Math.round(r[3] || 0),
+        retentionRate: Number((r[3] || 0).toFixed(1)),
         subsGained: r[4] || 0,
         subsLost: r[5] || 0,
         likes: r[6] || 0,

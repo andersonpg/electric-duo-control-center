@@ -12,9 +12,10 @@ const {
   syncReachReports,
 } = require("./youtube-reach");
 const {
-  computeEngagementRate,
+  scoreSatisfaction,
+  computeCoreAudienceIntensity,
   computeSubConversionRate,
-  scoreSatisfactionComponents,
+  SCORE_VERSION,
   METHODOLOGY_NOTE: SATISFACTION_METHODOLOGY_NOTE,
 } = require("./satisfaction-score");
 
@@ -972,23 +973,154 @@ async function queryLongFormChannelMetrics(ytAnalytics, startDate, endDate, labe
   return data?.rows?.[0] || null;
 }
 
-// Derives every value the scorecard and Viewer Satisfaction Score need from
-// one long-form channel metrics row: views, watch hours, retention %,
-// engagement rate %, net subscribers, and net subscriber conversion rate %.
+async function queryLongFormVideoMetrics(ytAnalytics, startDate, endDate, label = "videos") {
+  const data = await queryAnalytics(
+    ytAnalytics,
+    {
+      ids: "channel==MINE",
+      startDate,
+      endDate,
+      dimensions: "video",
+      metrics: "views,averageViewPercentage,subscribersGained,subscribersLost",
+      filters: "creatorContentType==video_on_demand",
+      sort: "-views",
+      maxResults: 200,
+    },
+    `${label} (Long-Form Video Breakdown)`
+  );
+  return data?.rows || [];
+}
+
+async function fetchVideoDurations(ytData, videoIds) {
+  const durationMap = new Map();
+  if (!videoIds || videoIds.length === 0) return durationMap;
+
+  // Fetch in chunks of 50 via YouTube Data API videos.list(part=contentDetails)
+  for (let i = 0; i < videoIds.length; i += 50) {
+    const chunk = videoIds.slice(i, i + 50);
+    try {
+      const res = await ytData.videos.list({
+        part: "contentDetails",
+        id: chunk.join(","),
+        maxResults: 50,
+      });
+      const items = res.data?.items || [];
+      for (const item of items) {
+        if (item.id && item.contentDetails?.duration) {
+          const sec = parseDurationSec(item.contentDetails.duration);
+          if (sec != null && sec > 0) {
+            durationMap.set(item.id, sec);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("Could not fetch video durations from YouTube Data API:", err.message);
+    }
+  }
+
+  // Local catalogue fallback for any videos not resolved via Data API
+  const missingIds = videoIds.filter((id) => !durationMap.has(id));
+  if (missingIds.length > 0) {
+    try {
+      const placeholders = missingIds.map(() => "?").join(",");
+      const rows = db.prepare(`SELECT youtube_id, duration FROM videos WHERE youtube_id IN (${placeholders})`).all(...missingIds);
+      for (const r of rows) {
+        if (r.duration) {
+          const sec = parseDurationSec(r.duration);
+          if (sec != null && sec > 0) {
+            durationMap.set(r.youtube_id, sec);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Local catalogue duration lookup fallback failed:", e.message);
+    }
+  }
+
+  return durationMap;
+}
+
+function computeAggregateSatisfactionScore(videoRows, durationMap, totalLongFormViews) {
+  if (!videoRows || videoRows.length === 0) {
+    return { score: null, videosScored: 0, coverage: null };
+  }
+
+  let weightedScoreSum = 0;
+  let scoredViews = 0;
+  let videosScored = 0;
+  let unresolvableCount = 0;
+
+  for (const row of videoRows) {
+    const [videoId, views, avp, subsGained, subsLost] = row;
+    // Only include videos with >= 100 window views
+    if (views == null || views < 100) {
+      continue;
+    }
+
+    const durationSec = durationMap.get(videoId);
+    if (!durationSec) {
+      unresolvableCount++;
+      continue;
+    }
+
+    const netSubs = subsGained != null && subsLost != null ? subsGained - subsLost : null;
+    const subConversionRate = computeSubConversionRate({ netSubs, views });
+
+    const scored = scoreSatisfaction({
+      retentionPct: avp,
+      durationSec,
+      subConversionRate,
+      views,
+      basis: "window",
+    });
+
+    if (scored && scored.score != null) {
+      weightedScoreSum += scored.score * views;
+      scoredViews += views;
+      videosScored++;
+    }
+  }
+
+  if (unresolvableCount > 0) {
+    console.warn(`Viewer Satisfaction: ${unresolvableCount} videos had unresolvable durations and were excluded.`);
+  }
+
+  const score = scoredViews > 0 ? Math.round(weightedScoreSum / scoredViews) : null;
+  const coverage = totalLongFormViews && totalLongFormViews > 0
+    ? Number((scoredViews / totalLongFormViews).toFixed(3))
+    : null;
+
+  return {
+    score,
+    videosScored,
+    coverage,
+  };
+}
+
+// Derives every value the scorecard needs from one long-form channel metrics row:
+// views, watch hours, retention %, Core-Audience Intensity %, net subscribers, and net sub conversion rate %.
 // Any missing input yields a null component rather than a guessed one.
 function deriveLongFormMetrics(row) {
   if (!row) {
-    return { views: null, watchHours: null, retention: null, engagementRate: null, netSubs: null, subConversionRate: null };
+    return { views: null, watchHours: null, retention: null, coreAudienceIntensity: null, engagementRate: null, netSubs: null, subConversionRate: null };
   }
 
   const [views, estMinutes, likes, comments, shares, avp, subsGained, subsLost] = row;
   const watchHours = estMinutes != null ? Number((estMinutes / 60).toFixed(1)) : null;
   const retention = avp != null ? Number(avp.toFixed(1)) : null;
   const netSubs = subsGained != null && subsLost != null ? subsGained - subsLost : null;
-  const engagementRate = computeEngagementRate({ likes, comments, shares, views });
+  const coreAudienceIntensity = computeCoreAudienceIntensity({ likes, comments, shares, views });
   const subConversionRate = computeSubConversionRate({ netSubs, views });
 
-  return { views: views ?? null, watchHours, retention, engagementRate, netSubs, subConversionRate };
+  return {
+    views: views ?? null,
+    watchHours,
+    retention,
+    coreAudienceIntensity,
+    engagementRate: coreAudienceIntensity,
+    netSubs,
+    subConversionRate,
+  };
 }
 
 function summariseTraffic(rows) {
@@ -1033,6 +1165,9 @@ async function getChannelHealthReport(periodDays = 28) {
   let totalSubscribers = null;
   let longFormCurrRow = null;
   let longFormPriorRow = null;
+  let longFormCurrVideos = null;
+  let longFormPriorVideos = null;
+  let durationMap = new Map();
 
   if (auth) {
     const ytAnalytics = google.youtubeAnalytics({ version: "v2", auth });
@@ -1046,7 +1181,15 @@ async function getChannelHealthReport(periodDays = 28) {
       console.warn("Could not fetch channel subscriber count:", e.message);
     }
 
-    const [top, traffic, priorTraffic, longFormCurr, longFormPrior] = await Promise.all([
+    const [
+      top,
+      traffic,
+      priorTraffic,
+      longFormCurr,
+      longFormPrior,
+      lfCurrVideos,
+      lfPriorVideos,
+    ] = await Promise.all([
       queryAnalytics(ytAnalytics, {
         ids: "channel==MINE", startDate: startDateStr, endDate: endDateStr,
         dimensions: "video", metrics: "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage",
@@ -1064,6 +1207,8 @@ async function getChannelHealthReport(periodDays = 28) {
       }, "prior traffic sources"),
       queryLongFormChannelMetrics(ytAnalytics, startDateStr, endDateStr, "current period"),
       queryLongFormChannelMetrics(ytAnalytics, priorStartDateStr, startDateStr, "prior period"),
+      queryLongFormVideoMetrics(ytAnalytics, startDateStr, endDateStr, "current period"),
+      queryLongFormVideoMetrics(ytAnalytics, priorStartDateStr, startDateStr, "prior period"),
     ]);
 
     if (top?.rows) topVideosLive = top.rows;
@@ -1071,6 +1216,16 @@ async function getChannelHealthReport(periodDays = 28) {
     if (priorTraffic?.rows) priorTrafficLive = priorTraffic.rows;
     longFormCurrRow = longFormCurr;
     longFormPriorRow = longFormPrior;
+    longFormCurrVideos = lfCurrVideos;
+    longFormPriorVideos = lfPriorVideos;
+
+    const allVideoIds = [
+      ...new Set([
+        ...(longFormCurrVideos || []).map((r) => r[0]),
+        ...(longFormPriorVideos || []).map((r) => r[0]),
+      ]),
+    ];
+    durationMap = await fetchVideoDurations(ytData, allVideoIds);
   }
 
   const isLive = !!longFormCurrRow;
@@ -1103,28 +1258,48 @@ async function getChannelHealthReport(periodDays = 28) {
     note: note || null,
   });
 
-  // ---- Viewer Satisfaction Score (long-form only) ----
-  // YouTube never exposes its internal viewer-satisfaction survey score to
-  // creators. This is a disclosed proxy built from three measured signals
-  // YouTube has publicly tied to satisfaction, restricted to long-form
-  // video-on-demand content the same way the fix in server/media-kit.js is.
-  // Reuses the lfCurrInputs/lfPriorInputs already derived for the scorecard.
-  const satisfactionScoreValue = scoreSatisfactionComponents(lfCurrInputs);
-  const satisfactionScorePrior = scoreSatisfactionComponents(lfPriorInputs);
+  // ---- Viewer Satisfaction Score (v2, long-form only) ----
+  // Aggregated as the view-weighted mean of per-video scores on a duration-adjusted
+  // 28-day window baseline for videos with >= 100 window views.
+  const currSatisfaction = computeAggregateSatisfactionScore(
+    longFormCurrVideos,
+    durationMap,
+    lfCurrInputs.views
+  );
+  const priorSatisfaction = computeAggregateSatisfactionScore(
+    longFormPriorVideos,
+    durationMap,
+    lfPriorInputs.views
+  );
+
+  const satisfactionScoreValue = currSatisfaction.score;
+  const satisfactionScorePrior = priorSatisfaction.score;
+  const scoreDelta =
+    satisfactionScoreValue != null && satisfactionScorePrior != null
+      ? satisfactionScoreValue - satisfactionScorePrior
+      : null;
 
   const satisfactionScore = {
     score: satisfactionScoreValue,
     scorePrior: satisfactionScorePrior,
-    scoreDelta: satisfactionScoreValue != null && satisfactionScorePrior != null
-      ? satisfactionScoreValue - satisfactionScorePrior
-      : null,
+    scoreDelta,
     available: satisfactionScoreValue != null,
+    videosScored: currSatisfaction.videosScored,
+    coverage: currSatisfaction.coverage,
+    scoreVersion: SCORE_VERSION,
     components: {
       retention: metric(lfCurrInputs.retention, lfPriorInputs.retention, "Avg % Viewed (Long-Form)"),
-      engagementRate: metric(lfCurrInputs.engagementRate, lfPriorInputs.engagementRate, "Engagement Rate (Long-Form)"),
+      coreAudienceIntensity: {
+        ...metric(lfCurrInputs.coreAudienceIntensity, lfPriorInputs.coreAudienceIntensity, "Core-Audience Intensity"),
+        isContextOnly: true,
+      },
+      engagementRate: {
+        ...metric(lfCurrInputs.coreAudienceIntensity, lfPriorInputs.coreAudienceIntensity, "Core-Audience Intensity"),
+        isContextOnly: true,
+      },
       subConversionRate: metric(lfCurrInputs.subConversionRate, lfPriorInputs.subConversionRate, "Net Subscriber Conversion (Long-Form)"),
     },
-    methodology: `${SATISFACTION_METHODOLOGY_NOTE} Shorts, Live, and non-video-on-demand content are excluded from every input via YouTube's own content-type classification, independent of the local video catalog.`,
+    methodology: `${SATISFACTION_METHODOLOGY_NOTE} Shorts, Live, and non-video-on-demand content are excluded via YouTube's own content-type classification. Scored across videos with ≥100 window views using a duration-adjusted window baseline.`,
   };
 
   const currReach = getChannelReachSummary(startDateStr, endDateStr);

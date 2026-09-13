@@ -613,10 +613,17 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                 {/* Viewer Satisfaction Score */}
                 <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-5">
                   <div className="flex items-start justify-between gap-3 mb-3">
-                    <h4 className="text-xs font-bold uppercase tracking-wider text-cyan-400 flex items-center gap-2">
-                      <Heart className="w-4 h-4" />
-                      <span>Viewer Satisfaction Score</span>
-                    </h4>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-cyan-400 flex items-center gap-2">
+                        <Heart className="w-4 h-4" />
+                        <span>Viewer Satisfaction Score</span>
+                      </h4>
+                      {metrics.satisfactionScore?.confidence === "low" && (
+                        <span className="text-[10px] font-semibold text-amber-400 bg-amber-950/40 border border-amber-500/30 px-2 py-0.5 rounded">
+                          low confidence &mdash; under 1,000 views
+                        </span>
+                      )}
+                    </div>
                     <span
                       className="text-[10px] text-slate-500 shrink-0 cursor-help"
                       title={metrics.satisfactionScore?.methodology}
@@ -624,25 +631,64 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                       Disclosed proxy, not an official YouTube metric
                     </span>
                   </div>
+
+                  {metrics.satisfactionScore?.available &&
+                    (!metrics.satisfactionScore?.scoreVersion || metrics.satisfactionScore.scoreVersion < 2) && (
+                      <div className="mb-3 px-3 py-2 rounded-xl bg-amber-950/40 border border-amber-500/30 text-amber-300 text-xs flex items-center justify-between">
+                        <span>Scored under an earlier methodology &mdash; refresh this report to update.</span>
+                      </div>
+                  )}
+
                   {metrics.satisfactionScore?.available ? (
                     <div className="flex flex-col sm:flex-row gap-4 items-stretch">
                       <SatisfactionBadge score={metrics.satisfactionScore.score} />
                       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 flex-1">
                         <MetricCard
                           label="Avg % Viewed"
-                          value={`${metrics.satisfactionScore.components.retention}%`}
+                          value={`${metrics.satisfactionScore.components.retention?.value ?? metrics.satisfactionScore.components.retention}%`}
+                          sub={
+                            metrics.satisfactionScore.components?.retention?.expected != null
+                              ? `vs ${metrics.satisfactionScore.components.retention.expected}% expected ${
+                                  metrics.durationSec
+                                    ? `for a ${Math.round(metrics.durationSec / 60)}-minute video`
+                                    : "for this length"
+                                }`
+                              : null
+                          }
                           icon={Zap}
                           color="text-pink-400"
                         />
-                        <MetricCard
-                          label="Engagement Rate"
-                          value={`${metrics.satisfactionScore.components.engagementRate}%`}
-                          icon={Heart}
-                          color="text-rose-400"
-                        />
+                        <div className="relative">
+                          <div className="absolute top-2.5 right-2 z-10">
+                            <span
+                              className="text-[8px] uppercase tracking-wider font-bold px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700/60 cursor-help"
+                              title="Engaged actions per view (likes + comments + shares). Runs inversely to reach and is shown for context rather than folded into the score. Channel p50: 4.81%."
+                            >
+                              Context
+                            </span>
+                          </div>
+                          <MetricCard
+                            label="Core-Audience Intensity"
+                            value={
+                              metrics.coreAudienceIntensity != null
+                                ? `${metrics.coreAudienceIntensity}%`
+                                : metrics.satisfactionScore.components?.engagementRate != null
+                                ? `${metrics.satisfactionScore.components.engagementRate}%`
+                                : "—"
+                            }
+                            sub="actions / view"
+                            icon={Heart}
+                            color="text-rose-400"
+                          />
+                        </div>
                         <MetricCard
                           label="Net Sub Conversion"
-                          value={`${metrics.satisfactionScore.components.subConversionRate}%`}
+                          value={`${
+                            metrics.satisfactionScore.components?.subConversion?.value != null
+                              ? metrics.satisfactionScore.components.subConversion.value
+                              : (metrics.satisfactionScore.components?.subConversionRate ?? "—")
+                          }%`}
+                          sub={metrics.satisfactionScore.partial ? "calibrated neutral (no sub data)" : "subs / view"}
                           icon={Users}
                           color="text-teal-400"
                         />
@@ -650,7 +696,9 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                     </div>
                   ) : (
                     <p className="text-xs text-slate-500 leading-relaxed">
-                      {metrics?.isOAuthConnected
+                      {metrics.views != null && metrics.views < 250
+                        ? "Video has under 250 views. Viewer Satisfaction Score requires a minimum of 250 views to avoid denominator noise."
+                        : metrics?.isOAuthConnected
                         ? "YouTube Analytics typically takes 48–72 hours after upload to aggregate watch time and retention. Refresh this report once analytics data is processed."
                         : "Not enough measured data for this video to compute a satisfaction score. Connect YouTube Analytics in Admin Settings, or refresh this report once analytics data is available."}
                     </p>

@@ -5,9 +5,10 @@ const db = require("./db").articleDb;
 const { getTranscript, getGeminiApiKey, callGeminiWithRetry, DEFAULT_GEMINI_MODEL } = require("./gemini");
 const { isOAuthConnected, fetchLiveVideoAnalytics } = require("./youtube-analytics");
 const {
-  computeEngagementRate,
+  scoreSatisfaction,
+  computeCoreAudienceIntensity,
   computeSubConversionRate,
-  scoreSatisfactionComponents,
+  SCORE_VERSION,
   METHODOLOGY_NOTE: SATISFACTION_METHODOLOGY_NOTE,
 } = require("./satisfaction-score");
 const { getVideoReachSummary, syncReachReports } = require("./youtube-reach");
@@ -269,27 +270,43 @@ async function getVideoMetrics(youtubeId, video) {
     retentionCliff = { ...retentionCliffRaw, transcriptSegment };
   }
 
-  // Viewer Satisfaction Score: same disclosed 3-signal formula as Channel
-  // Health (server/satisfaction-score.js), applied to this one video's own
-  // measured numbers. Uses core.* directly rather than the display-oriented
-  // likes/comments/shares/subsGained variables above, which coerce a real
-  // zero into null for display purposes -- that would wrongly zero out a
-  // genuinely measured "no engagement" result here.
+  // Viewer Satisfaction Score (v2): duration-adjusted retention + net sub conversion
+  // (server/satisfaction-score.js), applied to this video's own measured numbers.
+  // Uses core.* directly rather than the display-oriented variables above, which
+  // coerce a real zero into null for display purposes.
   const rawSubsGained = core && Number.isFinite(core.subsGained) ? core.subsGained : null;
   const rawSubsLost = core && Number.isFinite(core.subsLost) ? core.subsLost : null;
   const rawNetSubs = rawSubsGained != null && rawSubsLost != null ? rawSubsGained - rawSubsLost : null;
-  const engagementRate = core
-    ? computeEngagementRate({ likes: core.likes, comments: core.comments, shares: core.shares, views: core.views })
+  const coreAudienceIntensity = core
+    ? computeCoreAudienceIntensity({ likes: core.likes, comments: core.comments, shares: core.shares, views: core.views })
     : null;
   const subConversionRate = core ? computeSubConversionRate({ netSubs: rawNetSubs, views: core.views }) : null;
-  const satisfactionScoreValue = scoreSatisfactionComponents({ retention: retentionRate, engagementRate, subConversionRate });
 
-  const satisfactionScore = {
-    score: satisfactionScoreValue,
-    available: satisfactionScoreValue != null,
-    components: { retention: retentionRate, engagementRate, subConversionRate },
-    methodology: SATISFACTION_METHODOLOGY_NOTE,
-  };
+  const scoreResult = scoreSatisfaction({
+    retentionPct: retentionRate,
+    durationSec,
+    subConversionRate,
+    views: core?.views ?? views,
+    basis: "lifetime",
+  });
+
+  const satisfactionScore = scoreResult
+    ? {
+        score: scoreResult.score,
+        scoreVersion: scoreResult.scoreVersion,
+        available: true,
+        partial: scoreResult.partial,
+        confidence: scoreResult.confidence,
+        components: scoreResult.components,
+        methodology: SATISFACTION_METHODOLOGY_NOTE,
+      }
+    : {
+        score: null,
+        scoreVersion: SCORE_VERSION,
+        available: false,
+        components: null,
+        methodology: SATISFACTION_METHODOLOGY_NOTE,
+      };
 
   // Impressions and impressions click-through rate from the YouTube Reporting API (channel_reach_basic_a1).
   // These are authentic daily reach numbers compiled by Google.
@@ -309,7 +326,7 @@ async function getVideoMetrics(youtubeId, video) {
   if (!retentionCurve) unavailable.push("retention curve");
   if (!trafficShare) unavailable.push("traffic sources");
   if (netSubs == null) unavailable.push("net subscribers");
-  if (!satisfactionScore.available) unavailable.push("viewer satisfaction score");
+  if (!satisfactionScore.available || (views != null && views < 250)) unavailable.push("viewer satisfaction score");
 
   return {
     isOAuthConnected: oauthConnected,
@@ -339,6 +356,7 @@ async function getVideoMetrics(youtubeId, video) {
     hookDropPercent,
     retentionCliff,
     satisfactionScore,
+    coreAudienceIntensity,
     trafficShare,
     category,
     categoryBenchmark: benchmark,
@@ -408,7 +426,8 @@ async function generateAIEvaluation(video, metrics) {
     metricLines.push(`- Traffic Sources: Browse ${metrics.trafficShare.browse}%, Suggested ${metrics.trafficShare.suggested}%, Search ${metrics.trafficShare.search}%, Other ${metrics.trafficShare.other}%`);
   }
   if (metrics.satisfactionScore?.available) {
-    metricLines.push(`- Viewer Satisfaction Score (measured proxy, not an official YouTube metric): ${metrics.satisfactionScore.score}/100`);
+    const confNote = metrics.satisfactionScore.confidence === "low" ? " (low confidence — under 1,000 views)" : "";
+    metricLines.push(`- Viewer Satisfaction Score (measured proxy, not an official YouTube metric): ${metrics.satisfactionScore.score}/100${confNote}`);
   }
   if (metrics.retentionCliff?.detected) {
     const c = metrics.retentionCliff;
