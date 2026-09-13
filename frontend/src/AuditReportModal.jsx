@@ -484,7 +484,13 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                     <StatusPill
                       label="Impressions CTR"
                       status={metrics?.ctr == null ? "unavailable" : metrics.ctr >= (metrics.channelBaselineCtr ?? 5.0) ? "pass" : "warn"}
-                      detail={metrics?.ctr == null ? "Studio only" : `${metrics.ctr}%${metrics.ctrDelta != null ? ` (${metrics.ctrDelta >= 0 ? "+" : ""}${metrics.ctrDelta}%)` : ""}`}
+                      detail={
+                        metrics?.ctr == null
+                          ? metrics?.isOAuthConnected
+                            ? "Awaiting reach"
+                            : "Not connected"
+                          : `${metrics.ctr}%${metrics.ctrDelta != null ? ` (${metrics.ctrDelta >= 0 ? "+" : ""}${metrics.ctrDelta}%)` : ""}`
+                      }
                     />
                     <StatusPill
                       label="Retention %"
@@ -556,14 +562,28 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                   <MetricCard
                     label="Impressions"
                     value={metrics.impressions != null ? metrics.impressions.toLocaleString() : "\u2014"}
-                    sub="YouTube Studio only"
+                    sub={
+                      metrics.impressions != null
+                        ? "Reporting API"
+                        : metrics.isOAuthConnected
+                        ? "Awaiting reach"
+                        : "Not connected"
+                    }
                     icon={Compass}
                     color={metrics.impressions != null ? "text-cyan-400" : "text-slate-600"}
                   />
                   <MetricCard
                     label="Impressions CTR"
                     value={metrics.ctr != null ? `${metrics.ctr}%` : "\u2014"}
-                    sub="YouTube Studio only"
+                    sub={
+                      metrics.ctr != null
+                        ? metrics.ctrDelta != null
+                          ? `${metrics.ctrDelta >= 0 ? "+" : ""}${metrics.ctrDelta}% vs base`
+                          : "Reporting API"
+                        : metrics.isOAuthConnected
+                        ? "Awaiting reach"
+                        : "Not connected"
+                    }
                     icon={TrendingUp}
                     color={metrics.ctr != null ? "text-emerald-400" : "text-slate-600"}
                   />
@@ -948,11 +968,15 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                       <div className="flex items-start gap-2.5">
                         <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
                         <div>
-                          <div className="text-xs font-bold text-amber-300 mb-1">Quadrant cannot be determined</div>
+                          <div className="text-xs font-bold text-amber-300 mb-1">
+                            {metrics?.isOAuthConnected
+                              ? "Awaiting YouTube Reporting API reach compilation"
+                              : "Quadrant cannot be determined"}
+                          </div>
                           <p className="text-xs text-amber-200/80 leading-relaxed">
-                            This matrix requires impressions and impressions click-through rate. Neither is exposed by
-                            the YouTube Analytics API, so they can only be read from YouTube Studio. No quadrant is
-                            highlighted below.
+                            {metrics?.isOAuthConnected
+                              ? "This matrix requires impressions and impressions click-through rate. Google compiles these bulk reach reports daily via the YouTube Reporting API (channel_reach_basic_a1). Once Google compiles reach data for this video, refreshing this report will unlock the matrix."
+                              : "This matrix requires impressions and impressions click-through rate. Connect YouTube Analytics in Admin Settings to ingest daily reach reports from Google."}
                           </p>
                         </div>
                       </div>

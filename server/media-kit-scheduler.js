@@ -2,6 +2,7 @@
 
 const cron = require("node-cron");
 const { runJobA, generateMediaKitSnapshot } = require("./media-kit");
+const { syncReachReports } = require("./youtube-reach");
 
 let isJobARunning = false;
 let isJobBRunning = false;
@@ -11,7 +12,7 @@ function initMediaKitScheduler() {
     timezone: "America/Los_Angeles",
   };
 
-  // Job A: Nightly 28-day & 365-day capture at 3:00 AM America/Los_Angeles
+  // Job A: Nightly 28-day & 365-day capture and Reach Reports Sync at 3:00 AM America/Los_Angeles
   cron.schedule(
     "0 3 * * *",
     async () => {
@@ -21,12 +22,19 @@ function initMediaKitScheduler() {
       }
       isJobARunning = true;
       const startTime = Date.now();
-      console.log("[Media-Kit Scheduler] Starting scheduled Job A (Nightly Views Capture)...");
+      console.log("[Media-Kit Scheduler] Starting scheduled Job A (Nightly Views Capture & Reach Sync)...");
 
       try {
         const result = await runJobA();
         const durationSec = ((Date.now() - startTime) / 1000).toFixed(1);
         console.log(`[Media-Kit Scheduler] Job A completed in ${durationSec}s.`, result);
+
+        try {
+          const reachResult = await syncReachReports();
+          console.log("[Media-Kit Scheduler] Nightly YouTube reach sync completed:", reachResult?.message || reachResult);
+        } catch (reachErr) {
+          console.warn("[Media-Kit Scheduler] Nightly YouTube reach sync failed:", reachErr.message);
+        }
       } catch (err) {
         console.error("[Media-Kit Scheduler] Scheduled Job A encountered an error:", err);
       } finally {

@@ -10,6 +10,7 @@ const {
   scoreSatisfactionComponents,
   METHODOLOGY_NOTE: SATISFACTION_METHODOLOGY_NOTE,
 } = require("./satisfaction-score");
+const { getVideoReachSummary, syncReachReports } = require("./youtube-reach");
 
 // ---------------------------------------------------------------------------
 // Video metrics.
@@ -290,11 +291,11 @@ async function getVideoMetrics(youtubeId, video) {
     methodology: SATISFACTION_METHODOLOGY_NOTE,
   };
 
-  // Impressions and impressions click-through rate are YouTube Studio figures
-  // and are not exposed by the public YouTube Analytics API. They stay null
-  // rather than being back-computed from an assumed CTR.
-  const impressions = null;
-  const ctr = null;
+  // Impressions and impressions click-through rate from the YouTube Reporting API (channel_reach_basic_a1).
+  // These are authentic daily reach numbers compiled by Google.
+  const videoReach = getVideoReachSummary(youtubeId);
+  const impressions = videoReach ? videoReach.impressions : null;
+  const ctr = videoReach ? videoReach.ctr : null;
   const channelBaselineCtr = getChannelCtrBaseline();
 
   const unavailable = [];
@@ -317,6 +318,8 @@ async function getVideoMetrics(youtubeId, video) {
     views,
     impressions,
     ctr,
+    reachSource: videoReach ? "youtube_reporting_api" : null,
+    reachDays: videoReach?.activeDays || 0,
     channelBaselineCtr,
     ctrDelta: ctr != null && channelBaselineCtr != null ? Number((ctr - channelBaselineCtr).toFixed(1)) : null,
     durationSec,
@@ -376,6 +379,15 @@ async function generateAIEvaluation(video, metrics) {
     const sourceNote = metrics.viewsSource === "catalog_snapshot" ? " (from catalog sync, not Studio)" : "";
     metricLines.push(`- Total Views: ${metrics.views.toLocaleString()}${sourceNote}`);
   }
+  if (metrics.impressions != null) {
+    metricLines.push(`- Impressions: ${metrics.impressions.toLocaleString()} (measured via YouTube Reporting API${metrics.reachDays ? `, ${metrics.reachDays} days recorded` : ""})`);
+  }
+  if (metrics.ctr != null) {
+    const deltaNote = metrics.ctrDelta != null
+      ? ` (${metrics.ctrDelta >= 0 ? "+" : ""}${metrics.ctrDelta}% vs channel baseline ${metrics.channelBaselineCtr}%)`
+      : "";
+    metricLines.push(`- Impressions Click-Through Rate (CTR): ${metrics.ctr}%${deltaNote} (measured via YouTube Reporting API)`);
+  }
   if (metrics.totalWatchTimeHours != null) metricLines.push(`- Total Watch Time: ${metrics.totalWatchTimeHours} hours`);
   if (metrics.avdFormatted && metrics.retentionRate != null) {
     metricLines.push(`- Average View Duration: ${metrics.avdFormatted} (${metrics.retentionRate}% average percentage viewed)`);
@@ -431,9 +443,9 @@ async function generateAIEvaluation(video, metrics) {
     dataSafeguards.push(`- Retention data is NOT available for this video. Assess the intro from the transcript alone and state explicitly that no retention measurement was available to confirm it.`);
   }
   if (hasDiscoveryData) {
-    dataSafeguards.push(`- Measured impressions and CTR are available. Classify into the Discovery 2x2 Matrix.`);
+    dataSafeguards.push(`- Measured impressions (${metrics.impressions.toLocaleString()}) and CTR (${metrics.ctr}%) are available from the YouTube Reporting API. Classify into the Discovery 2x2 Matrix quadrant (High/Low Impressions vs High/Low CTR) relative to channel baseline CTR (${metrics.channelBaselineCtr}%).`);
   } else {
-    dataSafeguards.push(`- Impressions and CTR are NOT available. SKIP the Discovery Matrix (return "quadrant": "Unavailable", "quadrant_number": 0, and explain that impressions and CTR must be checked in YouTube Studio).`);
+    dataSafeguards.push(`- Impressions and CTR are NOT available in the YouTube Reporting API for this video yet. SKIP the Discovery Matrix (return "quadrant": "Unavailable", "quadrant_number": 0, and explain that reach data has not yet compiled in the YouTube Reporting API).`);
   }
   if (metrics.retentionCliff?.detected) {
     const c = metrics.retentionCliff;
@@ -659,6 +671,12 @@ async function getOrRunAudit(youtubeId, forceRefresh = false) {
         updatedAt: existing.updated_at,
         isCached: true,
       };
+    }
+  } else if (isOAuthConnected()) {
+    try {
+      await syncReachReports();
+    } catch (reachErr) {
+      console.warn("Reach report sync skipped during audit refresh:", reachErr.message);
     }
   }
 

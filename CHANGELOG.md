@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.4.8] - 2026-09-13
+
+### Added
+- **Per-Video Impressions & Impressions CTR via YouTube Reporting API**:
+  - Connected the Video Audit module directly to Google's official `channel_reach_basic_a1` reports from the YouTube Reporting API, eliminating the previous "YouTube Studio only" placeholder.
+  - Added `getVideoReachSummary(videoId)` in `server/youtube-reach.js` to compute authentic lifetime measured impressions (`SUM(impressions)`) and view-weighted CTR (`ROUND(SUM(impressions * impressions_ctr) * 100.0 / NULLIF(SUM(impressions), 0), 2)`) for individual videos.
+  - Video audits now inject authentic impressions and CTR into `metrics.impressions` and `metrics.ctr`.
+  - Unlocked the **Discovery 2x2 Performance Matrix**: Gemini now receives authentic impressions and CTR and classifies videos into their real quadrant (Star Performer, Packaging Problem, Distribution Bottleneck, or Topic/Packaging Overhaul), highlighting the active quadrant and generating tailored strategy recommendations.
+  - Added automated nightly sync of reach reports into the scheduler (`server/media-kit-scheduler.js`, Job A), plus opportunistic sync during manual audit refreshes.
+  - Updated `AuditReportModal.jsx` metric cards, status pills, and empty states to label verified reach data as `Reporting API` and clearly explain Google's daily batch compilation when awaiting reach reports.
+
 ## [2.4.7] - 2026-09-13
 
 ### Fixed

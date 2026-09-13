@@ -297,10 +297,46 @@ function getReachStatus() {
   };
 }
 
+/**
+ * Returns aggregated impressions and view-weighted CTR for a specific video.
+ */
+function getVideoReachSummary(videoId) {
+  if (!videoId) return null;
+  try {
+    const row = db.prepare(`
+      SELECT
+        SUM(impressions) AS total_impressions,
+        ROUND(SUM(impressions * impressions_ctr) * 100.0 / NULLIF(SUM(impressions), 0), 2) AS weighted_ctr,
+        COUNT(DISTINCT date) AS active_days,
+        MIN(date) AS min_date,
+        MAX(date) AS max_date
+      FROM video_reach_daily
+      WHERE video_id = ?
+    `).get(videoId);
+
+    if (!row || row.total_impressions == null || row.total_impressions === 0) {
+      return null;
+    }
+
+    return {
+      impressions: row.total_impressions,
+      ctr: row.weighted_ctr != null ? Number(row.weighted_ctr) : null,
+      activeDays: row.active_days || 0,
+      minDate: row.min_date,
+      maxDate: row.max_date,
+    };
+  } catch (e) {
+    console.warn(`Could not query video_reach_daily for ${videoId}:`, e.message);
+    return null;
+  }
+}
+
 module.exports = {
   REPORT_TYPE_ID,
   ensureReachJob,
   syncReachReports,
   getChannelReachSummary,
+  getVideoReachSummary,
   getReachStatus,
 };
+
