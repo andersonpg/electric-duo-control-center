@@ -185,6 +185,8 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
     } catch (err) {
       console.error("Failed to load audit:", err);
       if (forceRefresh) {
+        setCaptionToast({ type: "error", text: `Refresh failed: ${err.message}` });
+        setTimeout(() => setCaptionToast(null), 6000);
         try {
           const fallbackRes = await fetch(`/api/audit/${youtubeId}`, { credentials: "same-origin" });
           if (fallbackRes.ok) {
@@ -443,6 +445,13 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-[10px] font-bold text-emerald-400 uppercase tracking-wider">
                             <CheckCircle className="w-3 h-3" /> Measured Analytics
                           </span>
+                        ) : metrics?.isOAuthConnected ? (
+                          <span
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-cyan-500/10 border border-cyan-500/30 text-[10px] font-bold text-cyan-400 uppercase tracking-wider"
+                            title="YouTube Analytics typically takes 48-72 hours after upload to aggregate video-level metrics. Views are synced from the catalog."
+                          >
+                            <Clock className="w-3 h-3" /> Awaiting Video Data
+                          </span>
                         ) : (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/30 text-[10px] font-bold text-amber-400 uppercase tracking-wider">
                             <AlertTriangle className="w-3 h-3" /> Analytics Not Connected
@@ -464,7 +473,13 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                     <StatusPill
                       label="Hook Gate (0:30)"
                       status={metrics?.hookDropPercent == null ? "unavailable" : evaluation?.scorecard?.hook_status}
-                      detail={metrics?.hookDropPercent == null ? "No retention data" : `-${metrics.hookDropPercent}%`}
+                      detail={
+                        metrics?.hookDropPercent == null
+                          ? metrics?.isOAuthConnected
+                            ? "Awaiting data"
+                            : "No retention data"
+                          : `-${metrics.hookDropPercent}%`
+                      }
                     />
                     <StatusPill
                       label="Impressions CTR"
@@ -484,7 +499,9 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                       }
                       detail={
                         metrics?.retentionRate == null
-                          ? "Not connected"
+                          ? metrics?.isOAuthConnected
+                            ? "Awaiting data"
+                            : "Not connected"
                           : `${metrics.retentionRate}%${metrics?.categoryBenchmark?.avgRetention != null ? ` (Avg ${metrics.categoryBenchmark.avgRetention}%)` : ""}`
                       }
                     />
@@ -553,21 +570,21 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                   <MetricCard
                     label="Watch Time"
                     value={metrics.totalWatchTimeHours != null ? `${metrics.totalWatchTimeHours} hrs` : "\u2014"}
-                    sub={metrics.totalWatchTimeHours == null ? "Not connected" : undefined}
+                    sub={metrics.totalWatchTimeHours == null ? (metrics.isOAuthConnected ? "Awaiting data" : "Not connected") : undefined}
                     icon={Clock}
                     color={metrics.totalWatchTimeHours != null ? "text-blue-400" : "text-slate-600"}
                   />
                   <MetricCard
                     label="Avg Duration"
                     value={metrics.avdFormatted || "\u2014"}
-                    sub={metrics.retentionRate != null ? `${metrics.retentionRate}% rate` : "Not connected"}
+                    sub={metrics.retentionRate != null ? `${metrics.retentionRate}% rate` : (metrics.isOAuthConnected ? "Awaiting data" : "Not connected")}
                     icon={Zap}
                     color={metrics.avdFormatted ? "text-indigo-400" : "text-slate-600"}
                   />
                   <MetricCard
                     label="Net Subs"
                     value={metrics.netSubs != null ? `${metrics.netSubs >= 0 ? "+" : ""}${metrics.netSubs}` : "\u2014"}
-                    sub={metrics.netSubs == null ? "Not connected" : undefined}
+                    sub={metrics.netSubs == null ? (metrics.isOAuthConnected ? "Awaiting data" : "Not connected") : undefined}
                     icon={Users}
                     color={metrics.netSubs != null ? "text-emerald-400" : "text-slate-600"}
                   />
@@ -613,7 +630,9 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                     </div>
                   ) : (
                     <p className="text-xs text-slate-500 leading-relaxed">
-                      Not enough measured data for this video to compute a satisfaction score. Connect YouTube Analytics in Admin Settings, or refresh this report once analytics data is available.
+                      {metrics?.isOAuthConnected
+                        ? "YouTube Analytics typically takes 48–72 hours after upload to aggregate watch time and retention. Refresh this report once analytics data is processed."
+                        : "Not enough measured data for this video to compute a satisfaction score. Connect YouTube Analytics in Admin Settings, or refresh this report once analytics data is available."}
                     </p>
                   )}
                 </div>
@@ -635,7 +654,9 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                       </div>
                     ) : (
                       <p className="text-xs text-slate-500 leading-relaxed">
-                        Traffic source data is not available. Connect YouTube Analytics in Admin Settings to populate this.
+                        {metrics?.isOAuthConnected
+                          ? "Traffic source breakdown is still processing in YouTube Analytics (typically takes 48–72 hours for new uploads)."
+                          : "Traffic source data is not available. Connect YouTube Analytics in Admin Settings to populate this."}
                       </p>
                     )}
                   </div>
@@ -650,6 +671,8 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                       <p className="text-xs text-slate-400 leading-relaxed">
                         {metrics.isLiveStudioData
                           ? "Metrics below were measured via the YouTube Analytics API."
+                          : metrics.isOAuthConnected
+                          ? "YouTube Analytics is connected. Video-level watch time, retention, and traffic metrics are still aggregating in YouTube's 48–72h processing window; views are synced from the video catalog."
                           : "YouTube Analytics is not connected, so most performance metrics are unavailable for this video."}
                       </p>
                       {Array.isArray(metrics.unavailableMetrics) && metrics.unavailableMetrics.length > 0 && (
@@ -705,8 +728,9 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                   ) : (
                     <div className="flex items-center justify-center h-40 rounded-xl border border-dashed border-slate-800 bg-slate-950/40">
                       <p className="text-xs text-slate-500 text-center px-6">
-                        No measured retention curve. Connect YouTube Analytics in Admin Settings to see the real curve
-                        for this video.
+                        {metrics?.isOAuthConnected
+                          ? "Audience retention curve is still processing in YouTube Analytics. YouTube typically takes 48–72 hours after upload to generate retention data."
+                          : "No measured retention curve. Connect YouTube Analytics in Admin Settings to see the real curve for this video."}
                       </p>
                     </div>
                   )}

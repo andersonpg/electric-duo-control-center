@@ -195,22 +195,48 @@ async function fetchLiveVideoAnalytics(youtubeId) {
 
   const ytAnalytics = google.youtubeAnalytics({ version: "v2", auth: authClient });
 
+  // Safe query helper: tries today's date first, falls back to yesterday if
+  // timezone / processing boundaries reject today's date
+  const now = new Date();
+  const todayStr = now.toISOString().split("T")[0];
+  const yesterdayStr = new Date(now.getTime() - 86400000).toISOString().split("T")[0];
+
+  async function querySafe(params, label) {
+    try {
+      const res = await ytAnalytics.reports.query({ ...params, endDate: todayStr });
+      return res.data || null;
+    } catch (err) {
+      try {
+        const res2 = await ytAnalytics.reports.query({ ...params, endDate: yesterdayStr });
+        return res2.data || null;
+      } catch (err2) {
+        console.warn(`YouTube Analytics query failed for ${label}:`, err2.message);
+        return null;
+      }
+    }
+  }
+
   // 1. Core Performance Report (Views, Watch Time, AVD, Retention %, Subs, Engagement)
   let coreData = null;
-  try {
-    const coreRes = await ytAnalytics.reports.query({
+  const coreRes = await querySafe(
+    {
       ids: "channel==MINE",
       startDate: "2020-01-01",
-      endDate: new Date().toISOString().split("T")[0],
       metrics: "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained,subscribersLost,likes,comments,shares",
       filters: `video==${youtubeId}`,
-    });
+    },
+    `core metrics ${youtubeId}`
+  );
 
-    if (coreRes.data.rows && coreRes.data.rows.length > 0) {
-      const r = coreRes.data.rows[0];
+  if (coreRes?.rows && coreRes.rows.length > 0) {
+    const r = coreRes.rows[0];
+    const views = r[0] || 0;
+    const watchMinutes = Math.round(r[1] || 0);
+    // Only treat as valid measured data if there is actual recorded activity
+    if (views > 0 || watchMinutes > 0) {
       coreData = {
-        views: r[0] || 0,
-        watchMinutes: Math.round(r[1] || 0),
+        views,
+        watchMinutes,
         avgViewDurationSec: Math.round(r[2] || 0),
         retentionRate: Math.round(r[3] || 0),
         subsGained: r[4] || 0,
@@ -220,80 +246,80 @@ async function fetchLiveVideoAnalytics(youtubeId) {
         shares: r[8] || 0,
       };
     }
-  } catch (e) {
-    console.warn(`YouTube Analytics core metrics query failed for ${youtubeId}:`, e.message);
   }
 
   // 2. Audience Retention Curve Report
   let retentionCurve = null;
-  try {
-    const retRes = await ytAnalytics.reports.query({
+  const retRes = await querySafe(
+    {
       ids: "channel==MINE",
       startDate: "2020-01-01",
-      endDate: new Date().toISOString().split("T")[0],
       metrics: "audienceWatchRatio",
       dimensions: "elapsedVideoTimeRatio",
       filters: `video==${youtubeId}`,
       sort: "elapsedVideoTimeRatio",
-    });
+    },
+    `retention curve ${youtubeId}`
+  );
 
-    if (retRes.data.rows && retRes.data.rows.length > 0) {
-      retentionCurve = retRes.data.rows.map((row) => {
-        const ratio = parseFloat(row[0]);
-        const pct = Math.round(parseFloat(row[1]) * 100);
-        return {
-          time: `${Math.round(ratio * 100)}%`,
-          pct: Math.min(100, Math.max(0, pct)),
-          ratio,
-        };
-      });
-    }
-  } catch (e) {
-    console.warn(`YouTube Analytics retention curve query failed for ${youtubeId}:`, e.message);
+  if (retRes?.rows && retRes.rows.length > 0) {
+    retentionCurve = retRes.rows.map((row) => {
+      const ratio = parseFloat(row[0]);
+      const pct = Math.round(parseFloat(row[1]) * 100);
+      return {
+        time: `${Math.round(ratio * 100)}%`,
+        pct: Math.min(100, Math.max(0, pct)),
+        ratio,
+      };
+    });
   }
 
   // 3. Traffic Source Breakdown Report
   let trafficShare = null;
-  try {
-    const trafficRes = await ytAnalytics.reports.query({
+  const trafficRes = await querySafe(
+    {
       ids: "channel==MINE",
       startDate: "2020-01-01",
-      endDate: new Date().toISOString().split("T")[0],
       metrics: "views",
       dimensions: "insightTrafficSourceType",
       filters: `video==${youtubeId}`,
+    },
+    `traffic sources ${youtubeId}`
+  );
+
+  if (trafficRes?.rows && trafficRes.rows.length > 0) {
+    let totalViews = 0;
+    const counts = { browse: 0, suggested: 0, search: 0, other: 0 };
+
+    trafficRes.rows.forEach(([source, count]) => {
+      totalViews += count;
+      if (source === "BROWSE" || source === "SUBSCRIBER") counts.browse += count;
+      else if (source === "RELATED_VIDEO") counts.suggested += count;
+      else if (source === "YT_SEARCH") counts.search += count;
+      else counts.other += count;
     });
 
-    if (trafficRes.data.rows && trafficRes.data.rows.length > 0) {
-      let totalViews = 0;
-      const counts = { browse: 0, suggested: 0, search: 0, other: 0 };
-
-      trafficRes.data.rows.forEach(([source, count]) => {
-        totalViews += count;
-        if (source === "BROWSE" || source === "SUBSCRIBER") counts.browse += count;
-        else if (source === "RELATED_VIDEO") counts.suggested += count;
-        else if (source === "YT_SEARCH") counts.search += count;
-        else counts.other += count;
-      });
-
-      if (totalViews > 0) {
-        trafficShare = {
-          browse: Math.round((counts.browse / totalViews) * 100),
-          suggested: Math.round((counts.suggested / totalViews) * 100),
-          search: Math.round((counts.search / totalViews) * 100),
-          other: Math.max(0, 100 - (Math.round((counts.browse / totalViews) * 100) + Math.round((counts.suggested / totalViews) * 100) + Math.round((counts.search / totalViews) * 100))),
-        };
-      }
+    if (totalViews > 0) {
+      trafficShare = {
+        browse: Math.round((counts.browse / totalViews) * 100),
+        suggested: Math.round((counts.suggested / totalViews) * 100),
+        search: Math.round((counts.search / totalViews) * 100),
+        other: Math.max(
+          0,
+          100 -
+            (Math.round((counts.browse / totalViews) * 100) +
+              Math.round((counts.suggested / totalViews) * 100) +
+              Math.round((counts.search / totalViews) * 100))
+        ),
+      };
     }
-  } catch (e) {
-    console.warn(`YouTube Analytics traffic sources query failed for ${youtubeId}:`, e.message);
   }
 
   return {
     coreData,
     retentionCurve,
     trafficShare,
-    isLive: true,
+    isLive: !!(coreData && (coreData.views > 0 || coreData.watchMinutes > 0)),
   };
 }
 

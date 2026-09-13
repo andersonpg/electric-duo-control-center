@@ -212,8 +212,9 @@ async function getVideoMetrics(youtubeId, video) {
   const benchmark = getCategoryBenchmark(category);
   const durationSec = parseIsoDurationSec(video.duration);
 
+  const oauthConnected = isOAuthConnected();
   let liveAnalytics = null;
-  if (isOAuthConnected()) {
+  if (oauthConnected) {
     try {
       liveAnalytics = await fetchLiveVideoAnalytics(youtubeId);
     } catch (e) {
@@ -222,7 +223,8 @@ async function getVideoMetrics(youtubeId, video) {
   }
 
   const core = (liveAnalytics && liveAnalytics.coreData) || null;
-  const isLive = !!core;
+  // A video is only considered live-measured if core metrics show actual recorded activity
+  const isLive = !!(core && (core.views > 0 || core.watchMinutes > 0));
 
   // Views: live figure preferred, catalog figure as a real (if stale) fallback.
   let views = null;
@@ -309,6 +311,7 @@ async function getVideoMetrics(youtubeId, video) {
   if (!satisfactionScore.available) unavailable.push("viewer satisfaction score");
 
   return {
+    isOAuthConnected: oauthConnected,
     isLiveStudioData: isLive,
     viewsSource,
     views,
@@ -444,7 +447,20 @@ async function generateAIEvaluation(video, metrics) {
     dataSafeguards.push(`- The retention curve is NOT available, so no mid-video retention cliff could be measured. Report retention_cliff.detected as false and say the curve was unavailable.`);
   }
 
+  if (!metrics.isLiveStudioData && metrics.isOAuthConnected) {
+    dataSafeguards.push(`- NOTE ON INTEGRATION: The channel's YouTube Analytics API IS connected and active. However, this video was uploaded recently and YouTube Analytics typically requires 48-72 hours to aggregate video-level watch time, retention, and traffic metrics. DO NOT tell the user to connect their YouTube account or visit Admin Settings. Instead, explain that YouTube's reporting pipeline is still aggregating data for this recent upload.`);
+  }
+
   const editorialInstructions = getAuditInstructions();
+
+  let metricsHeaderStatus = "MEASURED VIA THE YOUTUBE ANALYTICS API";
+  if (!metrics.isLiveStudioData) {
+    if (metrics.isOAuthConnected) {
+      metricsHeaderStatus = "LIMITED — YouTube Analytics is connected, but video-level metrics are still aggregating in YouTube's 48-72h pipeline. Real-time views are synced from the catalog.";
+    } else {
+      metricsHeaderStatus = "LIMITED — YouTube Analytics is not connected for this video";
+    }
+  }
 
   const prompt = `${editorialInstructions}
 
@@ -460,7 +476,7 @@ TARGET VIDEO DETAILS:
 ACTUAL VIDEO DISCUSSION & TRANSCRIPT CONTEXT:
 ${transcriptSnippet}
 
-PERFORMANCE METRICS (${metrics.isLiveStudioData ? "MEASURED VIA THE YOUTUBE ANALYTICS API" : "LIMITED — YouTube Analytics is not connected for this video"}):
+PERFORMANCE METRICS (${metricsHeaderStatus}):
 ${metricLines.join("\n")}
 ${unavailableBlock}
 DATA AVAILABILITY SAFEGUARDS:

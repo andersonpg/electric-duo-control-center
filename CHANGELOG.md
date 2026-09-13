@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.4.7] - 2026-09-13
+
+### Fixed
+- **Video Audit Analytics Status vs 48–72h Ingestion Lag**:
+  - Fixed a misleading UX state where recently published videos (under ~48–72 hours old) falsely displayed "Analytics Not Connected", "Not connected" pills, and suggested reconnecting in Admin Settings even though OAuth was properly authenticated.
+  - YouTube's Analytics API (`reports.query`) runs on an aggregation delay of 48–72 hours for video-level queries and returns all zeroes or empty rows for recent uploads before data settles. The audit engine now distinguishes between OAuth being genuinely disconnected (`isOAuthConnected: false`) versus a video awaiting YouTube's analytics processing pipeline (`isOAuthConnected: true` with pending video data).
+  - When OAuth is connected but video data is still in processing, the audit header displays a cyan "Awaiting Video Data" badge with clear tooltips, metric cards display "Awaiting data" instead of "Not connected", and section fallbacks explain the 48–72h processing window rather than prompting the user to visit Admin Settings.
+  - Added safe date query fallback in `server/youtube-analytics.js` (`querySafe`) that automatically retries with yesterday's date if timezone or date-boundary validation rejects today's date.
+  - Added user-facing toast notifications when manual audit refresh fails, avoiding silent fallback to stale cached reports.
+
 ## [2.4.6] - 2026-09-13
 
 ### Added
