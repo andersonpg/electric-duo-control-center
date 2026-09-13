@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.4.6] - 2026-09-13
+
+### Added
+- **Per-Video Viewer Satisfaction Score (Video Audits)**:
+  - New card on the Core Performance tab of each video's audit report, showing the same disclosed 0-100 composite score as the Channel Health page, computed from that single video's own measured retention, engagement rate, and net subscriber conversion.
+  - Extracted the scoring formula into a new shared module, `server/satisfaction-score.js`, so Channel Health and Video Audits can never drift out of sync on methodology or ceilings.
+  - Uses the video's raw measured likes/comments/shares/subscriber counts rather than the display-oriented variables elsewhere in the audit (which coerce a genuine zero into "unavailable"), so a real zero-engagement result scores correctly instead of being silently dropped.
+- **Mid-Video Retention Cliff Detection, Correlated With the Transcript**:
+  - New analysis alongside the existing 30-second hook check: scans the full retention curve (excluding the first minute, which the hook check already covers) for the steepest decline anywhere in the video, using a rolling 5%-of-video window to avoid single-sample noise.
+  - When a significant drop (5+ points) is found, pulls the actual timestamped transcript (SRT, not the timestamp-free plain text used elsewhere) for that exact moment and feeds it to Gemini, producing a grounded diagnosis and a specific fix tied to what was actually being said, not just a retention percentage.
+  - New "Mid-Video Retention Cliff" card on the Retention & Hook Diagnosis tab shows the timestamp range, the quoted transcript segment, and the AI's diagnosis and fix; the retention curve chart now highlights the drop window directly on the graph.
+  - Audits generated before this feature was added are labeled as such (rather than misreported as "no cliff found") and prompt the user to refresh the report.
+
+---
+
 ## [2.4.5] - 2026-09-12
 
 ### Fixed

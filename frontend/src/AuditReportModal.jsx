@@ -25,6 +25,7 @@ import {
   DownloadCloud,
   UploadCloud,
   AlertCircle,
+  Heart,
 } from "lucide-react";
 
 export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitle, initialAudit, onAuditUpdated, onSelectVideoForTranscript }) {
@@ -572,6 +573,51 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                   />
                 </div>
 
+                {/* Viewer Satisfaction Score */}
+                <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-5">
+                  <div className="flex items-start justify-between gap-3 mb-3">
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-cyan-400 flex items-center gap-2">
+                      <Heart className="w-4 h-4" />
+                      <span>Viewer Satisfaction Score</span>
+                    </h4>
+                    <span
+                      className="text-[10px] text-slate-500 shrink-0 cursor-help"
+                      title={metrics.satisfactionScore?.methodology}
+                    >
+                      Disclosed proxy, not an official YouTube metric
+                    </span>
+                  </div>
+                  {metrics.satisfactionScore?.available ? (
+                    <div className="flex flex-col sm:flex-row gap-4 items-stretch">
+                      <SatisfactionBadge score={metrics.satisfactionScore.score} />
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 flex-1">
+                        <MetricCard
+                          label="Avg % Viewed"
+                          value={`${metrics.satisfactionScore.components.retention}%`}
+                          icon={Zap}
+                          color="text-pink-400"
+                        />
+                        <MetricCard
+                          label="Engagement Rate"
+                          value={`${metrics.satisfactionScore.components.engagementRate}%`}
+                          icon={Heart}
+                          color="text-rose-400"
+                        />
+                        <MetricCard
+                          label="Net Sub Conversion"
+                          value={`${metrics.satisfactionScore.components.subConversionRate}%`}
+                          icon={Users}
+                          color="text-teal-400"
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-500 leading-relaxed">
+                      Not enough measured data for this video to compute a satisfaction score. Connect YouTube Analytics in Admin Settings, or refresh this report once analytics data is available.
+                    </p>
+                  )}
+                </div>
+
                 {/* Traffic Breakdown & Geography */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   {/* Traffic Sources */}
@@ -652,7 +698,10 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
 
                   {/* Visual Chart */}
                   {metrics.retentionCurve ? (
-                    <RetentionChart curve={metrics.retentionCurve} />
+                    <RetentionChart
+                      curve={metrics.retentionCurve}
+                      cliff={metrics.retentionCliff?.detected ? metrics.retentionCliff : null}
+                    />
                   ) : (
                     <div className="flex items-center justify-center h-40 rounded-xl border border-dashed border-slate-800 bg-slate-950/40">
                       <p className="text-xs text-slate-500 text-center px-6">
@@ -689,6 +738,66 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
                         "Retention stabilizes throughout the middle segment, demonstrating strong topic commitment."}
                     </p>
                   </div>
+                </div>
+
+                {/* Mid-Video Retention Cliff: steepest drop anywhere after the
+                    first minute, paired with the transcript at that moment. */}
+                <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-5">
+                  <div className="text-xs font-bold uppercase tracking-wider text-amber-400 mb-2 flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4" />
+                    <span>Mid-Video Retention Cliff</span>
+                  </div>
+                  {!metrics.retentionCurve ? (
+                    <p className="text-xs text-slate-500 leading-relaxed">
+                      Retention curve is not available for this video, so no drop-off point beyond the intro could be measured.
+                    </p>
+                  ) : metrics.retentionCliff === undefined ? (
+                    <p className="text-xs text-amber-300/80 leading-relaxed">
+                      This audit was generated before mid-video cliff detection was added. Click "Refresh Report" above to compute it for this video.
+                    </p>
+                  ) : !metrics.retentionCliff.detected ? (
+                    <p className="text-xs text-slate-300 leading-relaxed">
+                      No significant drop-off (5+ points within a 5% span) was measured after the first minute. Retention declines gradually rather than falling off a cliff.
+                    </p>
+                  ) : (
+                    <div className="flex flex-col gap-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-bold text-white">
+                          -{metrics.retentionCliff.dropPoints} points between {metrics.retentionCliff.startFormatted} and {metrics.retentionCliff.endFormatted}
+                        </span>
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-950/60 border border-amber-500/30 text-amber-300 font-mono">
+                          {metrics.retentionCliff.videoPercentStart}%–{metrics.retentionCliff.videoPercentEnd}% through the video
+                        </span>
+                      </div>
+
+                      {metrics.retentionCliff.transcriptSegment ? (
+                        <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3">
+                          <div className="text-[10px] uppercase font-bold tracking-wider text-slate-500 mb-1">
+                            What was said at this point
+                          </div>
+                          <p className="text-xs text-slate-300 italic leading-relaxed">
+                            "{metrics.retentionCliff.transcriptSegment}"
+                          </p>
+                        </div>
+                      ) : (
+                        <p className="text-[11px] text-slate-500">
+                          No transcript could be aligned to this timestamp.
+                        </p>
+                      )}
+
+                      <p className="text-xs text-slate-300 leading-relaxed">
+                        {evaluation.retention_cliff?.diagnosis ||
+                          "Regenerate this audit to have Gemini diagnose this drop against the transcript."}
+                      </p>
+
+                      {evaluation.retention_cliff?.fix && evaluation.retention_cliff.fix !== "No action needed" && (
+                        <div className="flex items-start gap-2 bg-cyan-950/30 border border-cyan-500/20 rounded-xl p-3">
+                          <Sparkles className="w-3.5 h-3.5 text-cyan-400 shrink-0 mt-0.5" />
+                          <p className="text-xs text-cyan-200 leading-relaxed">{evaluation.retention_cliff.fix}</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -1074,6 +1183,28 @@ export default function AuditReportModal({ isOpen, onClose, youtubeId, videoTitl
   );
 }
 
+// Headline badge for a single video's Viewer Satisfaction Score. Colors by
+// band (>=70 strong, >=40 mixed, below that soft) since the underlying scale
+// is a disclosed heuristic, not an official cutoff -- mirrors the Channel
+// Health version of this badge.
+function SatisfactionBadge({ score }) {
+  const band = score >= 70 ? "emerald" : score >= 40 ? "amber" : "red";
+  const bandClasses = {
+    emerald: "from-emerald-500/25 to-emerald-500/5 border-emerald-500/40",
+    amber: "from-amber-500/25 to-amber-500/5 border-amber-500/40",
+    red: "from-red-500/25 to-red-500/5 border-red-500/40",
+  }[band];
+
+  return (
+    <div
+      className={`w-full sm:w-28 shrink-0 rounded-xl bg-gradient-to-br ${bandClasses} border flex flex-col items-center justify-center p-4 gap-1`}
+    >
+      <div className="text-3xl font-black tracking-tight text-white">{score}</div>
+      <div className="text-[9px] font-bold uppercase tracking-wider text-slate-300/80">out of 100</div>
+    </div>
+  );
+}
+
 function StatusPill({ label, status, detail }) {
   const isUnavailable = status === "unavailable";
   const isPass = status === "pass";
@@ -1133,7 +1264,7 @@ function ProgressBar({ label, pct, color }) {
   );
 }
 
-function RetentionChart({ curve }) {
+function RetentionChart({ curve, cliff }) {
   if (!curve || curve.length === 0) return null;
 
   // Simple clean SVG line chart for retention curve
@@ -1152,6 +1283,18 @@ function RetentionChart({ curve }) {
           <line x1="0" y1="25" x2="100" y2="25" stroke="#334155" strokeDasharray="2,2" strokeWidth="0.5" />
           <line x1="0" y1="50" x2="100" y2="50" stroke="#334155" strokeDasharray="2,2" strokeWidth="0.5" />
           <line x1="0" y1="75" x2="100" y2="75" stroke="#334155" strokeDasharray="2,2" strokeWidth="0.5" />
+
+          {/* Mid-video retention cliff highlight, drawn behind the curve */}
+          {cliff && (
+            <rect
+              x={cliff.videoPercentStart}
+              y="0"
+              width={Math.max(1, cliff.videoPercentEnd - cliff.videoPercentStart)}
+              height="100"
+              fill="#f59e0b"
+              opacity="0.18"
+            />
+          )}
 
           {/* Area fill */}
           <polygon

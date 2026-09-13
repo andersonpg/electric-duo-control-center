@@ -11,6 +11,12 @@ const {
   ensureReachJob,
   syncReachReports,
 } = require("./youtube-reach");
+const {
+  computeEngagementRate,
+  computeSubConversionRate,
+  scoreSatisfactionComponents,
+  METHODOLOGY_NOTE: SATISFACTION_METHODOLOGY_NOTE,
+} = require("./satisfaction-score");
 
 // Helper to parse ISO duration "PT18M6S" into seconds
 function parseDurationSec(durationStr) {
@@ -978,32 +984,11 @@ function deriveLongFormMetrics(row) {
   const [views, estMinutes, likes, comments, shares, avp, subsGained, subsLost] = row;
   const watchHours = estMinutes != null ? Number((estMinutes / 60).toFixed(1)) : null;
   const retention = avp != null ? Number(avp.toFixed(1)) : null;
-  const engagementRate = views > 0
-    ? Number((((likes || 0) + (comments || 0) + (shares || 0)) / views * 100).toFixed(2))
-    : null;
   const netSubs = subsGained != null && subsLost != null ? subsGained - subsLost : null;
-  const subConversionRate = netSubs != null && views > 0
-    ? Number((netSubs / views * 100).toFixed(3))
-    : null;
+  const engagementRate = computeEngagementRate({ likes, comments, shares, views });
+  const subConversionRate = computeSubConversionRate({ netSubs, views });
 
   return { views: views ?? null, watchHours, retention, engagementRate, netSubs, subConversionRate };
-}
-
-// Maps each measured input onto a disclosed 0-100 point scale and averages
-// whichever components are available. The ceilings are not official YouTube
-// figures -- they are the same rule-of-thumb "strong performance" benchmarks
-// used elsewhere in this app (~50% avg. viewed, ~6% engagement rate), applied
-// consistently and shown in full in the UI's methodology note. A net
-// subscriber loss floors at 0 points rather than going negative.
-function scoreSatisfactionInputs({ retention, engagementRate, subConversionRate }) {
-  const clamp = (n) => Math.max(0, Math.min(100, n));
-  const subScores = [];
-  if (retention != null) subScores.push(clamp(Math.round((retention / 50) * 100)));
-  if (engagementRate != null) subScores.push(clamp(Math.round((engagementRate / 6) * 100)));
-  if (subConversionRate != null) subScores.push(clamp(Math.round((Math.max(0, subConversionRate) / 1) * 100)));
-
-  if (subScores.length === 0) return null;
-  return Math.round(subScores.reduce((a, b) => a + b, 0) / subScores.length);
 }
 
 function summariseTraffic(rows) {
@@ -1124,8 +1109,8 @@ async function getChannelHealthReport(periodDays = 28) {
   // YouTube has publicly tied to satisfaction, restricted to long-form
   // video-on-demand content the same way the fix in server/media-kit.js is.
   // Reuses the lfCurrInputs/lfPriorInputs already derived for the scorecard.
-  const satisfactionScoreValue = scoreSatisfactionInputs(lfCurrInputs);
-  const satisfactionScorePrior = scoreSatisfactionInputs(lfPriorInputs);
+  const satisfactionScoreValue = scoreSatisfactionComponents(lfCurrInputs);
+  const satisfactionScorePrior = scoreSatisfactionComponents(lfPriorInputs);
 
   const satisfactionScore = {
     score: satisfactionScoreValue,
@@ -1139,7 +1124,7 @@ async function getChannelHealthReport(periodDays = 28) {
       engagementRate: metric(lfCurrInputs.engagementRate, lfPriorInputs.engagementRate, "Engagement Rate (Long-Form)"),
       subConversionRate: metric(lfCurrInputs.subConversionRate, lfPriorInputs.subConversionRate, "Net Subscriber Conversion (Long-Form)"),
     },
-    methodology: "Composite of three long-form-only signals YouTube has publicly tied to viewer satisfaction: average percentage viewed (50% = a 100-point ceiling), engagement rate — likes + comments + shares per view (6% = a 100-point ceiling), and net subscriber conversion per view (1% = a 100-point ceiling). Each is capped at 100 points and averaged; a net subscriber loss floors at 0 rather than going negative. Shorts, Live, and non-video-on-demand content are excluded via YouTube's own content-type classification, independent of the local video catalog. YouTube's internal viewer-satisfaction survey score is never exposed to creators, so this is a disclosed proxy, not an official YouTube metric.",
+    methodology: `${SATISFACTION_METHODOLOGY_NOTE} Shorts, Live, and non-video-on-demand content are excluded from every input via YouTube's own content-type classification, independent of the local video catalog.`,
   };
 
   const currReach = getChannelReachSummary(startDateStr, endDateStr);

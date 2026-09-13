@@ -4,6 +4,12 @@ const { GoogleGenAI } = require("@google/genai");
 const db = require("./db").articleDb;
 const { getTranscript, getGeminiApiKey, callGeminiWithRetry, DEFAULT_GEMINI_MODEL } = require("./gemini");
 const { isOAuthConnected, fetchLiveVideoAnalytics } = require("./youtube-analytics");
+const {
+  computeEngagementRate,
+  computeSubConversionRate,
+  scoreSatisfactionComponents,
+  METHODOLOGY_NOTE: SATISFACTION_METHODOLOGY_NOTE,
+} = require("./satisfaction-score");
 
 // ---------------------------------------------------------------------------
 // Video metrics.
@@ -104,6 +110,103 @@ function computeHookDropAt30s(retentionCurve, durationSec) {
   return null;
 }
 
+// Finds the steepest decline anywhere in the retention curve past the first
+// minute, using a rolling window (default 5% of the video) rather than
+// point-to-point deltas so single-sample noise does not register as a
+// "cliff." Deliberately excludes the opening minute, which the 30-second hook
+// figure above already covers -- this is about problems later in the video.
+// Returns null only when the curve itself is unusable; { detected: false }
+// means the curve is fine and no notable drop was found.
+function findSteepestRetentionDrop(retentionCurve, durationSec, opts = {}) {
+  const { excludeFirstSec = 60, windowPct = 5, minDropPoints = 5 } = opts;
+  if (!Array.isArray(retentionCurve) || retentionCurve.length < 2 || !durationSec) return null;
+
+  const minRatio = Math.min(0.9, excludeFirstSec / durationSec);
+  const points = retentionCurve
+    .filter((p) => p && Number.isFinite(p.ratio) && Number.isFinite(p.pct) && p.ratio >= minRatio)
+    .sort((a, b) => a.ratio - b.ratio);
+  if (points.length < 2) return { detected: false };
+
+  let best = null;
+  for (let i = 0; i < points.length; i++) {
+    const start = points[i];
+    const targetRatio = start.ratio + windowPct / 100;
+    let end = null;
+    for (let j = i + 1; j < points.length; j++) {
+      if (points[j].ratio >= targetRatio) {
+        end = points[j];
+        break;
+      }
+    }
+    if (!end) end = points[points.length - 1];
+    if (end === start) continue;
+
+    const drop = start.pct - end.pct;
+    if (!best || drop > best.drop) best = { drop, start, end };
+  }
+
+  if (!best || best.drop < minDropPoints) return { detected: false };
+
+  const startSec = Math.round(best.start.ratio * durationSec);
+  const endSec = Math.round(best.end.ratio * durationSec);
+  return {
+    detected: true,
+    dropPoints: Math.round(best.drop),
+    startSec,
+    endSec,
+    startFormatted: formatSeconds(startSec),
+    endFormatted: formatSeconds(endSec),
+    videoPercentStart: Math.round(best.start.ratio * 100),
+    videoPercentEnd: Math.round(best.end.ratio * 100),
+  };
+}
+
+// Reads the timestamped transcript (SRT) for a video directly from the cache,
+// separate from getTranscript() in server/gemini.js, which returns
+// timestamp-free plain text and is not usable for aligning a moment in the
+// video to what was actually said at that moment.
+function getTranscriptWithTimestamps(youtubeId) {
+  try {
+    const row = db.prepare("SELECT cleaned_srt, raw_srt FROM transcripts WHERE video_id = ?").get(youtubeId);
+    if (row?.cleaned_srt && row.cleaned_srt.trim().length > 20) return row.cleaned_srt;
+    if (row?.raw_srt && row.raw_srt.trim().length > 20) return row.raw_srt;
+  } catch (e) {
+    console.warn(`Could not read timestamped transcript for ${youtubeId}:`, e.message);
+  }
+  return null;
+}
+
+const SRT_CUE_TIME = /(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})\s*-->\s*(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})/;
+
+function parseSrtCues(srtText) {
+  if (!srtText) return [];
+  const toSec = (h, m, s, ms) => Number(h) * 3600 + Number(m) * 60 + Number(s) + Number(ms) / 1000;
+  const cues = [];
+  for (const block of srtText.split(/\r?\n\r?\n+/)) {
+    const lines = block.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const timeLineIdx = lines.findIndex((l) => SRT_CUE_TIME.test(l));
+    if (timeLineIdx === -1) continue;
+    const m = lines[timeLineIdx].match(SRT_CUE_TIME);
+    const text = lines.slice(timeLineIdx + 1).join(" ").trim();
+    if (!text) continue;
+    cues.push({ startSec: toSec(m[1], m[2], m[3], m[4]), endSec: toSec(m[5], m[6], m[7], m[8]), text });
+  }
+  return cues;
+}
+
+// Extracts the spoken transcript covering a specific time window (plus a
+// small pad on each side for context), so a measured retention drop can be
+// paired with what was actually being said at that moment.
+function getTranscriptSegment(srtText, startSec, endSec, padSec = 12) {
+  const cues = parseSrtCues(srtText);
+  if (cues.length === 0) return null;
+  const rangeStart = Math.max(0, startSec - padSec);
+  const rangeEnd = endSec + padSec;
+  const inRange = cues.filter((c) => c.endSec >= rangeStart && c.startSec <= rangeEnd);
+  if (inRange.length === 0) return null;
+  return inRange.map((c) => c.text).join(" ").replace(/\s+/g, " ").trim().slice(0, 1200);
+}
+
 async function getVideoMetrics(youtubeId, video) {
   const category = video.content_type || null;
   const benchmark = getCategoryBenchmark(category);
@@ -149,6 +252,42 @@ async function getVideoMetrics(youtubeId, video) {
   const hookDropPercent = computeHookDropAt30s(retentionCurve, durationSec);
   const trafficShare = (liveAnalytics && liveAnalytics.trafficShare) || null;
 
+  // Mid-video retention cliff: the steepest drop anywhere after the first
+  // minute, paired with the transcript actually spoken at that moment. A
+  // single video needs no Shorts/Live exclusion (it IS one video), so this
+  // reuses the shared formula directly on this video's own measured numbers.
+  const retentionCliffRaw = findSteepestRetentionDrop(retentionCurve, durationSec);
+  let retentionCliff = retentionCliffRaw;
+  if (retentionCliffRaw && retentionCliffRaw.detected) {
+    const srtText = getTranscriptWithTimestamps(youtubeId);
+    const transcriptSegment = srtText
+      ? getTranscriptSegment(srtText, retentionCliffRaw.startSec, retentionCliffRaw.endSec)
+      : null;
+    retentionCliff = { ...retentionCliffRaw, transcriptSegment };
+  }
+
+  // Viewer Satisfaction Score: same disclosed 3-signal formula as Channel
+  // Health (server/satisfaction-score.js), applied to this one video's own
+  // measured numbers. Uses core.* directly rather than the display-oriented
+  // likes/comments/shares/subsGained variables above, which coerce a real
+  // zero into null for display purposes -- that would wrongly zero out a
+  // genuinely measured "no engagement" result here.
+  const rawSubsGained = core && Number.isFinite(core.subsGained) ? core.subsGained : null;
+  const rawSubsLost = core && Number.isFinite(core.subsLost) ? core.subsLost : null;
+  const rawNetSubs = rawSubsGained != null && rawSubsLost != null ? rawSubsGained - rawSubsLost : null;
+  const engagementRate = core
+    ? computeEngagementRate({ likes: core.likes, comments: core.comments, shares: core.shares, views: core.views })
+    : null;
+  const subConversionRate = core ? computeSubConversionRate({ netSubs: rawNetSubs, views: core.views }) : null;
+  const satisfactionScoreValue = scoreSatisfactionComponents({ retention: retentionRate, engagementRate, subConversionRate });
+
+  const satisfactionScore = {
+    score: satisfactionScoreValue,
+    available: satisfactionScoreValue != null,
+    components: { retention: retentionRate, engagementRate, subConversionRate },
+    methodology: SATISFACTION_METHODOLOGY_NOTE,
+  };
+
   // Impressions and impressions click-through rate are YouTube Studio figures
   // and are not exposed by the public YouTube Analytics API. They stay null
   // rather than being back-computed from an assumed CTR.
@@ -167,6 +306,7 @@ async function getVideoMetrics(youtubeId, video) {
   if (!retentionCurve) unavailable.push("retention curve");
   if (!trafficShare) unavailable.push("traffic sources");
   if (netSubs == null) unavailable.push("net subscribers");
+  if (!satisfactionScore.available) unavailable.push("viewer satisfaction score");
 
   return {
     isLiveStudioData: isLive,
@@ -191,6 +331,8 @@ async function getVideoMetrics(youtubeId, video) {
     retentionCurve,
     retentionCurveAxis: retentionCurve ? "percent_of_video" : null,
     hookDropPercent,
+    retentionCliff,
+    satisfactionScore,
     trafficShare,
     category,
     categoryBenchmark: benchmark,
@@ -250,6 +392,13 @@ async function generateAIEvaluation(video, metrics) {
   if (metrics.trafficShare) {
     metricLines.push(`- Traffic Sources: Browse ${metrics.trafficShare.browse}%, Suggested ${metrics.trafficShare.suggested}%, Search ${metrics.trafficShare.search}%, Other ${metrics.trafficShare.other}%`);
   }
+  if (metrics.satisfactionScore?.available) {
+    metricLines.push(`- Viewer Satisfaction Score (measured proxy, not an official YouTube metric): ${metrics.satisfactionScore.score}/100`);
+  }
+  if (metrics.retentionCliff?.detected) {
+    const c = metrics.retentionCliff;
+    metricLines.push(`- Mid-Video Retention Cliff: -${c.dropPoints} points between ${c.startFormatted} and ${c.endFormatted} (${c.videoPercentStart}%-${c.videoPercentEnd}% through the video), separate from the 30-second hook drop above`);
+  }
   if (metrics.categoryBenchmark) {
     const b = metrics.categoryBenchmark;
     const bParts = [];
@@ -282,6 +431,17 @@ async function generateAIEvaluation(video, metrics) {
     dataSafeguards.push(`- Measured impressions and CTR are available. Classify into the Discovery 2x2 Matrix.`);
   } else {
     dataSafeguards.push(`- Impressions and CTR are NOT available. SKIP the Discovery Matrix (return "quadrant": "Unavailable", "quadrant_number": 0, and explain that impressions and CTR must be checked in YouTube Studio).`);
+  }
+  if (metrics.retentionCliff?.detected) {
+    const c = metrics.retentionCliff;
+    const transcriptNote = c.transcriptSegment
+      ? `The transcript at this exact moment says: "${c.transcriptSegment}"`
+      : "No transcript could be aligned to this timestamp -- diagnose from the curve position and surrounding context alone, and say so.";
+    dataSafeguards.push(`- Measured a ${c.dropPoints}-point retention drop between ${c.startFormatted} and ${c.endFormatted} (${c.videoPercentStart}%-${c.videoPercentEnd}% through the video). This is separate from the 30-second hook and must be diagnosed on its own in retention_cliff. ${transcriptNote}`);
+  } else if (metrics.retentionCurve) {
+    dataSafeguards.push(`- The retention curve was measured and no significant drop (5+ points within a 5% span) was found after the first minute. Report retention_cliff.detected as false rather than inventing one.`);
+  } else {
+    dataSafeguards.push(`- The retention curve is NOT available, so no mid-video retention cliff could be measured. Report retention_cliff.detected as false and say the curve was unavailable.`);
   }
 
   const editorialInstructions = getAuditInstructions();
@@ -325,6 +485,13 @@ You MUST reply ONLY with a valid JSON object with this EXACT structure (no markd
     "diagnosis_type": "Intro Hook Bottleneck",
     "verdict": "One-line verdict, or a statement that retention data was unavailable.",
     "analysis": "Explanation grounded in the transcript."
+  },
+  "retention_cliff": {
+    "detected": ${metrics.retentionCliff?.detected ? "true" : "false"},
+    "timestamp_range": ${metrics.retentionCliff?.detected ? `"${metrics.retentionCliff.startFormatted}–${metrics.retentionCliff.endFormatted}"` : `"Unavailable"`},
+    "drop_points": ${metrics.retentionCliff?.detected ? metrics.retentionCliff.dropPoints : "null"},
+    "diagnosis": "If detected, explain what the transcript segment shows was happening at this exact moment and why viewers likely left. If not detected, say plainly that no significant mid-video drop was measured (or that the curve was unavailable) rather than inventing one.",
+    "fix": "Specific, concrete edit to make (e.g. cut this segment, move it earlier, re-pace it), or 'No action needed' if none was detected."
   },
   "discovery_matrix": {
     "quadrant": ${hasDiscoveryData ? `"High Impressions / Low CTR"` : `"Unavailable"`},
