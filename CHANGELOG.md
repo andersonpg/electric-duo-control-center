@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.5.4] - 2026-09-14
+
+### Added
+- **Media Kit Custom Header Logo & Logo-Only Option**:
+  - **Brand Header Logo Upload**: Added an image uploader and URL input in the "Edit off-platform data" modal (`header_logo_url`), expanding upload size support to 1MB for crisp, high-resolution wide PNG, SVG, WebP, and JPEG logos.
+  - **"Use Logo Only" Mode**: Added a `use_logo_only` toggle. When active, wide rectangular logos that already contain the channel name render cleanly as the primary header identity, hiding the "ED" avatar square and "The Electric Duo" text heading to avoid visual duplication.
+  - **Strict Zero-Fabrication Seeding**: Initialized `header_logo_url` strictly empty (`""`) and `use_logo_only` as `false`, falling back to standard branding when not configured.
+
+### Fixed
+- **Print Layout Flow & Edge Padding**:
+  - **Eliminated Massive Blank Page Spaces**: Removed `break-inside: avoid` from multi-card section wrappers. Content now flows naturally across pages rather than pushing entire sections onto separate pages when space remains below headers.
+  - **Atomic Break Protection**: Preserved `break-inside: avoid` exclusively on atomic sub-cards (stat cards, recent work video cards, duo cards, and survey modules) to prevent individual components from splitting across page cuts.
+  - **Page Margins & Section Header Spacing**: Increased `@page` print margin to `0.5in` and added dedicated `padding-top: 0.75rem` to `.section-header`, preventing section titles from sitting unpadded against the top page edge.
+  - **Vertical Rhythm**: Set container print spacing to `space-y-6` for compact, professional visual balance across printed pages.
+
 ## [2.5.3] - 2026-09-14
 
 ### Added

@@ -445,6 +445,8 @@ try {
       event_coverage_description: "",
       speaking_appearances: [],
       website_resources: [],
+      header_logo_url: "",
+      use_logo_only: false,
       who_we_reach: {
         primary_description: "",
         secondary_description: "",
@@ -457,6 +459,8 @@ try {
       const parsed = JSON.parse(existingManual.data_json);
       let updated = false;
 
+      if (parsed.header_logo_url === undefined) { parsed.header_logo_url = ""; updated = true; }
+      if (parsed.use_logo_only === undefined) { parsed.use_logo_only = false; updated = true; }
       if (parsed.audience_reach_caption === undefined) { parsed.audience_reach_caption = ""; updated = true; }
       if (parsed.featured_in === undefined) { parsed.featured_in = []; updated = true; }
       if (parsed.industry_recognition === undefined) { parsed.industry_recognition = ""; updated = true; }

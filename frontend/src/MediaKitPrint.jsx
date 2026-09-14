@@ -15,7 +15,7 @@ export default function MediaKitPrint({ currentUser }) {
       <style>{`
         @page {
           size: letter;
-          margin: 0.35in;
+          margin: 0.5in;
         }
         @media print {
           body {
@@ -32,13 +32,17 @@ export default function MediaKitPrint({ currentUser }) {
           .section-header {
             break-after: avoid !important;
             page-break-after: avoid !important;
+            padding-top: 0.75rem !important;
+            margin-bottom: 0.5rem !important;
           }
           .recent-work-grid {
             display: grid !important;
             grid-template-columns: repeat(3, 1fr) !important;
             gap: 1rem !important;
+            break-inside: avoid !important;
+            page-break-inside: avoid !important;
           }
-          header, section, .recent-work-grid, .duo-card {
+          header, .duo-card, .stat-block, .sub-card, .card-avoid-break {
             break-inside: avoid !important;
             page-break-inside: avoid !important;
           }

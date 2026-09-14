@@ -327,6 +327,41 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
     reader.readAsDataURL(file);
   };
 
+  const [uploadingHeaderLogo, setUploadingHeaderLogo] = useState(false);
+
+  const handleHeaderLogoUpload = async (file) => {
+    if (!file) return;
+    if (file.size > 1024 * 1024) {
+      alert("Logo image exceeds 1MB limit. Please choose an image under 1MB.");
+      return;
+    }
+
+    setUploadingHeaderLogo(true);
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const base64Data = reader.result;
+        const res = await fetch("/api/media-kit/upload-logo", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({ imageBase64: base64Data, filename: file.name }),
+        });
+        const json = await res.json();
+        if (json.success && json.url) {
+          setFormData((prev) => ({ ...prev, header_logo_url: json.url }));
+        } else {
+          alert(`Upload failed: ${json.error || "Unknown error"}`);
+        }
+      } catch (err) {
+        alert(`Upload error: ${err.message}`);
+      } finally {
+        setUploadingHeaderLogo(false);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
   const emDash = "—";
   const renderVal = (v, formatFn) => {
     if (v == null || v === "") return emDash;
@@ -485,7 +520,7 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
         color: "var(--mk-text)",
       }}
     >
-      <div className="max-w-6xl mx-auto space-y-8">
+      <div className={`max-w-6xl mx-auto ${isPrintMode ? "space-y-6" : "space-y-8"}`}>
         {/* ===================================================================
             1. HEADER
             =================================================================== */}
@@ -499,38 +534,80 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
           }}
         >
           <div className="flex items-center gap-4 sm:gap-6">
-            <div
-              className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl flex items-center justify-center font-black text-2xl sm:text-3xl shadow-lg shrink-0"
-              style={{
-                backgroundColor: "var(--mk-accent)",
-                color: "var(--mk-bg)",
-              }}
-            >
-              ED
-            </div>
-            <div>
-              <div className="flex items-center gap-3">
-                <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight" style={{ color: "var(--mk-text)" }}>
-                  The Electric Duo
-                </h1>
-                <span
-                  className="text-xs uppercase font-bold tracking-widest px-2.5 py-1 rounded-full border"
-                  style={{
-                    backgroundColor: "rgba(0, 177, 226, 0.12)",
-                    color: "var(--mk-accent)",
-                    borderColor: "rgba(0, 177, 226, 0.3)",
-                  }}
-                >
-                  Partnership Media Kit
-                </span>
+            {manual?.header_logo_url && manual?.use_logo_only ? (
+              <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-5">
+                <img
+                  src={manual.header_logo_url}
+                  alt="The Electric Duo"
+                  className="h-10 sm:h-12 w-auto max-w-xs sm:max-w-md object-contain"
+                />
+                <div>
+                  <span
+                    className="inline-block text-xs uppercase font-bold tracking-widest px-2.5 py-1 rounded-full border"
+                    style={{
+                      backgroundColor: "rgba(0, 177, 226, 0.12)",
+                      color: "var(--mk-accent)",
+                      borderColor: "rgba(0, 177, 226, 0.3)",
+                    }}
+                  >
+                    Partnership Media Kit
+                  </span>
+                  <p className="text-sm mt-1" style={{ color: "var(--mk-muted)" }}>
+                    {currentQuarterLabel} · Data as of{" "}
+                    <span className="font-semibold" style={{ color: "var(--mk-text)" }}>
+                      {effectiveEndDate || emDash}
+                    </span>
+                  </p>
+                </div>
               </div>
-              <p className="text-sm mt-1" style={{ color: "var(--mk-muted)" }}>
-                {currentQuarterLabel} · Data as of{" "}
-                <span className="font-semibold" style={{ color: "var(--mk-text)" }}>
-                  {effectiveEndDate || emDash}
-                </span>
-              </p>
-            </div>
+            ) : (
+              <>
+                {manual?.header_logo_url ? (
+                  <img
+                    src={manual.header_logo_url}
+                    alt="The Electric Duo"
+                    className="h-14 sm:h-16 w-auto max-w-xs rounded-xl object-contain p-1 border shadow-lg shrink-0"
+                    style={{
+                      backgroundColor: "var(--mk-card)",
+                      borderColor: "var(--mk-border)",
+                    }}
+                  />
+                ) : (
+                  <div
+                    className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl flex items-center justify-center font-black text-2xl sm:text-3xl shadow-lg shrink-0"
+                    style={{
+                      backgroundColor: "var(--mk-accent)",
+                      color: "var(--mk-bg)",
+                    }}
+                  >
+                    ED
+                  </div>
+                )}
+                <div>
+                  <div className="flex items-center gap-3">
+                    <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight" style={{ color: "var(--mk-text)" }}>
+                      The Electric Duo
+                    </h1>
+                    <span
+                      className="text-xs uppercase font-bold tracking-widest px-2.5 py-1 rounded-full border"
+                      style={{
+                        backgroundColor: "rgba(0, 177, 226, 0.12)",
+                        color: "var(--mk-accent)",
+                        borderColor: "rgba(0, 177, 226, 0.3)",
+                      }}
+                    >
+                      Partnership Media Kit
+                    </span>
+                  </div>
+                  <p className="text-sm mt-1" style={{ color: "var(--mk-muted)" }}>
+                    {currentQuarterLabel} · Data as of{" "}
+                    <span className="font-semibold" style={{ color: "var(--mk-text)" }}>
+                      {effectiveEndDate || emDash}
+                    </span>
+                  </p>
+                </div>
+              </>
+            )}
           </div>
 
           {!isPrintMode && (
@@ -1228,8 +1305,6 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
             style={{
               backgroundColor: "var(--mk-card)",
               borderColor: "var(--mk-border)",
-              breakInside: "avoid",
-              pageBreakInside: "avoid",
             }}
           >
             <div className="section-header flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
@@ -1382,10 +1457,6 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
             className={`space-y-4 transition-all duration-200 ${
               !printSections.recentWork ? "print-excluded opacity-65 border-dashed" : ""
             }`}
-            style={{
-              breakInside: "avoid",
-              pageBreakInside: "avoid",
-            }}
           >
             <div className="section-header flex items-center justify-between" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
               <div>
@@ -1464,10 +1535,6 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
             className={`space-y-4 transition-all duration-200 ${
               !printSections.duoBios ? "print-excluded opacity-65 border-dashed" : ""
             }`}
-            style={{
-              breakInside: "avoid",
-              pageBreakInside: "avoid",
-            }}
           >
             <div className="section-header flex items-center justify-between" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
               <div>
@@ -1738,8 +1805,6 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
             style={{
               backgroundColor: "var(--mk-card)",
               borderColor: "var(--mk-border)",
-              breakInside: "avoid",
-              pageBreakInside: "avoid",
             }}
           >
             <div className="section-header flex flex-col sm:flex-row sm:items-center justify-between gap-2" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
@@ -1831,8 +1896,6 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
             style={{
               backgroundColor: "var(--mk-card)",
               borderColor: "var(--mk-border)",
-              breakInside: "avoid",
-              pageBreakInside: "avoid",
             }}
           >
             {/* Partner Chips */}
@@ -1961,6 +2024,98 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
             </div>
 
             <form onSubmit={handleSaveManual} className="space-y-6 text-xs">
+              {/* Header Branding & Custom Logo */}
+              <div className="space-y-3 p-4 rounded-xl border" style={{ backgroundColor: "var(--mk-bg)", borderColor: "var(--mk-border)" }}>
+                <h4 className="font-bold text-sm" style={{ color: "var(--mk-accent)" }}>
+                  Header Branding & Custom Logo
+                </h4>
+                <p className="text-[11px]" style={{ color: "var(--mk-muted)" }}>
+                  Upload a wide rectangular logo for the Media Kit header. Ideal for logos that already include the channel name.
+                </p>
+
+                <div className="space-y-3">
+                  <div>
+                    <label className="block mb-1 font-semibold" style={{ color: "var(--mk-muted)" }}>
+                      Header Logo URL
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        placeholder="https://... or upload below"
+                        value={formData.header_logo_url || ""}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            header_logo_url: e.target.value,
+                          })
+                        }
+                        className="flex-1 p-2 rounded-xl border font-mono text-xs"
+                        style={{ backgroundColor: "var(--mk-card)", borderColor: "var(--mk-border)", color: "var(--mk-text)" }}
+                      />
+                      <label
+                        className={`flex items-center gap-1.5 px-3 py-2 rounded-xl font-bold cursor-pointer transition-all border ${
+                          uploadingHeaderLogo ? "opacity-50 pointer-events-none" : "hover:bg-slate-800"
+                        }`}
+                        style={{ backgroundColor: "var(--mk-card)", borderColor: "var(--mk-border)", color: "var(--mk-accent)" }}
+                      >
+                        <Upload className="w-3.5 h-3.5" />
+                        <span>{uploadingHeaderLogo ? "Uploading…" : "Upload"}</span>
+                        <input
+                          type="file"
+                          accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                          className="hidden"
+                          onChange={(e) => {
+                            if (e.target.files?.[0]) handleHeaderLogoUpload(e.target.files[0]);
+                          }}
+                        />
+                      </label>
+                    </div>
+                  </div>
+
+                  {formData.header_logo_url && (
+                    <div className="flex items-center gap-4 p-3 rounded-xl border" style={{ backgroundColor: "var(--mk-card)", borderColor: "var(--mk-border)" }}>
+                      <div className="text-[11px] font-semibold" style={{ color: "var(--mk-muted)" }}>
+                        Preview:
+                      </div>
+                      <img
+                        src={formData.header_logo_url}
+                        alt="Logo preview"
+                        className="h-10 max-w-xs object-contain"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setFormData({ ...formData, header_logo_url: "" })}
+                        className="ml-auto text-xs text-rose-400 hover:underline font-semibold"
+                      >
+                        Remove logo
+                      </button>
+                    </div>
+                  )}
+
+                  <label className="flex items-start gap-2.5 pt-1 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={!!formData.use_logo_only}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          use_logo_only: e.target.checked,
+                        })
+                      }
+                      className="mt-0.5 rounded border-slate-700 text-cyan-500 focus:ring-cyan-500"
+                    />
+                    <div>
+                      <span className="font-bold block" style={{ color: "var(--mk-text)" }}>
+                        Use logo only (replaces "The Electric Duo" text and avatar)
+                      </span>
+                      <span className="text-[11px] block mt-0.5" style={{ color: "var(--mk-muted)" }}>
+                        Recommended for wide rectangular logos that already contain the channel name. When checked, the square "ED" avatar and "The Electric Duo" title will not appear.
+                      </span>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
               {/* Audience Survey Data (Prominent Editor) */}
               <div className="space-y-3 p-4 rounded-xl border" style={{ backgroundColor: "var(--mk-bg)", borderColor: "var(--mk-border)" }}>
                 <h4 className="font-bold text-sm" style={{ color: "var(--mk-accent)" }}>

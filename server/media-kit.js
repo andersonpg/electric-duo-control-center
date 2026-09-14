@@ -1132,8 +1132,8 @@ function savePartnerLogo(base64Data, originalName = "logo.png") {
   }
 
   const buffer = Buffer.from(rawBase64, "base64");
-  if (buffer.length > 100 * 1024) {
-    throw new Error(`File exceeds maximum size limit of 100KB (size: ${Math.round(buffer.length / 1024)}KB).`);
+  if (buffer.length > 1024 * 1024) {
+    throw new Error(`File exceeds maximum size limit of 1MB (size: ${Math.round(buffer.length / 1024)}KB).`);
   }
 
   const cleanName = path.basename(originalName, path.extname(originalName)).replace(/[^a-zA-Z0-9_-]/g, "");
