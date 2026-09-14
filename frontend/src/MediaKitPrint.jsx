@@ -26,6 +26,9 @@ export default function MediaKitPrint({ currentUser }) {
           .no-print {
             display: none !important;
           }
+          .print-excluded {
+            display: none !important;
+          }
           .section-header {
             break-after: avoid !important;
             page-break-after: avoid !important;

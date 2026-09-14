@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.5.3] - 2026-09-14
+
+### Added
+- **Media Kit Per-Section PDF Print Toggles**:
+  - **Customizable PDF Print Scope**: Added interactive toggle sliders (`SectionPrintToggle`) to each of the 10 Media Kit sections (`Audience Survey`, `Reach & Trailing 12M Views`, `Featured In`, `Who Is Watching`, `Content Pillars`, `Recent Work`, `Meet the Duo`, `Beyond the Channel`, `Event Coverage`, and `Brand Partners & Collaborators`).
+  - **Inclusion & Exclusion UI**: Active sections are included in the PDF export. Excluded sections show a distinct "Excluded" toggle badge and a subtle muted border on screen, and are completely omitted from print (`display: none !important;` in `@media print` and removed from DOM in `/media-kit/print` view) leaving zero page breaks or blank gaps.
+  - **Global Header Counter & Batch Actions**: Added a live PDF section counter badge in the Media Kit header (`X/Y sections`) with a one-click "Include all" action when sections are deselected.
+  - **Print URL Param & Persistence**: Export preferences persist across sessions in `localStorage` and serialize into print URLs via `?exclude=...` parameters, ensuring external browser print tabs strictly respect user selections.
+
 ## [2.5.2] - 2026-09-13
 
 ### Added

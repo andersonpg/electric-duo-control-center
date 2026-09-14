@@ -23,6 +23,56 @@ import {
   BarChart2,
   Tv,
 } from "lucide-react";
+import SectionPrintToggle from "./SectionPrintToggle";
+
+const DEFAULT_PRINT_SECTIONS = {
+  survey: true,
+  reach: true,
+  featuredIn: true,
+  whoIsWatching: true,
+  pillars: true,
+  recentWork: true,
+  duoBios: true,
+  beyondChannel: true,
+  events: true,
+  partners: true,
+};
+
+function getInitialPrintSections() {
+  if (typeof window === "undefined") return { ...DEFAULT_PRINT_SECTIONS };
+
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has("exclude")) {
+      const excluded = new Set(params.get("exclude").split(",").map((s) => s.trim()));
+      const res = { ...DEFAULT_PRINT_SECTIONS };
+      for (const key of Object.keys(res)) {
+        if (excluded.has(key)) res[key] = false;
+      }
+      return res;
+    }
+    if (params.has("sections")) {
+      const included = new Set(params.get("sections").split(",").map((s) => s.trim()));
+      const res = {};
+      for (const key of Object.keys(DEFAULT_PRINT_SECTIONS)) {
+        res[key] = included.has(key);
+      }
+      return res;
+    }
+  } catch (e) {}
+
+  try {
+    const saved = localStorage.getItem("media_kit_print_sections");
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (parsed && typeof parsed === "object") {
+        return { ...DEFAULT_PRINT_SECTIONS, ...parsed };
+      }
+    }
+  } catch (e) {}
+
+  return { ...DEFAULT_PRINT_SECTIONS };
+}
 
 export default function MediaKit({ currentUser, isPrintMode = false }) {
   const [loading, setLoading] = useState(true);
@@ -30,6 +80,7 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
   const [snapshot, setSnapshot] = useState(null);
   const [manual, setManual] = useState(null);
   const [effectiveEndDate, setEffectiveEndDate] = useState(null);
+  const [printSections, setPrintSections] = useState(getInitialPrintSections);
 
   // Refresh status state
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -124,8 +175,35 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
     }
   };
 
+  const togglePrintSection = (sectionId) => {
+    setPrintSections((prev) => {
+      const next = { ...prev, [sectionId]: !prev[sectionId] };
+      try {
+        localStorage.setItem("media_kit_print_sections", JSON.stringify(next));
+      } catch (e) {}
+      return next;
+    });
+  };
+
+  const setAllPrintSections = (included) => {
+    setPrintSections(() => {
+      const next = {};
+      for (const key of Object.keys(DEFAULT_PRINT_SECTIONS)) {
+        next[key] = included;
+      }
+      try {
+        localStorage.setItem("media_kit_print_sections", JSON.stringify(next));
+      } catch (e) {}
+      return next;
+    });
+  };
+
   const handleOpenPrint = () => {
-    window.open("/media-kit/print", "_blank");
+    const excluded = Object.entries(printSections)
+      .filter(([_, inc]) => !inc)
+      .map(([id]) => id);
+    const query = excluded.length > 0 ? `?exclude=${encodeURIComponent(excluded.join(","))}` : "";
+    window.open(`/media-kit/print${query}`, "_blank");
   };
 
   const handleSaveManual = async (e) => {
@@ -376,6 +454,21 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
 
   const hasWebsiteResources = manual?.website_resources && manual.website_resources.length > 0;
 
+  const availableSectionKeys = [
+    "survey",
+    "reach",
+    ...(hasFeaturedIn ? ["featuredIn"] : []),
+    "whoIsWatching",
+    "pillars",
+    "recentWork",
+    ...(hasDuoBios ? ["duoBios"] : []),
+    "beyondChannel",
+    ...(hasEventCoverage ? ["events"] : []),
+    "partners",
+  ];
+  const includedCount = availableSectionKeys.filter((k) => printSections[k] !== false).length;
+  const totalAvailableSections = availableSectionKeys.length;
+
   return (
     <div
       className={`min-h-screen font-sans antialiased selection:bg-cyan-500 selection:text-slate-950 ${
@@ -442,6 +535,33 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
 
           {!isPrintMode && (
             <div className="flex flex-wrap items-center gap-3">
+              <div
+                className="flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-semibold shadow-sm"
+                style={{
+                  borderColor: "var(--mk-border)",
+                  backgroundColor: "var(--mk-bg)",
+                }}
+              >
+                <span style={{ color: "var(--mk-muted)" }}>PDF:</span>
+                <span
+                  className="font-bold"
+                  style={{
+                    color: includedCount === totalAvailableSections ? "var(--mk-accent)" : "#FBBF24",
+                  }}
+                >
+                  {includedCount}/{totalAvailableSections} sections
+                </span>
+                {includedCount < totalAvailableSections && (
+                  <button
+                    onClick={() => setAllPrintSections(true)}
+                    className="ml-1 text-[11px] font-bold underline hover:opacity-80 transition-opacity"
+                    style={{ color: "var(--mk-accent)" }}
+                  >
+                    Include all
+                  </button>
+                )}
+              </div>
+
               <button
                 onClick={handleRefreshNow}
                 disabled={isRefreshing}
@@ -488,35 +608,44 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
             PROMINENT HIGH-VALUE ASSET: AUDIENCE SURVEY (AT THE TOP)
             Proves qualified in-market buyers, not passive browsers
             =================================================================== */}
-        <section
-          className="p-6 sm:p-7 rounded-2xl border relative overflow-hidden"
-          style={{
-            backgroundColor: "var(--mk-card)",
-            borderColor: "rgba(0, 177, 226, 0.35)",
-            breakInside: "avoid",
-            pageBreakInside: "avoid",
-          }}
-        >
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
-            <div className="flex items-center gap-2">
-              <span
-                className="text-[10px] font-extrabold uppercase tracking-widest px-2.5 py-0.5 rounded-full border"
-                style={{
-                  backgroundColor: "rgba(0, 177, 226, 0.15)",
-                  color: "var(--mk-accent)",
-                  borderColor: "rgba(0, 177, 226, 0.4)",
-                }}
-              >
-                Audience In-Market Qualification
-              </span>
-              <span className="text-xs font-semibold" style={{ color: "var(--mk-muted)" }}>
-                Verified Audience Survey Data
-              </span>
+        {(!isPrintMode || printSections.survey) && (
+          <section
+            className={`p-6 sm:p-7 rounded-2xl border relative overflow-hidden transition-all duration-200 ${
+              !printSections.survey ? "print-excluded opacity-65 border-dashed" : ""
+            }`}
+            style={{
+              backgroundColor: "var(--mk-card)",
+              borderColor: "rgba(0, 177, 226, 0.35)",
+              breakInside: "avoid",
+              pageBreakInside: "avoid",
+            }}
+          >
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+              <div className="flex items-center gap-2">
+                <span
+                  className="text-[10px] font-extrabold uppercase tracking-widest px-2.5 py-0.5 rounded-full border"
+                  style={{
+                    backgroundColor: "rgba(0, 177, 226, 0.15)",
+                    color: "var(--mk-accent)",
+                    borderColor: "rgba(0, 177, 226, 0.4)",
+                  }}
+                >
+                  Audience In-Market Qualification
+                </span>
+                <span className="text-xs font-semibold" style={{ color: "var(--mk-muted)" }}>
+                  Verified Audience Survey Data
+                </span>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-[11px]" style={{ color: "var(--mk-muted)" }}>
+                  {surveyData.survey_source}
+                </span>
+                <SectionPrintToggle
+                  isIncluded={printSections.survey}
+                  onToggle={() => togglePrintSection("survey")}
+                />
+              </div>
             </div>
-            <span className="text-[11px]" style={{ color: "var(--mk-muted)" }}>
-              {surveyData.survey_source}
-            </span>
-          </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div
@@ -565,16 +694,26 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
             </div>
           </div>
         </section>
+        )}
 
         {/* ===================================================================
             2. REACH
             =================================================================== */}
-        <section className="space-y-4">
-          <div className="section-header flex items-center justify-between" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
-            <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
-              Channel Reach & Performance
-            </h2>
-          </div>
+        {(!isPrintMode || printSections.reach) && (
+          <section
+            className={`space-y-4 transition-all duration-200 ${
+              !printSections.reach ? "print-excluded opacity-65 border-dashed" : ""
+            }`}
+          >
+            <div className="section-header flex items-center justify-between" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
+              <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
+                Channel Reach & Performance
+              </h2>
+              <SectionPrintToggle
+                isIncluded={printSections.reach}
+                onToggle={() => togglePrintSection("reach")}
+              />
+            </div>
 
           {/* 4 Stat Cards */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -805,14 +944,17 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
             )}
           </div>
         </section>
+        )}
 
         {/* ===================================================================
             FEATURED IN & INDUSTRY RECOGNITION (COMPACT STRIP)
             Only renders if manual entries exist (never an empty shell)
             =================================================================== */}
-        {hasFeaturedIn && (
+        {hasFeaturedIn && (!isPrintMode || printSections.featuredIn) && (
           <section
-            className="p-5 sm:p-6 rounded-2xl border"
+            className={`p-5 sm:p-6 rounded-2xl border transition-all duration-200 ${
+              !printSections.featuredIn ? "print-excluded opacity-65 border-dashed" : ""
+            }`}
             style={{
               backgroundColor: "var(--mk-card)",
               borderColor: "var(--mk-border)",
@@ -821,9 +963,15 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
             }}
           >
             <div className="section-header flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
-              <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
-                Featured In
-              </h2>
+              <div className="flex items-center gap-3">
+                <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
+                  Featured In
+                </h2>
+                <SectionPrintToggle
+                  isIncluded={printSections.featuredIn}
+                  onToggle={() => togglePrintSection("featuredIn")}
+                />
+              </div>
               {manual?.industry_recognition && (
                 <div className="flex items-center gap-1.5 text-xs font-semibold" style={{ color: "var(--mk-accent)" }}>
                   <Award className="w-3.5 h-3.5 shrink-0" />
@@ -880,12 +1028,21 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
         {/* ===================================================================
             3. WHO IS WATCHING
             =================================================================== */}
-        <section className="space-y-4">
-          <div className="section-header flex items-center justify-between" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
-            <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
-              Who Is Watching (Long-Form Content Audience)
-            </h2>
-          </div>
+        {(!isPrintMode || printSections.whoIsWatching) && (
+          <section
+            className={`space-y-4 transition-all duration-200 ${
+              !printSections.whoIsWatching ? "print-excluded opacity-65 border-dashed" : ""
+            }`}
+          >
+            <div className="section-header flex items-center justify-between" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
+              <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
+                Who Is Watching (Long-Form Content Audience)
+              </h2>
+              <SectionPrintToggle
+                isIncluded={printSections.whoIsWatching}
+                onToggle={() => togglePrintSection("whoIsWatching")}
+              />
+            </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {/* Card 1: Top Geographic Markets */}
@@ -1058,32 +1215,42 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
             </div>
           </div>
         </section>
+        )}
 
         {/* ===================================================================
             4. WHERE YOUR BRAND CAN SIT (4 CONSOLIDATED PILLARS)
             =================================================================== */}
-        <section
-          className="p-6 sm:p-8 rounded-2xl border"
-          style={{
-            backgroundColor: "var(--mk-card)",
-            borderColor: "var(--mk-border)",
-            breakInside: "avoid",
-            pageBreakInside: "avoid",
-          }}
-        >
-          <div className="section-header flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-6" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
-            <div>
-              <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
-                Where Your Brand Can Sit
-              </h2>
-              <p className="text-base font-bold mt-1" style={{ color: "var(--mk-text)" }}>
-                Primary Channel Content Pillars
-              </p>
+        {(!isPrintMode || printSections.pillars) && (
+          <section
+            className={`p-6 sm:p-8 rounded-2xl border transition-all duration-200 ${
+              !printSections.pillars ? "print-excluded opacity-65 border-dashed" : ""
+            }`}
+            style={{
+              backgroundColor: "var(--mk-card)",
+              borderColor: "var(--mk-border)",
+              breakInside: "avoid",
+              pageBreakInside: "avoid",
+            }}
+          >
+            <div className="section-header flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
+              <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+                <div>
+                  <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
+                    Where Your Brand Can Sit
+                  </h2>
+                  <p className="text-base font-bold mt-1" style={{ color: "var(--mk-text)" }}>
+                    Primary Channel Content Pillars
+                  </p>
+                </div>
+                <SectionPrintToggle
+                  isIncluded={printSections.pillars}
+                  onToggle={() => togglePrintSection("pillars")}
+                />
+              </div>
+              <span className="text-xs" style={{ color: "var(--mk-muted)" }}>
+                Targeted sponsorship alignments across core channel programming
+              </span>
             </div>
-            <span className="text-xs" style={{ color: "var(--mk-muted)" }}>
-              Targeted sponsorship alignments across core channel programming
-            </span>
-          </div>
 
           <div className="space-y-5">
             {snapshot?.contentPillars && snapshot.contentPillars.length > 0 ? (
@@ -1205,87 +1372,98 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
             </div>
           </div>
         </section>
+        )}
 
         {/* ===================================================================
             5. RECENT WORK (3-ACROSS GRID, 16:9, COMPACT FOR PRINT)
             =================================================================== */}
-        <section
-          className="space-y-4"
-          style={{
-            breakInside: "avoid",
-            pageBreakInside: "avoid",
-          }}
-        >
-          <div className="section-header flex items-center justify-between" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
-            <div>
-              <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
-                Recent Work
-              </h2>
-              <p className="text-xs font-bold mt-0.5" style={{ color: "var(--mk-text)" }}>
-                Featured High-Performing Long-Form Uploads (&gt; 2,000 views)
-              </p>
+        {(!isPrintMode || printSections.recentWork) && (
+          <section
+            className={`space-y-4 transition-all duration-200 ${
+              !printSections.recentWork ? "print-excluded opacity-65 border-dashed" : ""
+            }`}
+            style={{
+              breakInside: "avoid",
+              pageBreakInside: "avoid",
+            }}
+          >
+            <div className="section-header flex items-center justify-between" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
+              <div>
+                <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
+                  Recent Work
+                </h2>
+                <p className="text-xs font-bold mt-0.5" style={{ color: "var(--mk-text)" }}>
+                  Featured High-Performing Long-Form Uploads (&gt; 2,000 views)
+                </p>
+              </div>
+              <SectionPrintToggle
+                isIncluded={printSections.recentWork}
+                onToggle={() => togglePrintSection("recentWork")}
+              />
             </div>
-          </div>
 
-          <div className="recent-work-grid grid grid-cols-1 sm:grid-cols-3 gap-4">
-            {snapshot?.recentWork && snapshot.recentWork.length > 0 ? (
-              snapshot.recentWork.map((video) => (
-                <div
-                  key={video.youtubeId}
-                  className="rounded-2xl border overflow-hidden flex flex-col justify-between group"
-                  style={{
-                    backgroundColor: "var(--mk-card)",
-                    borderColor: "var(--mk-border)",
-                    breakInside: "avoid",
-                    pageBreakInside: "avoid",
-                  }}
-                >
-                  <div className="aspect-video w-full relative overflow-hidden bg-black">
-                    <img
-                      src={video.thumbnailUrl}
-                      alt={video.title}
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                    />
-                  </div>
-                  <div className="p-4 flex-1 flex flex-col justify-between">
-                    <h3 className="font-bold text-xs sm:text-sm line-clamp-2 leading-snug" style={{ color: "var(--mk-text)" }}>
-                      {video.title}
-                    </h3>
-                    <div
-                      className="mt-3 pt-3 border-t flex items-center justify-between text-xs"
-                      style={{ borderColor: "var(--mk-border)" }}
-                    >
-                      <div>
-                        <span style={{ color: "var(--mk-muted)" }}>Views: </span>
-                        <span className="font-bold" style={{ color: "var(--mk-text)" }}>
-                          {renderVal(video.views, formatNumber)}
-                        </span>
-                      </div>
-                      <div>
-                        <span style={{ color: "var(--mk-muted)" }}>Retention: </span>
-                        <span className="font-bold" style={{ color: "var(--mk-accent)" }}>
-                          {renderVal(video.retentionRate, formatPct)}
-                        </span>
+            <div className="recent-work-grid grid grid-cols-1 sm:grid-cols-3 gap-4">
+              {snapshot?.recentWork && snapshot.recentWork.length > 0 ? (
+                snapshot.recentWork.map((video) => (
+                  <div
+                    key={video.youtubeId}
+                    className="rounded-2xl border overflow-hidden flex flex-col justify-between group"
+                    style={{
+                      backgroundColor: "var(--mk-card)",
+                      borderColor: "var(--mk-border)",
+                      breakInside: "avoid",
+                      pageBreakInside: "avoid",
+                    }}
+                  >
+                    <div className="aspect-video w-full relative overflow-hidden bg-black">
+                      <img
+                        src={video.thumbnailUrl}
+                        alt={video.title}
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                      />
+                    </div>
+                    <div className="p-4 flex-1 flex flex-col justify-between">
+                      <h3 className="font-bold text-xs sm:text-sm line-clamp-2 leading-snug" style={{ color: "var(--mk-text)" }}>
+                        {video.title}
+                      </h3>
+                      <div
+                        className="mt-3 pt-3 border-t flex items-center justify-between text-xs"
+                        style={{ borderColor: "var(--mk-border)" }}
+                      >
+                        <div>
+                          <span style={{ color: "var(--mk-muted)" }}>Views: </span>
+                          <span className="font-bold" style={{ color: "var(--mk-text)" }}>
+                            {renderVal(video.views, formatNumber)}
+                          </span>
+                        </div>
+                        <div>
+                          <span style={{ color: "var(--mk-muted)" }}>Retention: </span>
+                          <span className="font-bold" style={{ color: "var(--mk-accent)" }}>
+                            {renderVal(video.retentionRate, formatPct)}
+                          </span>
+                        </div>
                       </div>
                     </div>
                   </div>
+                ))
+              ) : (
+                <div className="col-span-3 text-center py-8 rounded-2xl border" style={{ backgroundColor: "var(--mk-card)", borderColor: "var(--mk-border)", color: "var(--mk-muted)" }}>
+                  {emDash}
                 </div>
-              ))
-            ) : (
-              <div className="col-span-3 text-center py-8 rounded-2xl border" style={{ backgroundColor: "var(--mk-card)", borderColor: "var(--mk-border)", color: "var(--mk-muted)" }}>
-                {emDash}
-              </div>
-            )}
-          </div>
-        </section>
+              )}
+            </div>
+          </section>
+        )}
 
         {/* ===================================================================
             MEET THE DUO (TWO COLUMNS, NO PAGE BREAK SPLIT)
             Only renders if manual duo_bios entries exist (never an empty shell)
             =================================================================== */}
-        {hasDuoBios && (
+        {hasDuoBios && (!isPrintMode || printSections.duoBios) && (
           <section
-            className="space-y-4"
+            className={`space-y-4 transition-all duration-200 ${
+              !printSections.duoBios ? "print-excluded opacity-65 border-dashed" : ""
+            }`}
             style={{
               breakInside: "avoid",
               pageBreakInside: "avoid",
@@ -1300,6 +1478,10 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
                   Automotive Journalism & Clean Energy Leadership
                 </p>
               </div>
+              <SectionPrintToggle
+                isIncluded={printSections.duoBios}
+                onToggle={() => togglePrintSection("duoBios")}
+              />
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1395,12 +1577,21 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
         {/* ===================================================================
             BEYOND THE CHANNEL (OFF-PLATFORM DATA & WEBSITE RESOURCES)
             =================================================================== */}
-        <section className="space-y-4">
-          <div className="section-header flex items-center justify-between" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
-            <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
-              Beyond the Channel
-            </h2>
-          </div>
+        {(!isPrintMode || printSections.beyondChannel) && (
+          <section
+            className={`space-y-4 transition-all duration-200 ${
+              !printSections.beyondChannel ? "print-excluded opacity-65 border-dashed" : ""
+            }`}
+          >
+            <div className="section-header flex items-center justify-between" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
+              <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
+                Beyond the Channel
+              </h2>
+              <SectionPrintToggle
+                isIncluded={printSections.beyondChannel}
+                onToggle={() => togglePrintSection("beyondChannel")}
+              />
+            </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* Column 1: EV Club Network */}
@@ -1533,14 +1724,17 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
             </div>
           )}
         </section>
+        )}
 
         {/* ===================================================================
             EVENT & TRADE SHOW COVERAGE (DENSE CREDIBILITY INVENTORY)
             Only renders if at least one manual field is populated
             =================================================================== */}
-        {hasEventCoverage && (
+        {hasEventCoverage && (!isPrintMode || printSections.events) && (
           <section
-            className="p-6 sm:p-7 rounded-2xl border space-y-5"
+            className={`p-6 sm:p-7 rounded-2xl border space-y-5 transition-all duration-200 ${
+              !printSections.events ? "print-excluded opacity-65 border-dashed" : ""
+            }`}
             style={{
               backgroundColor: "var(--mk-card)",
               borderColor: "var(--mk-border)",
@@ -1557,6 +1751,10 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
                   On-Site Auto Show, OEM Debut & Industry Conference Credentialing
                 </p>
               </div>
+              <SectionPrintToggle
+                isIncluded={printSections.events}
+                onToggle={() => togglePrintSection("events")}
+              />
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -1625,20 +1823,29 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
         {/* ===================================================================
             7. WORKED WITH (PARTNERS, CASE STUDY, CTA)
             =================================================================== */}
-        <section
-          className="p-6 sm:p-8 rounded-2xl border space-y-8"
-          style={{
-            backgroundColor: "var(--mk-card)",
-            borderColor: "var(--mk-border)",
-            breakInside: "avoid",
-            pageBreakInside: "avoid",
-          }}
-        >
-          {/* Partner Chips */}
-          <div>
-            <h2 className="text-xs uppercase font-bold tracking-wider mb-4" style={{ color: "var(--mk-muted)" }}>
-              Selected Brand Partners & Collaborators
-            </h2>
+        {(!isPrintMode || printSections.partners) && (
+          <section
+            className={`p-6 sm:p-8 rounded-2xl border space-y-8 transition-all duration-200 ${
+              !printSections.partners ? "print-excluded opacity-65 border-dashed" : ""
+            }`}
+            style={{
+              backgroundColor: "var(--mk-card)",
+              borderColor: "var(--mk-border)",
+              breakInside: "avoid",
+              pageBreakInside: "avoid",
+            }}
+          >
+            {/* Partner Chips */}
+            <div>
+              <div className="section-header flex items-center justify-between mb-4" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
+                <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
+                  Selected Brand Partners & Collaborators
+                </h2>
+                <SectionPrintToggle
+                  isIncluded={printSections.partners}
+                  onToggle={() => togglePrintSection("partners")}
+                />
+              </div>
             <div className="flex flex-wrap items-center gap-3">
               {manual?.past_partners && manual.past_partners.length > 0 ? (
                 manual.past_partners.map((partner, idx) => (
@@ -1722,6 +1929,7 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
             </div>
           </div>
         </section>
+        )}
       </div>
 
       {/* ===================================================================
