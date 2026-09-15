@@ -36,3 +36,36 @@
 ::-webkit-scrollbar-thumb:hover {
   background: #334155;
 }
+
+/* Media Kit Theme Palettes */
+.mk-theme {
+  --mk-bg: #0B1520;
+  --mk-card: #121E2A;
+  --mk-border: #1E3140;
+  --mk-text: #E6EDF3;
+  --mk-muted: #8FA3B3;
+  --mk-accent: #00B1E2;
+  --mk-accent-soft: rgba(0, 177, 226, 0.12);
+  --mk-accent-line: rgba(0, 177, 226, 0.30);
+  --mk-warn: #F59E0B;
+}
+
+.mk-theme[data-theme="light"] {
+  --mk-bg: #FFFFFF;
+  --mk-card: #FFFFFF;
+  --mk-border: #D4DDE4;
+  --mk-text: #0B1520;
+  --mk-muted: #4A5A68;
+  --mk-accent: #0077A3;
+  --mk-accent-soft: rgba(0, 119, 163, 0.08);
+  --mk-accent-line: rgba(0, 119, 163, 0.35);
+  --mk-warn: #A15C00;
+}
+
+.mk-theme[data-theme="light"] .shadow-xl,
+.mk-theme[data-theme="light"] .shadow-lg,
+.mk-theme[data-theme="light"] .shadow-md,
+.mk-theme[data-theme="light"] .shadow-sm {
+  box-shadow: none !important;
+}
+

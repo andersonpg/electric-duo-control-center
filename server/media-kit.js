@@ -179,6 +179,86 @@ function saveManualData(data) {
 }
 
 // ---------------------------------------------------------------------------
+// 2b. Media Kit Presets CRUD
+// ---------------------------------------------------------------------------
+
+function parsePresetRow(row) {
+  if (!row) return null;
+  let blocks = [];
+  let order = [];
+  try { blocks = JSON.parse(row.blocks_json || "[]"); } catch (e) {}
+  try { order = JSON.parse(row.order_json || "[]"); } catch (e) {}
+  return {
+    id: row.id,
+    name: row.name,
+    recipient: row.recipient,
+    blocks,
+    order,
+    is_builtin: Boolean(row.is_builtin),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+function getPresets() {
+  const rows = db.prepare("SELECT * FROM media_kit_presets ORDER BY is_builtin DESC, id ASC").all();
+  return rows.map(parsePresetRow);
+}
+
+function getPresetById(id) {
+  const row = db.prepare("SELECT * FROM media_kit_presets WHERE id = ?").get(id);
+  return parsePresetRow(row);
+}
+
+function createPreset({ name, recipient, blocks, order }) {
+  if (!name || !name.trim()) throw new Error("Preset name is required.");
+  const existing = db.prepare("SELECT id FROM media_kit_presets WHERE LOWER(name) = LOWER(?)").get(name.trim());
+  if (existing) throw new Error("A preset with this name already exists.");
+
+  const blocksJson = JSON.stringify(Array.isArray(blocks) ? blocks : []);
+  const orderJson = JSON.stringify(Array.isArray(order) ? order : []);
+  const rec = recipient && recipient.trim() ? recipient.trim() : null;
+
+  const result = db.prepare(`
+    INSERT INTO media_kit_presets (name, recipient, blocks_json, order_json, is_builtin, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+  `).run(name.trim(), rec, blocksJson, orderJson);
+
+  return getPresetById(result.lastInsertRowid);
+}
+
+function updatePreset(id, { name, recipient, blocks, order }) {
+  const existing = db.prepare("SELECT * FROM media_kit_presets WHERE id = ?").get(id);
+  if (!existing) throw new Error("Preset not found.");
+  if (existing.is_builtin) throw new Error("Built-in presets cannot be modified.");
+
+  const newName = name && name.trim() ? name.trim() : existing.name;
+  const duplicate = db.prepare("SELECT id FROM media_kit_presets WHERE LOWER(name) = LOWER(?) AND id != ?").get(newName, id);
+  if (duplicate) throw new Error("Another preset with this name already exists.");
+
+  const blocksJson = blocks !== undefined ? JSON.stringify(Array.isArray(blocks) ? blocks : []) : existing.blocks_json;
+  const orderJson = order !== undefined ? JSON.stringify(Array.isArray(order) ? order : []) : existing.order_json;
+  const rec = recipient !== undefined ? (recipient && recipient.trim() ? recipient.trim() : null) : existing.recipient;
+
+  db.prepare(`
+    UPDATE media_kit_presets
+    SET name = ?, recipient = ?, blocks_json = ?, order_json = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(newName, rec, blocksJson, orderJson, id);
+
+  return getPresetById(id);
+}
+
+function deletePreset(id) {
+  const existing = db.prepare("SELECT * FROM media_kit_presets WHERE id = ?").get(id);
+  if (!existing) throw new Error("Preset not found.");
+  if (existing.is_builtin) throw new Error("Built-in presets cannot be deleted.");
+
+  db.prepare("DELETE FROM media_kit_presets WHERE id = ?").run(id);
+  return { success: true, deletedId: id };
+}
+
+// ---------------------------------------------------------------------------
 // 3. Job A: 28-Day & 365-Day View Capture (Public Only)
 // ---------------------------------------------------------------------------
 
@@ -1164,4 +1244,9 @@ module.exports = {
   getSnapshotJobStatus,
   getLatestSnapshot,
   savePartnerLogo,
+  getPresets,
+  getPresetById,
+  createPreset,
+  updatePreset,
+  deletePreset,
 };

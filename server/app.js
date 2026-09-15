@@ -2867,6 +2867,77 @@ app.post("/api/media-kit/upload-logo", auth.requireAuth(), (req, res, next) => {
   }
 });
 
+// 6. Media Kit Presets CRUD
+app.get("/api/media-kit/presets", auth.requireAuth(), (req, res, next) => {
+  try {
+    const presets = mediaKit.getPresets();
+    res.json({ success: true, presets, data: presets });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post("/api/media-kit/presets", auth.requireAuth(), (req, res, next) => {
+  try {
+    const { name, recipient, blocks, order } = req.body || {};
+    const created = mediaKit.createPreset({ name, recipient, blocks, order });
+    res.status(201).json({ success: true, preset: created, data: created });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put("/api/media-kit/presets/:id", auth.requireAuth(), (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { name, recipient, blocks, order } = req.body || {};
+    const updated = mediaKit.updatePreset(id, { name, recipient, blocks, order });
+    res.json({ success: true, preset: updated, data: updated });
+  } catch (err) {
+    if (err.message.includes("Built-in presets")) {
+      return res.status(403).json({ error: err.message });
+    }
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete("/api/media-kit/presets/:id", auth.requireAuth(), (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const result = mediaKit.deletePreset(id);
+    res.json(result);
+  } catch (err) {
+    if (err.message.includes("Built-in presets")) {
+      return res.status(403).json({ error: err.message });
+    }
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// 7. Media Kit PDF Generation via Puppeteer
+const mediaKitPdf = require("./media-kit-pdf");
+
+app.post("/api/media-kit/pdf", auth.requireAuth(), async (req, res, next) => {
+  try {
+    const { presetId, recipient, blocks, order } = req.body || {};
+    const userId = req.user ? req.user.id : 1;
+    const { pdf, filename } = await mediaKitPdf.generateMediaKitPdf({
+      userId,
+      presetId,
+      recipient,
+      blocks,
+      order,
+    });
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.send(pdf);
+  } catch (err) {
+    console.error("PDF generation failed:", err);
+    res.status(500).json({ error: `PDF generation failed: ${err.message}` });
+  }
+});
+
 /* ---------------- static files & SPA fallback ---------------- */
 
 app.get("/login.html", (req, res) => res.sendFile(path.join(PUBLIC_DIR, "login.html")));

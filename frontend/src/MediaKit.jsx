@@ -23,64 +23,35 @@ import {
   BarChart2,
   Tv,
 } from "lucide-react";
-import SectionPrintToggle from "./SectionPrintToggle";
+import MediaKitPresetBar from "./MediaKitPresetBar";
+import {
+  MEDIA_KIT_BLOCKS,
+  MEDIA_KIT_SECTIONS,
+  SECTION_DEFAULT_ORDER,
+  isBlockAvailable,
+} from "./mediaKitSections";
 
-const DEFAULT_PRINT_SECTIONS = {
-  survey: true,
-  reach: true,
-  featuredIn: true,
-  whoIsWatching: true,
-  pillars: true,
-  recentWork: true,
-  duoBios: true,
-  beyondChannel: true,
-  events: true,
-  partners: true,
-};
-
-function getInitialPrintSections() {
-  if (typeof window === "undefined") return { ...DEFAULT_PRINT_SECTIONS };
-
-  try {
-    const params = new URLSearchParams(window.location.search);
-    if (params.has("exclude")) {
-      const excluded = new Set(params.get("exclude").split(",").map((s) => s.trim()));
-      const res = { ...DEFAULT_PRINT_SECTIONS };
-      for (const key of Object.keys(res)) {
-        if (excluded.has(key)) res[key] = false;
-      }
-      return res;
-    }
-    if (params.has("sections")) {
-      const included = new Set(params.get("sections").split(",").map((s) => s.trim()));
-      const res = {};
-      for (const key of Object.keys(DEFAULT_PRINT_SECTIONS)) {
-        res[key] = included.has(key);
-      }
-      return res;
-    }
-  } catch (e) {}
-
-  try {
-    const saved = localStorage.getItem("media_kit_print_sections");
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (parsed && typeof parsed === "object") {
-        return { ...DEFAULT_PRINT_SECTIONS, ...parsed };
-      }
-    }
-  } catch (e) {}
-
-  return { ...DEFAULT_PRINT_SECTIONS };
-}
-
-export default function MediaKit({ currentUser, isPrintMode = false }) {
+export default function MediaKit({
+  currentUser,
+  isPrintMode = false,
+  printTheme = null,
+  presetIdFromUrl = null,
+  recipientFromUrl = null,
+}) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [snapshot, setSnapshot] = useState(null);
   const [manual, setManual] = useState(null);
   const [effectiveEndDate, setEffectiveEndDate] = useState(null);
-  const [printSections, setPrintSections] = useState(getInitialPrintSections);
+
+  // Preset & Block Registry State
+  const [presets, setPresets] = useState([]);
+  const [activePresetId, setActivePresetId] = useState(presetIdFromUrl ? Number(presetIdFromUrl) : null);
+  const [activeBlocks, setActiveBlocks] = useState(() => new Set(MEDIA_KIT_BLOCKS.map((b) => b.id)));
+  const [sectionOrder, setSectionOrder] = useState(SECTION_DEFAULT_ORDER);
+  const [recipient, setRecipient] = useState(recipientFromUrl || "");
+  const [isDirty, setIsDirty] = useState(false);
+  const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
 
   // Refresh status state
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -117,6 +88,7 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
 
   useEffect(() => {
     fetchMediaKitData();
+    fetchPresets();
     return () => {
       if (pollingTimerRef.current) clearInterval(pollingTimerRef.current);
     };
@@ -175,35 +147,253 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
     }
   };
 
-  const togglePrintSection = (sectionId) => {
-    setPrintSections((prev) => {
-      const next = { ...prev, [sectionId]: !prev[sectionId] };
-      try {
-        localStorage.setItem("media_kit_print_sections", JSON.stringify(next));
-      } catch (e) {}
-      return next;
-    });
-  };
+  const fetchPresets = async () => {
+    try {
+      const res = await fetch("/api/media-kit/presets", { credentials: "same-origin" });
+      if (!res.ok) return;
+      const json = await res.json();
+      if (json.success && Array.isArray(json.presets)) {
+        setPresets(json.presets);
 
-  const setAllPrintSections = (included) => {
-    setPrintSections(() => {
-      const next = {};
-      for (const key of Object.keys(DEFAULT_PRINT_SECTIONS)) {
-        next[key] = included;
+        // Check for legacy localStorage migration once
+        try {
+          const oldSaved = localStorage.getItem("media_kit_print_sections");
+          if (oldSaved) {
+            const parsed = JSON.parse(oldSaved);
+            localStorage.removeItem("media_kit_print_sections");
+            if (parsed && typeof parsed === "object") {
+              const blockIds = [];
+              if (parsed.survey !== false) blockIds.push("survey.stats");
+              if (parsed.reach !== false) blockIds.push("reach.headline", "reach.perVideo", "reach.engagement", "reach.trailing12m");
+              if (parsed.featuredIn !== false) blockIds.push("featuredIn.list");
+              if (parsed.whoIsWatching !== false) blockIds.push("audience.geo", "audience.buyingPower", "audience.intent");
+              if (parsed.pillars !== false) blockIds.push("pillars.bars", "pillars.whoWeReach");
+              if (parsed.recentWork !== false) blockIds.push("recentWork.grid");
+              if (parsed.duoBios !== false) blockIds.push("duoBios.bios");
+              if (parsed.beyondChannel !== false) blockIds.push("beyondChannel.clubs", "beyondChannel.socials");
+              if (parsed.events !== false) blockIds.push("events.shows");
+              if (parsed.partners !== false) blockIds.push("partners.chips", "partners.caseStudy");
+
+              fetch("/api/media-kit/presets", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "same-origin",
+                body: JSON.stringify({
+                  name: "Imported",
+                  blocks: blockIds,
+                  order: SECTION_DEFAULT_ORDER,
+                }),
+              })
+                .then((r) => r.json())
+                .then((d) => {
+                  if (d.success) fetchPresets();
+                })
+                .catch(() => {});
+            }
+          }
+        } catch (e) {}
+
+        const urlId = presetIdFromUrl ? Number(presetIdFromUrl) : null;
+        let chosen = null;
+        if (urlId) {
+          chosen = json.presets.find((p) => p.id === urlId);
+        }
+        if (!chosen) {
+          const savedId = localStorage.getItem("media_kit_active_preset_id");
+          if (savedId) {
+            chosen = json.presets.find((p) => p.id === Number(savedId));
+          }
+        }
+        if (!chosen) {
+          chosen = json.presets.find((p) => p.name === "Full") || json.presets[0];
+        }
+
+        if (chosen) {
+          applyPreset(chosen);
+        }
       }
-      try {
-        localStorage.setItem("media_kit_print_sections", JSON.stringify(next));
-      } catch (e) {}
-      return next;
-    });
+    } catch (e) {
+      console.error("Failed to load presets:", e);
+    }
   };
 
-  const handleOpenPrint = () => {
-    const excluded = Object.entries(printSections)
-      .filter(([_, inc]) => !inc)
-      .map(([id]) => id);
-    const query = excluded.length > 0 ? `?exclude=${encodeURIComponent(excluded.join(","))}` : "";
-    window.open(`/media-kit/print${query}`, "_blank");
+  const applyPreset = (preset) => {
+    try {
+      const parsedBlocks = JSON.parse(preset.blocks_json);
+      const parsedOrder = JSON.parse(preset.order_json);
+      setActiveBlocks(new Set(Array.isArray(parsedBlocks) ? parsedBlocks : []));
+      setSectionOrder(Array.isArray(parsedOrder) && parsedOrder.length > 0 ? parsedOrder : SECTION_DEFAULT_ORDER);
+      setActivePresetId(preset.id);
+      if (recipientFromUrl) {
+        setRecipient(recipientFromUrl);
+      } else if (preset.recipient != null) {
+        setRecipient(preset.recipient || "");
+      }
+      setIsDirty(false);
+      try {
+        localStorage.setItem("media_kit_active_preset_id", String(preset.id));
+      } catch (e) {}
+    } catch (e) {
+      console.error("Error applying preset:", e);
+    }
+  };
+
+  const handleSelectPreset = (presetId) => {
+    const p = presets.find((item) => item.id === presetId);
+    if (p) {
+      applyPreset(p);
+    }
+  };
+
+  const handleToggleBlock = (blockId) => {
+    setActiveBlocks((prev) => {
+      const next = new Set(prev);
+      if (next.has(blockId)) next.delete(blockId);
+      else next.add(blockId);
+      return next;
+    });
+    setIsDirty(true);
+  };
+
+  const handleSelectAllSectionBlocks = (sectionId, selectAll) => {
+    const secBlocks = MEDIA_KIT_BLOCKS.filter((b) => b.section === sectionId && isBlockAvailable(b.id, guards));
+    setActiveBlocks((prev) => {
+      const next = new Set(prev);
+      for (const b of secBlocks) {
+        if (selectAll) next.add(b.id);
+        else next.delete(b.id);
+      }
+      return next;
+    });
+    setIsDirty(true);
+  };
+
+  const handleReorderSection = (fromIndex, toIndex) => {
+    if (toIndex < 0 || toIndex >= sectionOrder.length) return;
+    setSectionOrder((prev) => {
+      const next = [...prev];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, moved);
+      return next;
+    });
+    setIsDirty(true);
+  };
+
+  const handleSaveAs = async (name, rec) => {
+    const res = await fetch("/api/media-kit/presets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({
+        name,
+        recipient: rec || null,
+        blocks: Array.from(activeBlocks),
+        order: sectionOrder,
+      }),
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || "Failed to create preset");
+    await fetchPresets();
+    setActivePresetId(data.preset.id);
+    setRecipient(data.preset.recipient || "");
+    setIsDirty(false);
+  };
+
+  const handleUpdatePreset = async () => {
+    if (!activePresetId || activePresetId === "custom") return;
+    const activePreset = presets.find((p) => p.id === activePresetId);
+    if (!activePreset || activePreset.is_builtin) return;
+
+    try {
+      const res = await fetch(`/api/media-kit/presets/${activePresetId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          name: activePreset.name,
+          recipient: recipient || null,
+          blocks: Array.from(activeBlocks),
+          order: sectionOrder,
+        }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || "Failed to update preset");
+      await fetchPresets();
+      setIsDirty(false);
+    } catch (err) {
+      alert(err.message || "Failed to update preset");
+    }
+  };
+
+  const handleDeletePreset = async () => {
+    if (!activePresetId || activePresetId === "custom") return;
+    const activePreset = presets.find((p) => p.id === activePresetId);
+    if (!activePreset || activePreset.is_builtin) return;
+    if (!confirm(`Are you sure you want to delete preset "${activePreset.name}"?`)) return;
+
+    try {
+      const res = await fetch(`/api/media-kit/presets/${activePresetId}`, {
+        method: "DELETE",
+        credentials: "same-origin",
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || "Failed to delete preset");
+      const remaining = presets.filter((p) => p.id !== activePresetId);
+      setPresets(remaining);
+      const fallback = remaining.find((p) => p.name === "Full") || remaining[0];
+      if (fallback) applyPreset(fallback);
+    } catch (err) {
+      alert(err.message || "Failed to delete preset");
+    }
+  };
+
+  const handleDownloadPdf = async () => {
+    setIsDownloadingPdf(true);
+    try {
+      const activePreset = presets.find((p) => p.id === activePresetId);
+      const res = await fetch("/api/media-kit/pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          presetId: activePresetId,
+          recipient: recipient || undefined,
+          blocks: Array.from(activeBlocks),
+          order: sectionOrder,
+        }),
+      });
+
+      if (!res.ok) {
+        const url = `/media-kit/print?theme=light&preset=${activePresetId || ""}${
+          recipient ? `&recipient=${encodeURIComponent(recipient)}` : ""
+        }`;
+        window.open(url, "_blank");
+        return;
+      }
+
+      const blob = await res.blob();
+      const contentDisposition = res.headers.get("content-disposition") || "";
+      let filename = `ElectricDuo-MediaKit-${activePreset?.name || "Kit"}.pdf`;
+      const match = contentDisposition.match(/filename="?([^"]+)"?/);
+      if (match && match[1]) filename = match[1];
+
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(blobUrl);
+    } catch (err) {
+      console.warn("PDF generation error, opening preview tab:", err);
+      const url = `/media-kit/print?theme=light&preset=${activePresetId || ""}${
+        recipient ? `&recipient=${encodeURIComponent(recipient)}` : ""
+      }`;
+      window.open(url, "_blank");
+    } finally {
+      setIsDownloadingPdf(false);
+    }
   };
 
   const handleSaveManual = async (e) => {
@@ -393,17 +583,18 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
     return `Q${q} ${d.getFullYear()}`;
   })();
 
+  const isLight = isPrintMode
+    ? printTheme === "light" ||
+      (typeof window !== "undefined" &&
+        new URLSearchParams(window.location.search).get("theme") === "light")
+    : false;
+
   if (loading) {
     return (
       <div
-        className="min-h-screen flex items-center justify-center font-sans"
+        className="min-h-screen flex items-center justify-center font-sans mk-theme"
+        data-theme={isLight ? "light" : "dark"}
         style={{
-          "--mk-bg": "#0B1520",
-          "--mk-card": "#121E2A",
-          "--mk-border": "#1E3140",
-          "--mk-text": "#E6EDF3",
-          "--mk-muted": "#8FA3B3",
-          "--mk-accent": "#00B1E2",
           backgroundColor: "var(--mk-bg)",
           color: "var(--mk-text)",
         }}
@@ -488,213 +679,71 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
     (manual?.speaking_appearances && manual.speaking_appearances.length > 0);
 
   const hasWebsiteResources = manual?.website_resources && manual.website_resources.length > 0;
+  const hasCaseStudy = !!(manual?.case_study && manual.case_study.title);
+  const hasPartners = !!(manual?.past_partners && manual.past_partners.length > 0);
 
-  const availableSectionKeys = [
-    "survey",
-    "reach",
-    ...(hasFeaturedIn ? ["featuredIn"] : []),
-    "whoIsWatching",
-    "pillars",
-    "recentWork",
-    ...(hasDuoBios ? ["duoBios"] : []),
-    "beyondChannel",
-    ...(hasEventCoverage ? ["events"] : []),
-    "partners",
-  ];
-  const includedCount = availableSectionKeys.filter((k) => printSections[k] !== false).length;
-  const totalAvailableSections = availableSectionKeys.length;
+  const guards = {
+    hasFeaturedIn,
+    hasDuoBios,
+    hasEventCoverage,
+    hasWebsiteResources,
+    hasCaseStudy,
+    hasPartners,
+  };
 
-  return (
+  const renderContactCta = () => (
     <div
-      className={`min-h-screen font-sans antialiased selection:bg-cyan-500 selection:text-slate-950 ${
-        isPrintMode ? "p-0 bg-[#0B1520]" : "p-4 sm:p-8"
+      className={`rounded-2xl border flex flex-col md:flex-row md:items-center justify-between gap-6 ${
+        isPrintMode ? "p-4" : "p-6"
       }`}
       style={{
-        "--mk-bg": "#0B1520",
-        "--mk-card": "#121E2A",
-        "--mk-border": "#1E3140",
-        "--mk-text": "#E6EDF3",
-        "--mk-muted": "#8FA3B3",
-        "--mk-accent": "#00B1E2",
-        backgroundColor: "var(--mk-bg)",
-        color: "var(--mk-text)",
+        backgroundColor: "var(--mk-card)",
+        borderColor: "var(--mk-border)",
+        breakInside: "avoid",
+        pageBreakInside: "avoid",
       }}
     >
-      <div className={`max-w-6xl mx-auto ${isPrintMode ? "space-y-6" : "space-y-8"}`}>
-        {/* ===================================================================
-            1. HEADER
-            =================================================================== */}
-        <header
-          className="rounded-2xl p-6 sm:p-8 border shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-6"
+      <div>
+        <h4 className="text-base font-bold" style={{ color: "var(--mk-text)" }}>
+          Ready to collaborate?
+        </h4>
+        <p className="text-xs mt-1 max-w-xl" style={{ color: "var(--mk-muted)" }}>
+          {manual?.contact_details?.cta_text ||
+            "Partner with The Electric Duo to showcase your brand to the most engaged EV audience."}
+        </p>
+      </div>
+
+      <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 shrink-0">
+        <a
+          href={`mailto:${manual?.contact_details?.email || "partnerships@theelectricduo.com"}`}
+          className="px-5 py-2.5 rounded-xl font-bold text-xs shadow-lg transition-all"
           style={{
-            backgroundColor: "var(--mk-card)",
-            borderColor: "var(--mk-border)",
-            breakInside: "avoid",
-            pageBreakInside: "avoid",
+            backgroundColor: "var(--mk-accent)",
+            color: "var(--mk-bg)",
           }}
         >
-          <div className="flex items-center gap-4 sm:gap-6">
-            {manual?.header_logo_url && manual?.use_logo_only ? (
-              <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-5">
-                <img
-                  src={manual.header_logo_url}
-                  alt="The Electric Duo"
-                  className="h-10 sm:h-12 w-auto max-w-xs sm:max-w-md object-contain"
-                />
-                <div>
-                  <span
-                    className="inline-block text-xs uppercase font-bold tracking-widest px-2.5 py-1 rounded-full border"
-                    style={{
-                      backgroundColor: "rgba(0, 177, 226, 0.12)",
-                      color: "var(--mk-accent)",
-                      borderColor: "rgba(0, 177, 226, 0.3)",
-                    }}
-                  >
-                    Partnership Media Kit
-                  </span>
-                  <p className="text-sm mt-1" style={{ color: "var(--mk-muted)" }}>
-                    {currentQuarterLabel} · Data as of{" "}
-                    <span className="font-semibold" style={{ color: "var(--mk-text)" }}>
-                      {effectiveEndDate || emDash}
-                    </span>
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <>
-                {manual?.header_logo_url ? (
-                  <img
-                    src={manual.header_logo_url}
-                    alt="The Electric Duo"
-                    className="h-14 sm:h-16 w-auto max-w-xs rounded-xl object-contain p-1 border shadow-lg shrink-0"
-                    style={{
-                      backgroundColor: "var(--mk-card)",
-                      borderColor: "var(--mk-border)",
-                    }}
-                  />
-                ) : (
-                  <div
-                    className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl flex items-center justify-center font-black text-2xl sm:text-3xl shadow-lg shrink-0"
-                    style={{
-                      backgroundColor: "var(--mk-accent)",
-                      color: "var(--mk-bg)",
-                    }}
-                  >
-                    ED
-                  </div>
-                )}
-                <div>
-                  <div className="flex items-center gap-3">
-                    <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight" style={{ color: "var(--mk-text)" }}>
-                      The Electric Duo
-                    </h1>
-                    <span
-                      className="text-xs uppercase font-bold tracking-widest px-2.5 py-1 rounded-full border"
-                      style={{
-                        backgroundColor: "rgba(0, 177, 226, 0.12)",
-                        color: "var(--mk-accent)",
-                        borderColor: "rgba(0, 177, 226, 0.3)",
-                      }}
-                    >
-                      Partnership Media Kit
-                    </span>
-                  </div>
-                  <p className="text-sm mt-1" style={{ color: "var(--mk-muted)" }}>
-                    {currentQuarterLabel} · Data as of{" "}
-                    <span className="font-semibold" style={{ color: "var(--mk-text)" }}>
-                      {effectiveEndDate || emDash}
-                    </span>
-                  </p>
-                </div>
-              </>
-            )}
-          </div>
+          Contact {manual?.contact_details?.name || "The Duo"}
+        </a>
+        <span className="text-xs font-mono font-semibold" style={{ color: "var(--mk-muted)" }}>
+          {manual?.contact_details?.email || "partnerships@theelectricduo.com"}
+        </span>
+      </div>
+    </div>
+  );
 
-          {!isPrintMode && (
-            <div className="flex flex-wrap items-center gap-3">
-              <div
-                className="flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-semibold shadow-sm"
-                style={{
-                  borderColor: "var(--mk-border)",
-                  backgroundColor: "var(--mk-bg)",
-                }}
-              >
-                <span style={{ color: "var(--mk-muted)" }}>PDF:</span>
-                <span
-                  className="font-bold"
-                  style={{
-                    color: includedCount === totalAvailableSections ? "var(--mk-accent)" : "#FBBF24",
-                  }}
-                >
-                  {includedCount}/{totalAvailableSections} sections
-                </span>
-                {includedCount < totalAvailableSections && (
-                  <button
-                    onClick={() => setAllPrintSections(true)}
-                    className="ml-1 text-[11px] font-bold underline hover:opacity-80 transition-opacity"
-                    style={{ color: "var(--mk-accent)" }}
-                  >
-                    Include all
-                  </button>
-                )}
-              </div>
-
-              <button
-                onClick={handleRefreshNow}
-                disabled={isRefreshing}
-                className="flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all border shadow-sm"
-                style={{
-                  backgroundColor: isRefreshing ? "rgba(0, 177, 226, 0.15)" : "var(--mk-bg)",
-                  color: isRefreshing ? "var(--mk-accent)" : "var(--mk-text)",
-                  borderColor: "var(--mk-border)",
-                }}
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
-                <span>{isRefreshing ? refreshMessage || "Refreshing…" : "Refresh now"}</span>
-              </button>
-
-              <button
-                onClick={() => setEditModalOpen(true)}
-                className="flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all border shadow-sm"
-                style={{
-                  backgroundColor: "var(--mk-bg)",
-                  color: "var(--mk-text)",
-                  borderColor: "var(--mk-border)",
-                }}
-              >
-                <Edit3 className="w-3.5 h-3.5" style={{ color: "var(--mk-accent)" }} />
-                <span>Edit off-platform data</span>
-              </button>
-
-              <button
-                onClick={handleOpenPrint}
-                className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-md"
-                style={{
-                  backgroundColor: "var(--mk-accent)",
-                  color: "var(--mk-bg)",
-                }}
-              >
-                <Download className="w-3.5 h-3.5 stroke-[2.5]" />
-                <span>Download</span>
-              </button>
-            </div>
-          )}
-        </header>
-
-        {/* ===================================================================
-            PROMINENT HIGH-VALUE ASSET: AUDIENCE SURVEY (AT THE TOP)
-            Proves qualified in-market buyers, not passive browsers
-            =================================================================== */}
-        {(!isPrintMode || printSections.survey) && (
+  const renderSection = (sectionId) => {
+    switch (sectionId) {
+      case "survey": {
+        if (!activeBlocks.has("survey.stats")) return null;
+        return (
           <section
-            className={`p-6 sm:p-7 rounded-2xl border relative overflow-hidden transition-all duration-200 ${
-              !printSections.survey ? "print-excluded opacity-65 border-dashed" : ""
+            key="survey"
+            className={`rounded-2xl border relative overflow-hidden transition-all duration-200 ${
+              isPrintMode ? "p-4" : "p-6 sm:p-7"
             }`}
             style={{
               backgroundColor: "var(--mk-card)",
-              borderColor: "rgba(0, 177, 226, 0.35)",
-              breakInside: "avoid",
-              pageBreakInside: "avoid",
+              borderColor: "var(--mk-accent-line)",
             }}
           >
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
@@ -702,9 +751,9 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
                 <span
                   className="text-[10px] font-extrabold uppercase tracking-widest px-2.5 py-0.5 rounded-full border"
                   style={{
-                    backgroundColor: "rgba(0, 177, 226, 0.15)",
+                    backgroundColor: "var(--mk-accent-soft)",
                     color: "var(--mk-accent)",
-                    borderColor: "rgba(0, 177, 226, 0.4)",
+                    borderColor: "var(--mk-accent-line)",
                   }}
                 >
                   Audience In-Market Qualification
@@ -713,325 +762,334 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
                   Verified Audience Survey Data
                 </span>
               </div>
-              <div className="flex items-center gap-3">
-                <span className="text-[11px]" style={{ color: "var(--mk-muted)" }}>
-                  {surveyData.survey_source}
-                </span>
-                <SectionPrintToggle
-                  isIncluded={printSections.survey}
-                  onToggle={() => togglePrintSection("survey")}
-                />
-              </div>
+              <span className="text-[11px]" style={{ color: "var(--mk-muted)" }}>
+                Source: {surveyData.survey_source}
+              </span>
             </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div
-              className="p-4 rounded-xl border"
-              style={{ backgroundColor: "var(--mk-bg)", borderColor: "var(--mk-border)" }}
-            >
-              <div className="text-3xl sm:text-4xl font-black tracking-tight" style={{ color: "var(--mk-accent)" }}>
-                {surveyData.ev_ownership_pct}
+            <div className={`grid gap-4 ${isPrintMode ? "grid-cols-3" : "grid-cols-1 sm:grid-cols-3"}`}>
+              <div
+                className={`rounded-xl border ${isPrintMode ? "p-3.5" : "p-5"}`}
+                style={{
+                  backgroundColor: "var(--mk-bg)",
+                  borderColor: "var(--mk-border)",
+                  breakInside: "avoid",
+                  pageBreakInside: "avoid",
+                }}
+              >
+                <div className={`${isPrintMode ? "text-2xl" : "text-3xl sm:text-4xl"} font-black tracking-tight`} style={{ color: "var(--mk-accent)" }}>
+                  {surveyData.ev_ownership_pct}
+                </div>
+                <div className="text-xs font-bold mt-1.5" style={{ color: "var(--mk-text)" }}>
+                  {surveyData.ev_ownership_label}
+                </div>
+                <p className="text-[11px] mt-1" style={{ color: "var(--mk-muted)" }}>
+                  Current vehicle footprint: Ford Mustang Mach-E, F-150 Lightning, Tesla, Rivian, and Hyundai/Kia E-GMP.
+                </p>
               </div>
-              <div className="text-xs font-bold mt-1.5" style={{ color: "var(--mk-text)" }}>
-                {surveyData.ev_ownership_label}
-              </div>
-              <p className="text-[11px] mt-1" style={{ color: "var(--mk-muted)" }}>
-                Active electric vehicle drivers with hands-on ownership experience.
-              </p>
-            </div>
 
-            <div
-              className="p-4 rounded-xl border"
-              style={{ backgroundColor: "var(--mk-bg)", borderColor: "var(--mk-border)" }}
-            >
-              <div className="text-3xl sm:text-4xl font-black tracking-tight" style={{ color: "var(--mk-accent)" }}>
-                {surveyData.next_ev_purchase_pct}
+              <div
+                className={`rounded-xl border ${isPrintMode ? "p-3.5" : "p-5"}`}
+                style={{
+                  backgroundColor: "var(--mk-bg)",
+                  borderColor: "var(--mk-border)",
+                  breakInside: "avoid",
+                  pageBreakInside: "avoid",
+                }}
+              >
+                <div className={`${isPrintMode ? "text-2xl" : "text-3xl sm:text-4xl"} font-black tracking-tight`} style={{ color: "var(--mk-accent)" }}>
+                  {surveyData.next_ev_purchase_pct}
+                </div>
+                <div className="text-xs font-bold mt-1.5" style={{ color: "var(--mk-text)" }}>
+                  {surveyData.next_ev_purchase_label}
+                </div>
+                <p className="text-[11px] mt-1" style={{ color: "var(--mk-muted)" }}>
+                  Active consideration window across second EV purchases and fleet additions.
+                </p>
               </div>
-              <div className="text-xs font-bold mt-1.5" style={{ color: "var(--mk-text)" }}>
-                {surveyData.next_ev_purchase_label}
-              </div>
-              <p className="text-[11px] mt-1" style={{ color: "var(--mk-muted)" }}>
-                High-intent prospective buyers actively evaluating their next vehicle.
-              </p>
-            </div>
 
-            <div
-              className="p-4 rounded-xl border"
-              style={{ backgroundColor: "var(--mk-bg)", borderColor: "var(--mk-border)" }}
-            >
-              <div className="text-3xl sm:text-4xl font-black tracking-tight" style={{ color: "var(--mk-accent)" }}>
-                {surveyData.home_charging_pct}
+              <div
+                className={`rounded-xl border ${isPrintMode ? "p-3.5" : "p-5"}`}
+                style={{
+                  backgroundColor: "var(--mk-bg)",
+                  borderColor: "var(--mk-border)",
+                  breakInside: "avoid",
+                  pageBreakInside: "avoid",
+                }}
+              >
+                <div className={`${isPrintMode ? "text-2xl" : "text-3xl sm:text-4xl"} font-black tracking-tight`} style={{ color: "var(--mk-accent)" }}>
+                  {surveyData.home_charging_pct}
+                </div>
+                <div className="text-xs font-bold mt-1.5" style={{ color: "var(--mk-text)" }}>
+                  {surveyData.home_charging_label}
+                </div>
+                <p className="text-[11px] mt-1" style={{ color: "var(--mk-muted)" }}>
+                  Prime market for clean-energy hardware, battery backup, and home solar.
+                </p>
               </div>
-              <div className="text-xs font-bold mt-1.5" style={{ color: "var(--mk-text)" }}>
-                {surveyData.home_charging_label}
-              </div>
-              <p className="text-[11px] mt-1" style={{ color: "var(--mk-muted)" }}>
-                Prime market for clean-energy hardware, battery backup, and home solar.
-              </p>
             </div>
-          </div>
-        </section>
-        )}
+          </section>
+        );
+      }
 
-        {/* ===================================================================
-            2. REACH
-            =================================================================== */}
-        {(!isPrintMode || printSections.reach) && (
-          <section
-            className={`space-y-4 transition-all duration-200 ${
-              !printSections.reach ? "print-excluded opacity-65 border-dashed" : ""
-            }`}
-          >
+      case "reach": {
+        const hasHeadline = activeBlocks.has("reach.headline");
+        const hasPerVideo = activeBlocks.has("reach.perVideo");
+        const hasEngagement = activeBlocks.has("reach.engagement");
+        const hasTrailing = activeBlocks.has("reach.trailing12m");
+        if (!hasHeadline && !hasPerVideo && !hasEngagement && !hasTrailing) return null;
+
+        return (
+          <section key="reach" className="space-y-4">
             <div className="section-header flex items-center justify-between" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
               <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
                 Channel Reach & Performance
               </h2>
-              <SectionPrintToggle
-                isIncluded={printSections.reach}
-                onToggle={() => togglePrintSection("reach")}
-              />
             </div>
 
-          {/* 4 Stat Cards */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <div
-              className="p-5 rounded-2xl border"
-              style={{
-                backgroundColor: "var(--mk-card)",
-                borderColor: "var(--mk-border)",
-                breakInside: "avoid",
-                pageBreakInside: "avoid",
-              }}
-            >
-              <div className="text-xs font-medium" style={{ color: "var(--mk-muted)" }}>
-                YouTube Subscribers
-              </div>
-              <div className="text-2xl sm:text-3xl font-black mt-2 tracking-tight" style={{ color: "var(--mk-text)" }}>
-                {renderVal(snapshot?.reach?.subscribers, formatNumber)}
-              </div>
-              <div className="text-[11px] mt-1" style={{ color: "var(--mk-muted)" }}>
-                Core subscriber base
-              </div>
-            </div>
-
-            <div
-              className="p-5 rounded-2xl border"
-              style={{
-                backgroundColor: "var(--mk-card)",
-                borderColor: "var(--mk-border)",
-                breakInside: "avoid",
-                pageBreakInside: "avoid",
-              }}
-            >
-              <div className="text-xs font-medium" style={{ color: "var(--mk-muted)" }}>
-                Monthly Views
-              </div>
-              <div className="text-2xl sm:text-3xl font-black mt-2 tracking-tight" style={{ color: "var(--mk-text)" }}>
-                {renderVal(snapshot?.reach?.monthlyViews, formatCompact)}
-              </div>
-              <div className="text-[11px] mt-1" style={{ color: "var(--mk-muted)" }}>
-                Average monthly video views
-              </div>
-            </div>
-
-            <div
-              className="p-5 rounded-2xl border"
-              style={{
-                backgroundColor: "var(--mk-card)",
-                borderColor: "var(--mk-border)",
-                breakInside: "avoid",
-                pageBreakInside: "avoid",
-              }}
-            >
-              <div className="text-xs font-medium" style={{ color: "var(--mk-muted)" }}>
-                Lifetime Views
-              </div>
-              <div className="text-2xl sm:text-3xl font-black mt-2 tracking-tight" style={{ color: "var(--mk-text)" }}>
-                {renderVal(snapshot?.reach?.lifetimeViews, formatCompact)}
-              </div>
-              <div className="text-[11px] mt-1" style={{ color: "var(--mk-muted)" }}>
-                Total channel catalog views
-              </div>
-            </div>
-
-            <div
-              className="p-5 rounded-2xl border"
-              style={{
-                backgroundColor: "var(--mk-card)",
-                borderColor: "var(--mk-border)",
-                breakInside: "avoid",
-                pageBreakInside: "avoid",
-              }}
-            >
-              <div className="text-xs font-medium" style={{ color: "var(--mk-muted)" }}>
-                Annual Watch Hours
-              </div>
-              <div className="text-2xl sm:text-3xl font-black mt-2 tracking-tight" style={{ color: "var(--mk-text)" }}>
-                {renderVal(snapshot?.reach?.annualWatchHours, formatCompact)}
-              </div>
-              <div className="text-[11px] mt-1" style={{ color: "var(--mk-muted)" }}>
-                Trailing 12-month watch time
-              </div>
-            </div>
-          </div>
-
-          {/* 2 Wider Cards (Sales Framed) */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Card 1: Expected 30-Day Reach Per Video */}
-            <div
-              className="p-6 rounded-2xl border flex flex-col justify-between"
-              style={{
-                backgroundColor: "var(--mk-card)",
-                borderColor: "var(--mk-border)",
-                breakInside: "avoid",
-                pageBreakInside: "avoid",
-              }}
-            >
-              <div>
-                <div className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--mk-muted)" }}>
-                  Expected 30-Day Reach per Video
-                </div>
-                <div className="flex items-baseline gap-3 mt-3">
-                  <span className="text-3xl sm:text-4xl font-black tracking-tight" style={{ color: "var(--mk-text)" }}>
-                    {expectedReachText}
-                  </span>
-                </div>
-                <p className="text-xs mt-2" style={{ color: "var(--mk-muted)" }}>
-                  Consistent 30-day baseline across trailing 12-month uploads ({formatNumber(median)} median views baseline).
-                </p>
-              </div>
-
-              <div
-                className="mt-6 pt-4 border-t flex items-center justify-between text-xs"
-                style={{ borderColor: "var(--mk-border)" }}
-              >
-                <div>
-                  <span style={{ color: "var(--mk-muted)" }}>Core Window: </span>
-                  <span className="font-bold" style={{ color: "var(--mk-text)" }}>
-                    First 30 Days Post-Upload
-                  </span>
-                </div>
-                <div>
-                  <span style={{ color: "var(--mk-muted)" }}>Format: </span>
-                  <span className="font-bold" style={{ color: "var(--mk-text)" }}>
-                    Long-Form Dedicated (≥ 4 min)
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Card 2: Audience Engagement & Evergreen Search Value */}
-            <div
-              className="p-6 rounded-2xl border flex flex-col justify-between"
-              style={{
-                backgroundColor: "var(--mk-card)",
-                borderColor: "var(--mk-border)",
-                breakInside: "avoid",
-                pageBreakInside: "avoid",
-              }}
-            >
-              <div>
-                <div className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--mk-muted)" }}>
-                  Audience Engagement & Retention (Long-Form)
-                </div>
-                <div className="grid grid-cols-2 gap-4 mt-3">
-                  <div>
-                    <div className="text-3xl sm:text-4xl font-black tracking-tight" style={{ color: "var(--mk-text)" }}>
-                      {renderVal(snapshot?.reach?.avgViewPercentage, formatPct)}
-                    </div>
-                    <div className="text-xs font-semibold mt-1" style={{ color: "var(--mk-accent)" }}>
-                      Avg % Viewed (Trailing 90d)
-                    </div>
+            {hasHeadline && (
+              <div className={`grid gap-4 ${isPrintMode ? "grid-cols-4" : "grid-cols-2 lg:grid-cols-4"}`}>
+                <div
+                  className={`rounded-2xl border ${isPrintMode ? "p-3.5" : "p-5"}`}
+                  style={{
+                    backgroundColor: "var(--mk-card)",
+                    borderColor: "var(--mk-border)",
+                    breakInside: "avoid",
+                    pageBreakInside: "avoid",
+                  }}
+                >
+                  <div className="text-xs font-medium" style={{ color: "var(--mk-muted)" }}>
+                    YouTube Subscribers
                   </div>
-                  <div>
-                    <div className="text-3xl sm:text-4xl font-black tracking-tight" style={{ color: "var(--mk-text)" }}>
-                      {renderVal(snapshot?.reach?.engagementRate, formatPct)}
-                    </div>
-                    <div className="text-xs font-semibold mt-1" style={{ color: "var(--mk-accent)" }}>
-                      Engagement Rate (Trailing 90d)
-                    </div>
+                  <div className={`${isPrintMode ? "text-2xl" : "text-2xl sm:text-3xl"} font-black mt-2 tracking-tight`} style={{ color: "var(--mk-text)" }}>
+                    {renderVal(snapshot?.reach?.subscribers, formatNumber)}
+                  </div>
+                  <div className="text-[11px] mt-1" style={{ color: "var(--mk-muted)" }}>
+                    Core subscriber base
                   </div>
                 </div>
-                <p className="text-xs mt-3" style={{ color: "var(--mk-muted)" }}>
-                  Measured exclusively on long-form uploads over 4 minutes.
-                </p>
-              </div>
 
-              <div
-                className="mt-6 pt-4 border-t flex items-center justify-between text-xs"
-                style={{ borderColor: "var(--mk-border)" }}
-              >
-                <div className="flex items-center gap-1.5">
-                  <span className="font-bold" style={{ color: "var(--mk-accent)" }}>
-                    Evergreen Search Value:
-                  </span>
-                  <span style={{ color: "var(--mk-text)" }}>
-                    High sustained views from active buyers researching specific models.
-                  </span>
+                <div
+                  className={`rounded-2xl border ${isPrintMode ? "p-3.5" : "p-5"}`}
+                  style={{
+                    backgroundColor: "var(--mk-card)",
+                    borderColor: "var(--mk-border)",
+                    breakInside: "avoid",
+                    pageBreakInside: "avoid",
+                  }}
+                >
+                  <div className="text-xs font-medium" style={{ color: "var(--mk-muted)" }}>
+                    Monthly Views
+                  </div>
+                  <div className={`${isPrintMode ? "text-2xl" : "text-2xl sm:text-3xl"} font-black mt-2 tracking-tight`} style={{ color: "var(--mk-text)" }}>
+                    {renderVal(snapshot?.reach?.monthlyViews, formatCompact)}
+                  </div>
+                  <div className="text-[11px] mt-1" style={{ color: "var(--mk-muted)" }}>
+                    Average monthly video views
+                  </div>
+                </div>
+
+                <div
+                  className={`rounded-2xl border ${isPrintMode ? "p-3.5" : "p-5"}`}
+                  style={{
+                    backgroundColor: "var(--mk-card)",
+                    borderColor: "var(--mk-border)",
+                    breakInside: "avoid",
+                    pageBreakInside: "avoid",
+                  }}
+                >
+                  <div className="text-xs font-medium" style={{ color: "var(--mk-muted)" }}>
+                    Lifetime Views
+                  </div>
+                  <div className={`${isPrintMode ? "text-2xl" : "text-2xl sm:text-3xl"} font-black mt-2 tracking-tight`} style={{ color: "var(--mk-text)" }}>
+                    {renderVal(snapshot?.reach?.lifetimeViews, formatCompact)}
+                  </div>
+                  <div className="text-[11px] mt-1" style={{ color: "var(--mk-muted)" }}>
+                    Total channel catalog views
+                  </div>
+                </div>
+
+                <div
+                  className={`rounded-2xl border ${isPrintMode ? "p-3.5" : "p-5"}`}
+                  style={{
+                    backgroundColor: "var(--mk-card)",
+                    borderColor: "var(--mk-border)",
+                    breakInside: "avoid",
+                    pageBreakInside: "avoid",
+                  }}
+                >
+                  <div className="text-xs font-medium" style={{ color: "var(--mk-muted)" }}>
+                    Annual Watch Hours
+                  </div>
+                  <div className={`${isPrintMode ? "text-2xl" : "text-2xl sm:text-3xl"} font-black mt-2 tracking-tight`} style={{ color: "var(--mk-text)" }}>
+                    {renderVal(snapshot?.reach?.annualWatchHours, formatCompact)}
+                  </div>
+                  <div className="text-[11px] mt-1" style={{ color: "var(--mk-muted)" }}>
+                    Trailing 12-month watch time
+                  </div>
                 </div>
               </div>
-            </div>
-          </div>
-
-          {/* Audience Reach (Trailing 12 Complete Months Stat Block) */}
-          <div
-            className="p-6 rounded-2xl border"
-            style={{
-              backgroundColor: "var(--mk-card)",
-              borderColor: "var(--mk-border)",
-              breakInside: "avoid",
-              pageBreakInside: "avoid",
-            }}
-          >
-            <div className="section-header flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
-              <div>
-                <h3 className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--mk-muted)" }}>
-                  Audience Reach
-                </h3>
-                <div className="text-sm font-bold mt-0.5" style={{ color: "var(--mk-text)" }}>
-                  Trailing 12 Complete Months
-                </div>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="p-4 rounded-xl border" style={{ backgroundColor: "var(--mk-bg)", borderColor: "var(--mk-border)" }}>
-                <div className="text-xs font-medium" style={{ color: "var(--mk-muted)" }}>
-                  Total Views (Trailing 12 Complete Months)
-                </div>
-                <div className="text-2xl sm:text-3xl font-black mt-1 tracking-tight" style={{ color: "var(--mk-text)" }}>
-                  {renderVal(snapshot?.trailing12m?.totalViews, formatNumber)}
-                </div>
-              </div>
-
-              <div className="p-4 rounded-xl border" style={{ backgroundColor: "var(--mk-bg)", borderColor: "var(--mk-border)" }}>
-                <div className="text-xs font-medium" style={{ color: "var(--mk-muted)" }}>
-                  Average Monthly Views
-                </div>
-                <div className="text-2xl sm:text-3xl font-black mt-1 tracking-tight" style={{ color: "var(--mk-accent)" }}>
-                  {renderVal(snapshot?.trailing12m?.monthlyAverageViews, formatNumber)}
-                </div>
-              </div>
-            </div>
-
-            {manual?.audience_reach_caption && manual.audience_reach_caption.trim() !== "" && (
-              <p className="text-xs mt-3 leading-relaxed" style={{ color: "var(--mk-muted)" }}>
-                {manual.audience_reach_caption}
-              </p>
             )}
-          </div>
-        </section>
-        )}
 
-        {/* ===================================================================
-            FEATURED IN & INDUSTRY RECOGNITION (COMPACT STRIP)
-            Only renders if manual entries exist (never an empty shell)
-            =================================================================== */}
-        {hasFeaturedIn && (!isPrintMode || printSections.featuredIn) && (
+            {(hasPerVideo || hasEngagement) && (
+              <div className={`grid gap-4 ${hasPerVideo && hasEngagement ? (isPrintMode ? "grid-cols-2" : "grid-cols-1 md:grid-cols-2") : "grid-cols-1"}`}>
+                {hasPerVideo && (
+                  <div
+                    className={`rounded-2xl border flex flex-col justify-between ${isPrintMode ? "p-4" : "p-6"}`}
+                    style={{
+                      backgroundColor: "var(--mk-card)",
+                      borderColor: "var(--mk-border)",
+                      breakInside: "avoid",
+                      pageBreakInside: "avoid",
+                    }}
+                  >
+                    <div>
+                      <div className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--mk-muted)" }}>
+                        Expected 30-Day Reach per Video
+                      </div>
+                      <div className="flex items-baseline gap-3 mt-3">
+                        <span className={`${isPrintMode ? "text-2xl" : "text-3xl sm:text-4xl"} font-black tracking-tight`} style={{ color: "var(--mk-text)" }}>
+                          {expectedReachText}
+                        </span>
+                      </div>
+                      <p className="text-xs mt-2" style={{ color: "var(--mk-muted)" }}>
+                        Consistent 30-day baseline across trailing 12-month uploads ({formatNumber(median)} median views baseline).
+                      </p>
+                    </div>
+
+                    <div
+                      className="mt-6 pt-4 border-t flex items-center justify-between text-xs"
+                      style={{ borderColor: "var(--mk-border)" }}
+                    >
+                      <div>
+                        <span style={{ color: "var(--mk-muted)" }}>Core Window: </span>
+                        <span className="font-bold" style={{ color: "var(--mk-text)" }}>
+                          First 30 Days Post-Upload
+                        </span>
+                      </div>
+                      <div>
+                        <span style={{ color: "var(--mk-muted)" }}>Format: </span>
+                        <span className="font-bold" style={{ color: "var(--mk-text)" }}>
+                          Long-Form Dedicated (≥ 4 min)
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {hasEngagement && (
+                  <div
+                    className={`rounded-2xl border flex flex-col justify-between ${isPrintMode ? "p-4" : "p-6"}`}
+                    style={{
+                      backgroundColor: "var(--mk-card)",
+                      borderColor: "var(--mk-border)",
+                      breakInside: "avoid",
+                      pageBreakInside: "avoid",
+                    }}
+                  >
+                    <div>
+                      <div className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--mk-muted)" }}>
+                        Audience Engagement & Retention (Long-Form)
+                      </div>
+                      <div className="grid grid-cols-2 gap-4 mt-3">
+                        <div>
+                          <div className={`${isPrintMode ? "text-2xl" : "text-3xl sm:text-4xl"} font-black tracking-tight`} style={{ color: "var(--mk-text)" }}>
+                            {renderVal(snapshot?.reach?.avgViewPercentage, formatPct)}
+                          </div>
+                          <div className="text-xs font-semibold mt-1" style={{ color: "var(--mk-accent)" }}>
+                            Avg % Viewed (Trailing 90d)
+                          </div>
+                        </div>
+                        <div>
+                          <div className={`${isPrintMode ? "text-2xl" : "text-3xl sm:text-4xl"} font-black tracking-tight`} style={{ color: "var(--mk-text)" }}>
+                            {renderVal(snapshot?.reach?.engagementRate, formatPct)}
+                          </div>
+                          <div className="text-xs font-semibold mt-1" style={{ color: "var(--mk-accent)" }}>
+                            Engagement Rate (Trailing 90d)
+                          </div>
+                        </div>
+                      </div>
+                      <p className="text-xs mt-3" style={{ color: "var(--mk-muted)" }}>
+                        Measured exclusively on long-form uploads over 4 minutes.
+                      </p>
+                    </div>
+
+                    <div
+                      className="mt-6 pt-4 border-t flex items-center justify-between text-xs"
+                      style={{ borderColor: "var(--mk-border)" }}
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-bold" style={{ color: "var(--mk-accent)" }}>
+                          Evergreen Search Value:
+                        </span>
+                        <span style={{ color: "var(--mk-text)" }}>
+                          High sustained views from active buyers researching specific models.
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {hasTrailing && (
+              <div
+                className={`rounded-2xl border ${isPrintMode ? "p-4" : "p-6"}`}
+                style={{
+                  backgroundColor: "var(--mk-card)",
+                  borderColor: "var(--mk-border)",
+                  breakInside: "avoid",
+                  pageBreakInside: "avoid",
+                }}
+              >
+                <div className="section-header flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
+                  <div>
+                    <h3 className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--mk-muted)" }}>
+                      Audience Reach
+                    </h3>
+                    <div className="text-sm font-bold mt-0.5" style={{ color: "var(--mk-text)" }}>
+                      Trailing 12 Complete Months
+                    </div>
+                  </div>
+                </div>
+
+                <div className={`grid gap-4 ${isPrintMode ? "grid-cols-2" : "grid-cols-1 sm:grid-cols-2"}`}>
+                  <div className={`rounded-xl border ${isPrintMode ? "p-3" : "p-4"}`} style={{ backgroundColor: "var(--mk-bg)", borderColor: "var(--mk-border)" }}>
+                    <div className="text-xs font-medium" style={{ color: "var(--mk-muted)" }}>
+                      Total Views (Trailing 12 Complete Months)
+                    </div>
+                    <div className={`${isPrintMode ? "text-xl" : "text-2xl sm:text-3xl"} font-black mt-1 tracking-tight`} style={{ color: "var(--mk-text)" }}>
+                      {renderVal(snapshot?.trailing12m?.totalViews, formatNumber)}
+                    </div>
+                  </div>
+
+                  <div className={`rounded-xl border ${isPrintMode ? "p-3" : "p-4"}`} style={{ backgroundColor: "var(--mk-bg)", borderColor: "var(--mk-border)" }}>
+                    <div className="text-xs font-medium" style={{ color: "var(--mk-muted)" }}>
+                      Average Monthly Views
+                    </div>
+                    <div className={`${isPrintMode ? "text-xl" : "text-2xl sm:text-3xl"} font-black mt-1 tracking-tight`} style={{ color: "var(--mk-accent)" }}>
+                      {renderVal(snapshot?.trailing12m?.monthlyAverageViews, formatNumber)}
+                    </div>
+                  </div>
+                </div>
+
+                {manual?.audience_reach_caption && manual.audience_reach_caption.trim() !== "" && (
+                  <p className="text-xs mt-3 leading-relaxed" style={{ color: "var(--mk-muted)" }}>
+                    {manual.audience_reach_caption}
+                  </p>
+                )}
+              </div>
+            )}
+          </section>
+        );
+      }
+
+      case "featuredIn": {
+        if (!hasFeaturedIn || !activeBlocks.has("featuredIn.list")) return null;
+        return (
           <section
-            className={`p-5 sm:p-6 rounded-2xl border transition-all duration-200 ${
-              !printSections.featuredIn ? "print-excluded opacity-65 border-dashed" : ""
-            }`}
+            key="featuredIn"
+            className={`rounded-2xl border ${isPrintMode ? "p-4" : "p-5 sm:p-6"}`}
             style={{
               backgroundColor: "var(--mk-card)",
               borderColor: "var(--mk-border)",
@@ -1044,10 +1102,6 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
                 <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
                   Featured In
                 </h2>
-                <SectionPrintToggle
-                  isIncluded={printSections.featuredIn}
-                  onToggle={() => togglePrintSection("featuredIn")}
-                />
               </div>
               {manual?.industry_recognition && (
                 <div className="flex items-center gap-1.5 text-xs font-semibold" style={{ color: "var(--mk-accent)" }}>
@@ -1062,7 +1116,7 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
                 {manual.featured_in.map((item, idx) => (
                   <div
                     key={idx}
-                    className="flex items-center gap-2.5 px-3.5 py-2 rounded-xl border text-xs font-bold transition-all shadow-sm"
+                    className="flex items-center gap-2.5 px-3.5 py-2 rounded-xl border text-xs font-bold shadow-sm"
                     style={{
                       backgroundColor: "var(--mk-bg)",
                       borderColor: "var(--mk-border)",
@@ -1100,364 +1154,363 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
               </div>
             )}
           </section>
-        )}
+        );
+      }
 
-        {/* ===================================================================
-            3. WHO IS WATCHING
-            =================================================================== */}
-        {(!isPrintMode || printSections.whoIsWatching) && (
-          <section
-            className={`space-y-4 transition-all duration-200 ${
-              !printSections.whoIsWatching ? "print-excluded opacity-65 border-dashed" : ""
-            }`}
-          >
+      case "whoIsWatching": {
+        const hasGeo = activeBlocks.has("audience.geo");
+        const hasBuyingPower = activeBlocks.has("audience.buyingPower");
+        const hasIntent = activeBlocks.has("audience.intent");
+        const activeCount = [hasGeo, hasBuyingPower, hasIntent].filter(Boolean).length;
+        if (activeCount === 0) return null;
+
+        const colsClass =
+          activeCount === 3
+            ? isPrintMode ? "grid-cols-3" : "grid-cols-1 md:grid-cols-3"
+            : activeCount === 2
+            ? isPrintMode ? "grid-cols-2" : "grid-cols-1 md:grid-cols-2"
+            : "grid-cols-1";
+
+        return (
+          <section key="whoIsWatching" className="space-y-4">
             <div className="section-header flex items-center justify-between" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
               <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
                 Who Is Watching (Long-Form Content Audience)
               </h2>
-              <SectionPrintToggle
-                isIncluded={printSections.whoIsWatching}
-                onToggle={() => togglePrintSection("whoIsWatching")}
-              />
             </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {/* Card 1: Top Geographic Markets */}
-            <div
-              className="p-6 rounded-2xl border"
-              style={{
-                backgroundColor: "var(--mk-card)",
-                borderColor: "var(--mk-border)",
-                breakInside: "avoid",
-                pageBreakInside: "avoid",
-              }}
-            >
-              <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider" style={{ color: "var(--mk-muted)" }}>
-                <Globe className="w-3.5 h-3.5" style={{ color: "var(--mk-accent)" }} />
-                <span>Top Geographic Markets</span>
-              </div>
+            <div className={`grid gap-4 ${colsClass}`}>
+              {hasGeo && (
+                <div
+                  className={`rounded-2xl border ${isPrintMode ? "p-4" : "p-6"}`}
+                  style={{
+                    backgroundColor: "var(--mk-card)",
+                    borderColor: "var(--mk-border)",
+                    breakInside: "avoid",
+                    pageBreakInside: "avoid",
+                  }}
+                >
+                  <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider" style={{ color: "var(--mk-muted)" }}>
+                    <Globe className="w-3.5 h-3.5" style={{ color: "var(--mk-accent)" }} />
+                    <span>Top Geographic Markets</span>
+                  </div>
 
-              <div className="mt-4 space-y-3">
-                {snapshot?.audience?.topMarkets && snapshot.audience.topMarkets.length > 0 ? (
-                  snapshot.audience.topMarkets.map((m, idx) => (
-                    <div key={idx} className="flex items-center justify-between text-xs">
-                      <span className="font-semibold" style={{ color: "var(--mk-text)" }}>
-                        {m.countryName || m.countryCode}
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <div
-                          className="w-20 h-2 rounded-full overflow-hidden"
-                          style={{ backgroundColor: "var(--mk-bg)" }}
-                        >
-                          <div
-                            className="h-full rounded-full"
-                            style={{
-                              width: `${m.sharePercent}%`,
-                              backgroundColor: "var(--mk-accent)",
-                            }}
-                          />
+                  <div className="mt-4 space-y-3">
+                    {snapshot?.audience?.topMarkets && snapshot.audience.topMarkets.length > 0 ? (
+                      snapshot.audience.topMarkets.map((m, idx) => (
+                        <div key={idx} className="flex items-center justify-between text-xs">
+                          <span className="font-semibold" style={{ color: "var(--mk-text)" }}>
+                            {m.countryName || m.countryCode}
+                          </span>
+                          <div className="flex items-center gap-2">
+                            <div
+                              className="w-20 h-2 rounded-full overflow-hidden"
+                              style={{ backgroundColor: "var(--mk-bg)" }}
+                            >
+                              <div
+                                className="h-full rounded-full"
+                                style={{
+                                  width: `${m.sharePercent}%`,
+                                  backgroundColor: "var(--mk-accent)",
+                                }}
+                              />
+                            </div>
+                            <span className="w-10 text-right font-bold" style={{ color: "var(--mk-text)" }}>
+                              {m.sharePercent}%
+                            </span>
+                          </div>
                         </div>
-                        <span className="w-10 text-right font-bold" style={{ color: "var(--mk-text)" }}>
-                          {m.sharePercent}%
-                        </span>
+                      ))
+                    ) : (
+                      <div className="text-xs py-4 text-center" style={{ color: "var(--mk-muted)" }}>
+                        {emDash}
                       </div>
-                    </div>
-                  ))
-                ) : (
-                  <div className="text-xs py-4 text-center" style={{ color: "var(--mk-muted)" }}>
-                    {emDash}
+                    )}
                   </div>
-                )}
-              </div>
-              <p className="text-[11px] mt-4" style={{ color: "var(--mk-muted)" }}>
-                Tier-1 Western EV automotive markets with highest EV adoption.
-              </p>
-            </div>
-
-            {/* Card 2: Buying Power & Core Age Demographic */}
-            <div
-              className="p-6 rounded-2xl border flex flex-col justify-between"
-              style={{
-                backgroundColor: "var(--mk-card)",
-                borderColor: "var(--mk-border)",
-                breakInside: "avoid",
-                pageBreakInside: "avoid",
-              }}
-            >
-              <div>
-                <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider" style={{ color: "var(--mk-muted)" }}>
-                  <Users className="w-3.5 h-3.5" style={{ color: "var(--mk-accent)" }} />
-                  <span>High-Income Buying Power</span>
+                  <p className="text-[11px] mt-4" style={{ color: "var(--mk-muted)" }}>
+                    Tier-1 Western EV automotive markets with highest EV adoption.
+                  </p>
                 </div>
+              )}
 
-                <div className="mt-4 space-y-3">
+              {hasBuyingPower && (
+                <div
+                  className={`rounded-2xl border flex flex-col justify-between ${isPrintMode ? "p-4" : "p-6"}`}
+                  style={{
+                    backgroundColor: "var(--mk-card)",
+                    borderColor: "var(--mk-border)",
+                    breakInside: "avoid",
+                    pageBreakInside: "avoid",
+                  }}
+                >
                   <div>
-                    <div className="text-3xl sm:text-4xl font-black tracking-tight" style={{ color: "var(--mk-text)" }}>
-                      {coreAgePct}%
+                    <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider" style={{ color: "var(--mk-muted)" }}>
+                      <Users className="w-3.5 h-3.5" style={{ color: "var(--mk-accent)" }} />
+                      <span>High-Income Buying Power</span>
                     </div>
-                    <div className="text-xs font-bold mt-1" style={{ color: "var(--mk-accent)" }}>
-                      Aged 25–64 (Core Household Earners)
+
+                    <div className="mt-4 space-y-3">
+                      <div>
+                        <div className={`${isPrintMode ? "text-2xl" : "text-3xl sm:text-4xl"} font-black tracking-tight`} style={{ color: "var(--mk-text)" }}>
+                          {coreAgePct}%
+                        </div>
+                        <div className="text-xs font-bold mt-1" style={{ color: "var(--mk-accent)" }}>
+                          Aged 25–64 (Core Household Earners)
+                        </div>
+                        <p className="text-xs mt-1" style={{ color: "var(--mk-muted)" }}>
+                          {primeAgePct}% aged 25–54 with peak disposable income for vehicle upgrades and clean-energy investments.
+                        </p>
+                      </div>
+
+                      {snapshot?.audience?.genderDistribution?.male != null && (
+                        <div className="pt-3 border-t text-xs flex justify-between" style={{ borderColor: "var(--mk-border)" }}>
+                          <span style={{ color: "var(--mk-muted)" }}>Gender Distribution:</span>
+                          <span className="font-bold" style={{ color: "var(--mk-text)" }}>
+                            {snapshot.audience.genderDistribution.male}% Male / {snapshot.audience.genderDistribution.female}% Female
+                          </span>
+                        </div>
+                      )}
                     </div>
-                    <p className="text-xs mt-1" style={{ color: "var(--mk-muted)" }}>
-                      {primeAgePct}% aged 25–54 with peak disposable income for vehicle upgrades and clean-energy investments.
-                    </p>
                   </div>
 
-                  {snapshot?.audience?.genderDistribution?.male != null && (
-                    <div className="pt-3 border-t text-xs flex justify-between" style={{ borderColor: "var(--mk-border)" }}>
-                      <span style={{ color: "var(--mk-muted)" }}>Gender Distribution:</span>
+                  {snapshot?.audience?.deviceBreakdown && snapshot.audience.deviceBreakdown.length > 0 && (
+                    <div className="mt-4 pt-3 border-t text-[11px]" style={{ borderColor: "var(--mk-border)" }}>
+                      <span style={{ color: "var(--mk-muted)" }}>Device Split: </span>
                       <span className="font-bold" style={{ color: "var(--mk-text)" }}>
-                        {snapshot.audience.genderDistribution.male}% Male / {snapshot.audience.genderDistribution.female}% Female
+                        {snapshot.audience.deviceBreakdown.slice(0, 3).map((d) => `${d.device}: ${d.sharePercent}%`).join(" · ")}
                       </span>
                     </div>
                   )}
                 </div>
-              </div>
+              )}
 
-              {/* Devices Real Percentages */}
-              {snapshot?.audience?.deviceBreakdown && snapshot.audience.deviceBreakdown.length > 0 && (
-                <div className="mt-4 pt-3 border-t text-[11px]" style={{ borderColor: "var(--mk-border)" }}>
-                  <span style={{ color: "var(--mk-muted)" }}>Device Split: </span>
-                  <span className="font-bold" style={{ color: "var(--mk-text)" }}>
-                    {snapshot.audience.deviceBreakdown.slice(0, 3).map((d) => `${d.device}: ${d.sharePercent}%`).join(" · ")}
-                  </span>
+              {hasIntent && (
+                <div
+                  className={`rounded-2xl border flex flex-col justify-between ${isPrintMode ? "p-4" : "p-6"}`}
+                  style={{
+                    backgroundColor: "var(--mk-card)",
+                    borderColor: "var(--mk-border)",
+                    breakInside: "avoid",
+                    pageBreakInside: "avoid",
+                  }}
+                >
+                  <div>
+                    <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider" style={{ color: "var(--mk-muted)" }}>
+                      <TrendingUp className="w-3.5 h-3.5" style={{ color: "var(--mk-accent)" }} />
+                      <span>Audience Intent & Discovery</span>
+                    </div>
+
+                    <div className="mt-4 space-y-4">
+                      <div>
+                        <div className="flex justify-between text-xs mb-1">
+                          <span style={{ color: "var(--mk-muted)" }}>Non-Subscriber Reach</span>
+                          <span className="font-bold" style={{ color: "var(--mk-text)" }}>
+                            {renderVal(snapshot?.audience?.subscriberStatus?.nonSubscriberSharePercent, formatPct)}
+                          </span>
+                        </div>
+                        <div className="w-full h-2 rounded-full overflow-hidden" style={{ backgroundColor: "var(--mk-bg)" }}>
+                          <div
+                            className="h-full rounded-full"
+                            style={{
+                              width: `${snapshot?.audience?.subscriberStatus?.nonSubscriberSharePercent || 0}%`,
+                              backgroundColor: "var(--mk-accent)",
+                            }}
+                          />
+                        </div>
+                        <p className="text-[10px] mt-1" style={{ color: "var(--mk-muted)" }}>
+                          High-converting new audience exposure beyond existing subscribers.
+                        </p>
+                      </div>
+
+                      <div>
+                        <div className="flex justify-between text-xs mb-1">
+                          <span style={{ color: "var(--mk-muted)" }}>Organic YouTube Search Traffic</span>
+                          <span className="font-bold" style={{ color: "var(--mk-text)" }}>
+                            {renderVal(snapshot?.audience?.trafficBreakdown?.searchPercent, formatPct)}
+                          </span>
+                        </div>
+                        <div className="w-full h-2 rounded-full overflow-hidden" style={{ backgroundColor: "var(--mk-bg)" }}>
+                          <div
+                            className="h-full rounded-full"
+                            style={{
+                              width: `${snapshot?.audience?.trafficBreakdown?.searchPercent || 0}%`,
+                              backgroundColor: "var(--mk-accent)",
+                            }}
+                          />
+                        </div>
+                        <p className="text-[10px] mt-1" style={{ color: "var(--mk-muted)" }}>
+                          Driven by in-market shoppers searching vehicle models and charging gear.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 pt-3 border-t text-[11px] font-semibold" style={{ borderColor: "var(--mk-border)", color: "var(--mk-accent)" }}>
+                    Verified Qualified EV Buyer Inflow
+                  </div>
                 </div>
               )}
             </div>
+          </section>
+        );
+      }
 
-            {/* Card 3: Intent & Top-of-Funnel Discovery */}
-            <div
-              className="p-6 rounded-2xl border flex flex-col justify-between"
-              style={{
-                backgroundColor: "var(--mk-card)",
-                borderColor: "var(--mk-border)",
-                breakInside: "avoid",
-                pageBreakInside: "avoid",
-              }}
-            >
-              <div>
-                <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider" style={{ color: "var(--mk-muted)" }}>
-                  <TrendingUp className="w-3.5 h-3.5" style={{ color: "var(--mk-accent)" }} />
-                  <span>Audience Intent & Discovery</span>
-                </div>
+      case "pillars": {
+        const hasBars = activeBlocks.has("pillars.bars");
+        const hasWhoWeReach = activeBlocks.has("pillars.whoWeReach");
+        if (!hasBars && !hasWhoWeReach) return null;
 
-                <div className="mt-4 space-y-4">
-                  <div>
-                    <div className="flex justify-between text-xs mb-1">
-                      <span style={{ color: "var(--mk-muted)" }}>Non-Subscriber Reach</span>
-                      <span className="font-bold" style={{ color: "var(--mk-text)" }}>
-                        {renderVal(snapshot?.audience?.subscriberStatus?.nonSubscriberSharePercent, formatPct)}
-                      </span>
-                    </div>
-                    <div className="w-full h-2 rounded-full overflow-hidden" style={{ backgroundColor: "var(--mk-bg)" }}>
-                      <div
-                        className="h-full rounded-full"
-                        style={{
-                          width: `${snapshot?.audience?.subscriberStatus?.nonSubscriberSharePercent || 0}%`,
-                          backgroundColor: "var(--mk-accent)",
-                        }}
-                      />
-                    </div>
-                    <p className="text-[10px] mt-1" style={{ color: "var(--mk-muted)" }}>
-                      High-converting new audience exposure beyond existing subscribers.
-                    </p>
-                  </div>
-
-                  <div>
-                    <div className="flex justify-between text-xs mb-1">
-                      <span style={{ color: "var(--mk-muted)" }}>Organic YouTube Search Traffic</span>
-                      <span className="font-bold" style={{ color: "var(--mk-text)" }}>
-                        {renderVal(snapshot?.audience?.trafficBreakdown?.searchPercent, formatPct)}
-                      </span>
-                    </div>
-                    <div className="w-full h-2 rounded-full overflow-hidden" style={{ backgroundColor: "var(--mk-bg)" }}>
-                      <div
-                        className="h-full rounded-full"
-                        style={{
-                          width: `${snapshot?.audience?.trafficBreakdown?.searchPercent || 0}%`,
-                          backgroundColor: "var(--mk-accent)",
-                        }}
-                      />
-                    </div>
-                    <p className="text-[10px] mt-1" style={{ color: "var(--mk-muted)" }}>
-                      Driven by in-market shoppers searching vehicle models and charging gear.
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-4 pt-3 border-t text-[11px] font-semibold" style={{ borderColor: "var(--mk-border)", color: "var(--mk-accent)" }}>
-                Verified Qualified EV Buyer Inflow
-              </div>
-            </div>
-          </div>
-        </section>
-        )}
-
-        {/* ===================================================================
-            4. WHERE YOUR BRAND CAN SIT (4 CONSOLIDATED PILLARS)
-            =================================================================== */}
-        {(!isPrintMode || printSections.pillars) && (
+        return (
           <section
-            className={`p-6 sm:p-8 rounded-2xl border transition-all duration-200 ${
-              !printSections.pillars ? "print-excluded opacity-65 border-dashed" : ""
-            }`}
+            key="pillars"
+            className={`rounded-2xl border ${isPrintMode ? "p-4" : "p-6 sm:p-8"}`}
             style={{
               backgroundColor: "var(--mk-card)",
               borderColor: "var(--mk-border)",
             }}
           >
             <div className="section-header flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
-              <div className="flex flex-col sm:flex-row sm:items-center gap-4">
-                <div>
-                  <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
-                    Where Your Brand Can Sit
-                  </h2>
-                  <p className="text-base font-bold mt-1" style={{ color: "var(--mk-text)" }}>
-                    Primary Channel Content Pillars
-                  </p>
-                </div>
-                <SectionPrintToggle
-                  isIncluded={printSections.pillars}
-                  onToggle={() => togglePrintSection("pillars")}
-                />
+              <div>
+                <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
+                  Where Your Brand Can Sit
+                </h2>
+                <p className="text-base font-bold mt-1" style={{ color: "var(--mk-text)" }}>
+                  Primary Channel Content Pillars
+                </p>
               </div>
               <span className="text-xs" style={{ color: "var(--mk-muted)" }}>
                 Targeted sponsorship alignments across core channel programming
               </span>
             </div>
 
-          <div className="space-y-5">
-            {snapshot?.contentPillars && snapshot.contentPillars.length > 0 ? (
-              snapshot.contentPillars.map((pillar) => (
-                <div key={pillar.id} className="space-y-1.5">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between text-xs gap-1">
-                    <div className="flex items-center gap-2">
-                      <span className="font-bold text-sm" style={{ color: "var(--mk-text)" }}>
-                        {pillar.name}
-                      </span>
-                      {pillar.description && (
-                        <span className="hidden md:inline-block text-[11px]" style={{ color: "var(--mk-muted)" }}>
-                          — {pillar.description}
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-3 font-semibold shrink-0">
-                      <span style={{ color: "var(--mk-text)" }}>
-                        {formatCompact(pillar.lifetimeViews)} lifetime views
-                      </span>
-                      <span style={{ color: "var(--mk-muted)" }}>·</span>
-                      <span style={{ color: "var(--mk-muted)" }}>{pillar.videoCount} videos</span>
-                    </div>
-                  </div>
+            {hasBars && (
+              <div className="space-y-5">
+                {snapshot?.contentPillars && snapshot.contentPillars.length > 0 ? (
+                  snapshot.contentPillars.map((pillar) => (
+                    <div key={pillar.id} className="space-y-1.5">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between text-xs gap-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-sm" style={{ color: "var(--mk-text)" }}>
+                            {pillar.name}
+                          </span>
+                          {pillar.description && (
+                            <span className="hidden md:inline-block text-[11px]" style={{ color: "var(--mk-muted)" }}>
+                              — {pillar.description}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-3 font-semibold shrink-0">
+                          <span style={{ color: "var(--mk-text)" }}>
+                            {formatCompact(pillar.lifetimeViews)} lifetime views
+                          </span>
+                          <span style={{ color: "var(--mk-muted)" }}>·</span>
+                          <span style={{ color: "var(--mk-muted)" }}>{pillar.videoCount} videos</span>
+                        </div>
+                      </div>
 
-                  <div className="w-full h-3.5 rounded-xl overflow-hidden p-0.5" style={{ backgroundColor: "var(--mk-bg)" }}>
-                    <div
-                      className="h-full rounded-lg transition-all"
-                      style={{
-                        width: `${pillar.relativeWidthPercent}%`,
-                        backgroundColor: "var(--mk-accent)",
-                      }}
-                    />
+                      <div className="w-full h-3.5 rounded-xl overflow-hidden p-0.5" style={{ backgroundColor: "var(--mk-bg)" }}>
+                        <div
+                          className="h-full rounded-lg transition-all"
+                          style={{
+                            width: `${pillar.relativeWidthPercent}%`,
+                            backgroundColor: "var(--mk-accent)",
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-center py-6 text-xs" style={{ color: "var(--mk-muted)" }}>
+                    Content pillars loading…
                   </div>
-                </div>
-              ))
-            ) : (
-              <div className="text-center py-6 text-xs" style={{ color: "var(--mk-muted)" }}>
-                Content pillars loading…
+                )}
               </div>
             )}
-          </div>
 
-          {/* Who We Reach Block */}
-          <div
-            className="mt-8 pt-6 border-t"
-            style={{
-              borderColor: "var(--mk-border)",
-              breakInside: "avoid",
-              pageBreakInside: "avoid",
-            }}
-          >
-            <div className="section-header mb-4" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
-              <h3 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
-                Who We Reach
-              </h3>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* Primary Audience */}
+            {hasWhoWeReach && (
               <div
-                className="p-5 rounded-xl border flex flex-col justify-between"
+                className={`${hasBars ? "mt-8 pt-6 border-t" : ""}`}
                 style={{
-                  backgroundColor: "var(--mk-bg)",
                   borderColor: "var(--mk-border)",
+                  breakInside: "avoid",
+                  pageBreakInside: "avoid",
                 }}
               >
-                <div>
-                  <div className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--mk-accent)" }}>
-                    Primary Audience
-                  </div>
-                  <h4 className="text-sm font-bold mt-1" style={{ color: "var(--mk-text)" }}>
-                    {manual?.who_we_reach?.primary_title || "EV Owners & Near-Term Buyers"}
-                  </h4>
-                  {manual?.who_we_reach?.primary_description ? (
-                    <p className="text-xs mt-2 leading-relaxed" style={{ color: "var(--mk-muted)" }}>
-                      {manual.who_we_reach.primary_description}
-                    </p>
-                  ) : null}
+                <div className="section-header mb-4" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
+                  <h3 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
+                    Who We Reach
+                  </h3>
                 </div>
-                <div className="mt-4 pt-3 border-t text-xs font-semibold" style={{ borderColor: "var(--mk-border)" }}>
-                  <span style={{ color: "var(--mk-text)" }}>
-                    {formatCompact(primaryLifetimeViews)} lifetime views
-                  </span>
-                  <span className="mx-2" style={{ color: "var(--mk-muted)" }}>·</span>
-                  <span style={{ color: "var(--mk-muted)" }}>{primaryVideoCount} videos</span>
+
+                <div className={`grid gap-4 ${isPrintMode ? "grid-cols-2" : "grid-cols-1 md:grid-cols-2"}`}>
+                  <div
+                    className={`rounded-xl border flex flex-col justify-between ${isPrintMode ? "p-3.5" : "p-5"}`}
+                    style={{
+                      backgroundColor: "var(--mk-bg)",
+                      borderColor: "var(--mk-border)",
+                    }}
+                  >
+                    <div>
+                      <div className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--mk-accent)" }}>
+                        Primary Audience
+                      </div>
+                      <h4 className="text-sm font-bold mt-1" style={{ color: "var(--mk-text)" }}>
+                        {manual?.who_we_reach?.primary_title || "EV Owners & Near-Term Buyers"}
+                      </h4>
+                      {manual?.who_we_reach?.primary_description ? (
+                        <p className="text-xs mt-2 leading-relaxed" style={{ color: "var(--mk-muted)" }}>
+                          {manual.who_we_reach.primary_description}
+                        </p>
+                      ) : null}
+                    </div>
+                    <div className="mt-4 pt-3 border-t text-xs font-semibold" style={{ borderColor: "var(--mk-border)" }}>
+                      <span style={{ color: "var(--mk-text)" }}>
+                        {formatCompact(primaryLifetimeViews)} lifetime views
+                      </span>
+                      <span className="mx-2" style={{ color: "var(--mk-muted)" }}>·</span>
+                      <span style={{ color: "var(--mk-muted)" }}>{primaryVideoCount} videos</span>
+                    </div>
+                  </div>
+
+                  <div
+                    className={`rounded-xl border flex flex-col justify-between ${isPrintMode ? "p-3.5" : "p-5"}`}
+                    style={{
+                      backgroundColor: "var(--mk-bg)",
+                      borderColor: "var(--mk-border)",
+                    }}
+                  >
+                    <div>
+                      <div className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--mk-warn)" }}>
+                        Secondary Audience
+                      </div>
+                      <h4 className="text-sm font-bold mt-1" style={{ color: "var(--mk-text)" }}>
+                        {manual?.who_we_reach?.secondary_title || "Home Energy & Smart Home"}
+                      </h4>
+                      {manual?.who_we_reach?.secondary_description ? (
+                        <p className="text-xs mt-2 leading-relaxed" style={{ color: "var(--mk-muted)" }}>
+                          {manual.who_we_reach.secondary_description}
+                        </p>
+                      ) : null}
+                    </div>
+                    <div className="mt-4 pt-3 border-t text-xs font-semibold" style={{ borderColor: "var(--mk-border)" }}>
+                      <span style={{ color: "var(--mk-text)" }}>
+                        {formatCompact(secondaryLifetimeViews)} lifetime views
+                      </span>
+                      <span className="mx-2" style={{ color: "var(--mk-muted)" }}>·</span>
+                      <span style={{ color: "var(--mk-muted)" }}>{secondaryVideoCount} videos</span>
+                    </div>
+                  </div>
                 </div>
               </div>
+            )}
+          </section>
+        );
+      }
 
-              {/* Secondary Audience */}
-              <div
-                className="p-5 rounded-xl border flex flex-col justify-between"
-                style={{
-                  backgroundColor: "var(--mk-bg)",
-                  borderColor: "var(--mk-border)",
-                }}
-              >
-                <div>
-                  <div className="text-xs font-bold uppercase tracking-wider" style={{ color: "#F59E0B" }}>
-                    Secondary Audience
-                  </div>
-                  <h4 className="text-sm font-bold mt-1" style={{ color: "var(--mk-text)" }}>
-                    {manual?.who_we_reach?.secondary_title || "Home Energy & Smart Home"}
-                  </h4>
-                  {manual?.who_we_reach?.secondary_description ? (
-                    <p className="text-xs mt-2 leading-relaxed" style={{ color: "var(--mk-muted)" }}>
-                      {manual.who_we_reach.secondary_description}
-                    </p>
-                  ) : null}
-                </div>
-                <div className="mt-4 pt-3 border-t text-xs font-semibold" style={{ borderColor: "var(--mk-border)" }}>
-                  <span style={{ color: "var(--mk-text)" }}>
-                    {formatCompact(secondaryLifetimeViews)} lifetime views
-                  </span>
-                  <span className="mx-2" style={{ color: "var(--mk-muted)" }}>·</span>
-                  <span style={{ color: "var(--mk-muted)" }}>{secondaryVideoCount} videos</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-        )}
-
-        {/* ===================================================================
-            5. RECENT WORK (3-ACROSS GRID, 16:9, COMPACT FOR PRINT)
-            =================================================================== */}
-        {(!isPrintMode || printSections.recentWork) && (
-          <section
-            className={`space-y-4 transition-all duration-200 ${
-              !printSections.recentWork ? "print-excluded opacity-65 border-dashed" : ""
-            }`}
-          >
+      case "recentWork": {
+        if (!activeBlocks.has("recentWork.grid")) return null;
+        return (
+          <section key="recentWork" className="space-y-4">
             <div className="section-header flex items-center justify-between" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
               <div>
                 <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
@@ -1467,13 +1520,9 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
                   Featured High-Performing Long-Form Uploads (&gt; 2,000 views)
                 </p>
               </div>
-              <SectionPrintToggle
-                isIncluded={printSections.recentWork}
-                onToggle={() => togglePrintSection("recentWork")}
-              />
             </div>
 
-            <div className="recent-work-grid grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className={`recent-work-grid grid gap-4 ${isPrintMode ? "grid-cols-3" : "grid-cols-1 sm:grid-cols-3"}`}>
               {snapshot?.recentWork && snapshot.recentWork.length > 0 ? (
                 snapshot.recentWork.map((video) => (
                   <div
@@ -1486,14 +1535,14 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
                       pageBreakInside: "avoid",
                     }}
                   >
-                    <div className="aspect-video w-full relative overflow-hidden bg-black">
+                    <div className="aspect-video w-full relative overflow-hidden" style={{ backgroundColor: "var(--mk-border)" }}>
                       <img
                         src={video.thumbnailUrl}
                         alt={video.title}
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                       />
                     </div>
-                    <div className="p-4 flex-1 flex flex-col justify-between">
+                    <div className={`${isPrintMode ? "p-3" : "p-4"} flex-1 flex flex-col justify-between`}>
                       <h3 className="font-bold text-xs sm:text-sm line-clamp-2 leading-snug" style={{ color: "var(--mk-text)" }}>
                         {video.title}
                       </h3>
@@ -1524,18 +1573,13 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
               )}
             </div>
           </section>
-        )}
+        );
+      }
 
-        {/* ===================================================================
-            MEET THE DUO (TWO COLUMNS, NO PAGE BREAK SPLIT)
-            Only renders if manual duo_bios entries exist (never an empty shell)
-            =================================================================== */}
-        {hasDuoBios && (!isPrintMode || printSections.duoBios) && (
-          <section
-            className={`space-y-4 transition-all duration-200 ${
-              !printSections.duoBios ? "print-excluded opacity-65 border-dashed" : ""
-            }`}
-          >
+      case "duoBios": {
+        if (!hasDuoBios || !activeBlocks.has("duoBios.bios")) return null;
+        return (
+          <section key="duoBios" className="space-y-4">
             <div className="section-header flex items-center justify-between" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
               <div>
                 <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
@@ -1545,17 +1589,13 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
                   Automotive Journalism & Clean Energy Leadership
                 </p>
               </div>
-              <SectionPrintToggle
-                isIncluded={printSections.duoBios}
-                onToggle={() => togglePrintSection("duoBios")}
-              />
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className={`grid gap-4 ${isPrintMode ? "grid-cols-2" : "grid-cols-1 md:grid-cols-2"}`}>
               {manual.duo_bios.map((person, idx) => (
                 <div
                   key={idx}
-                  className="duo-card p-6 rounded-2xl border flex flex-col justify-between"
+                  className={`duo-card rounded-2xl border flex flex-col justify-between ${isPrintMode ? "p-4" : "p-6"}`}
                   style={{
                     backgroundColor: "var(--mk-card)",
                     borderColor: "var(--mk-border)",
@@ -1639,169 +1679,163 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
               ))}
             </div>
           </section>
-        )}
+        );
+      }
 
-        {/* ===================================================================
-            BEYOND THE CHANNEL (OFF-PLATFORM DATA & WEBSITE RESOURCES)
-            =================================================================== */}
-        {(!isPrintMode || printSections.beyondChannel) && (
-          <section
-            className={`space-y-4 transition-all duration-200 ${
-              !printSections.beyondChannel ? "print-excluded opacity-65 border-dashed" : ""
-            }`}
-          >
+      case "beyondChannel": {
+        const hasClubs = activeBlocks.has("beyondChannel.clubs");
+        const hasSocials = activeBlocks.has("beyondChannel.socials");
+        if (!hasClubs && !hasSocials) return null;
+
+        return (
+          <section key="beyondChannel" className="space-y-4">
             <div className="section-header flex items-center justify-between" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
               <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
                 Beyond the Channel
               </h2>
-              <SectionPrintToggle
-                isIncluded={printSections.beyondChannel}
-                onToggle={() => togglePrintSection("beyondChannel")}
-              />
             </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Column 1: EV Club Network */}
-            <div
-              className="p-6 rounded-2xl border flex flex-col justify-between"
-              style={{
-                backgroundColor: "var(--mk-card)",
-                borderColor: "var(--mk-border)",
-                breakInside: "avoid",
-                pageBreakInside: "avoid",
-              }}
-            >
-              <div>
-                <div className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--mk-muted)" }}>
-                  EV Club Network
-                </div>
-                <div className="text-xl font-bold mt-2" style={{ color: "var(--mk-text)" }}>
-                  FordEVClubs.org & Mustang Mach-E Club
-                </div>
-                <p className="text-xs mt-3 leading-relaxed" style={{ color: "var(--mk-muted)" }}>
-                  {manual?.club_network_description || emDash}
-                </p>
-              </div>
-              <div className="mt-4 pt-3 border-t text-[11px] font-semibold" style={{ borderColor: "var(--mk-border)", color: "var(--mk-accent)" }}>
-                Direct access to regional club leaders & chapters
-              </div>
-            </div>
-
-            {/* Column 2: Owned Audience */}
-            <div
-              className="p-6 rounded-2xl border flex flex-col justify-between"
-              style={{
-                backgroundColor: "var(--mk-card)",
-                borderColor: "var(--mk-border)",
-                breakInside: "avoid",
-                pageBreakInside: "avoid",
-              }}
-            >
-              <div>
-                <div className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--mk-muted)" }}>
-                  Owned Audience & Socials
-                </div>
-                <div className="flex items-baseline gap-2 mt-2">
-                  <span className="text-2xl font-black tracking-tight" style={{ color: "var(--mk-text)" }}>
-                    {formatNumber(totalSocial)}
-                  </span>
-                  <span className="text-xs font-semibold" style={{ color: "var(--mk-accent)" }}>
-                    Cross-Platform Social Reach
-                  </span>
-                </div>
-                <div className="mt-3 space-y-1.5 text-xs">
-                  <div className="flex justify-between">
-                    <span style={{ color: "var(--mk-muted)" }}>Email Newsletter:</span>
-                    <span className="font-bold" style={{ color: "var(--mk-text)" }}>
-                      {manual?.email_list_size || emDash}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span style={{ color: "var(--mk-muted)" }}>Facebook Community:</span>
-                    <span className="font-bold" style={{ color: "var(--mk-text)" }}>
-                      {formatNumber(manual?.facebook_followers)}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span style={{ color: "var(--mk-muted)" }}>Instagram:</span>
-                    <span className="font-bold" style={{ color: "var(--mk-text)" }}>
-                      {formatNumber(manual?.instagram_followers)}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span style={{ color: "var(--mk-muted)" }}>Threads:</span>
-                    <span className="font-bold" style={{ color: "var(--mk-text)" }}>
-                      {formatNumber(manual?.threads_followers)}
-                    </span>
-                  </div>
-                </div>
-              </div>
-              <p className="mt-4 pt-3 border-t text-[11px]" style={{ borderColor: "var(--mk-border)", color: "var(--mk-muted)" }}>
-                {manual?.website_description || emDash}
-              </p>
-            </div>
-          </div>
-
-          {/* Website Resources (if populated) */}
-          {hasWebsiteResources && (
-            <div
-              className="p-6 rounded-2xl border"
-              style={{
-                backgroundColor: "var(--mk-card)",
-                borderColor: "var(--mk-border)",
-                breakInside: "avoid",
-                pageBreakInside: "avoid",
-              }}
-            >
-              <div className="section-header mb-3" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
-                <h3 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
-                  Website & Evergreen Resources (theelectricduo.com)
-                </h3>
-              </div>
-              <div className="space-y-2">
-                {manual.website_resources.map((item, idx) => (
-                  <div
-                    key={idx}
-                    className="p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs"
-                    style={{
-                      backgroundColor: "var(--mk-bg)",
-                      borderColor: "var(--mk-border)",
-                    }}
-                  >
-                    <div className="flex items-center gap-2">
-                      <ExternalLink className="w-3.5 h-3.5 shrink-0" style={{ color: "var(--mk-accent)" }} />
-                      <a
-                        href={item.url || "#"}
-                        target="_blank"
-                        rel="noreferrer noopener"
-                        className="font-bold hover:underline"
-                        style={{ color: "var(--mk-text)" }}
-                      >
-                        {item.title}
-                      </a>
+            <div className={`grid gap-4 ${hasClubs && hasSocials ? (isPrintMode ? "grid-cols-2" : "grid-cols-1 md:grid-cols-2") : "grid-cols-1"}`}>
+              {hasClubs && (
+                <div
+                  className={`rounded-2xl border flex flex-col justify-between ${isPrintMode ? "p-4" : "p-6"}`}
+                  style={{
+                    backgroundColor: "var(--mk-card)",
+                    borderColor: "var(--mk-border)",
+                    breakInside: "avoid",
+                    pageBreakInside: "avoid",
+                  }}
+                >
+                  <div>
+                    <div className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--mk-muted)" }}>
+                      EV Club Network
                     </div>
-                    {item.description && (
-                      <span className="text-[11px]" style={{ color: "var(--mk-muted)" }}>
-                        {item.description}
-                      </span>
-                    )}
+                    <div className="text-xl font-bold mt-2" style={{ color: "var(--mk-text)" }}>
+                      FordEVClubs.org & Mustang Mach-E Club
+                    </div>
+                    <p className="text-xs mt-3 leading-relaxed" style={{ color: "var(--mk-muted)" }}>
+                      {manual?.club_network_description || emDash}
+                    </p>
                   </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </section>
-        )}
+                  <div className="mt-4 pt-3 border-t text-[11px] font-semibold" style={{ borderColor: "var(--mk-border)", color: "var(--mk-accent)" }}>
+                    Direct access to regional club leaders & chapters
+                  </div>
+                </div>
+              )}
 
-        {/* ===================================================================
-            EVENT & TRADE SHOW COVERAGE (DENSE CREDIBILITY INVENTORY)
-            Only renders if at least one manual field is populated
-            =================================================================== */}
-        {hasEventCoverage && (!isPrintMode || printSections.events) && (
+              {hasSocials && (
+                <div
+                  className={`rounded-2xl border flex flex-col justify-between ${isPrintMode ? "p-4" : "p-6"}`}
+                  style={{
+                    backgroundColor: "var(--mk-card)",
+                    borderColor: "var(--mk-border)",
+                    breakInside: "avoid",
+                    pageBreakInside: "avoid",
+                  }}
+                >
+                  <div>
+                    <div className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--mk-muted)" }}>
+                      Owned Audience & Socials
+                    </div>
+                    <div className="flex items-baseline gap-2 mt-2">
+                      <span className={`${isPrintMode ? "text-xl" : "text-2xl"} font-black tracking-tight`} style={{ color: "var(--mk-text)" }}>
+                        {formatNumber(totalSocial)}
+                      </span>
+                      <span className="text-xs font-semibold" style={{ color: "var(--mk-accent)" }}>
+                        Cross-Platform Social Reach
+                      </span>
+                    </div>
+                    <div className="mt-3 space-y-1.5 text-xs">
+                      <div className="flex justify-between">
+                        <span style={{ color: "var(--mk-muted)" }}>Email Newsletter:</span>
+                        <span className="font-bold" style={{ color: "var(--mk-text)" }}>
+                          {manual?.email_list_size || emDash}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span style={{ color: "var(--mk-muted)" }}>Facebook Community:</span>
+                        <span className="font-bold" style={{ color: "var(--mk-text)" }}>
+                          {formatNumber(manual?.facebook_followers)}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span style={{ color: "var(--mk-muted)" }}>Instagram:</span>
+                        <span className="font-bold" style={{ color: "var(--mk-text)" }}>
+                          {formatNumber(manual?.instagram_followers)}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span style={{ color: "var(--mk-muted)" }}>Threads:</span>
+                        <span className="font-bold" style={{ color: "var(--mk-text)" }}>
+                          {formatNumber(manual?.threads_followers)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  <p className="mt-4 pt-3 border-t text-[11px]" style={{ borderColor: "var(--mk-border)", color: "var(--mk-muted)" }}>
+                    {manual?.website_description || emDash}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {hasWebsiteResources && (
+              <div
+                className={`rounded-2xl border ${isPrintMode ? "p-4" : "p-6"}`}
+                style={{
+                  backgroundColor: "var(--mk-card)",
+                  borderColor: "var(--mk-border)",
+                  breakInside: "avoid",
+                  pageBreakInside: "avoid",
+                }}
+              >
+                <div className="section-header mb-3" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
+                  <h3 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
+                    Website & Evergreen Resources (theelectricduo.com)
+                  </h3>
+                </div>
+                <div className="space-y-2">
+                  {manual.website_resources.map((item, idx) => (
+                    <div
+                      key={idx}
+                      className="p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs"
+                      style={{
+                        backgroundColor: "var(--mk-bg)",
+                        borderColor: "var(--mk-border)",
+                      }}
+                    >
+                      <div className="flex items-center gap-2">
+                        <ExternalLink className="w-3.5 h-3.5 shrink-0" style={{ color: "var(--mk-accent)" }} />
+                        <a
+                          href={item.url || "#"}
+                          target="_blank"
+                          rel="noreferrer noopener"
+                          className="font-bold hover:underline"
+                          style={{ color: "var(--mk-text)" }}
+                        >
+                          {item.title}
+                        </a>
+                      </div>
+                      {item.description && (
+                        <span className="text-[11px]" style={{ color: "var(--mk-muted)" }}>
+                          {item.description}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </section>
+        );
+      }
+
+      case "events": {
+        if (!hasEventCoverage || !activeBlocks.has("events.shows")) return null;
+        return (
           <section
-            className={`p-6 sm:p-7 rounded-2xl border space-y-5 transition-all duration-200 ${
-              !printSections.events ? "print-excluded opacity-65 border-dashed" : ""
-            }`}
+            key="events"
+            className={`rounded-2xl border space-y-5 ${isPrintMode ? "p-4" : "p-6 sm:p-7"}`}
             style={{
               backgroundColor: "var(--mk-card)",
               borderColor: "var(--mk-border)",
@@ -1816,14 +1850,9 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
                   On-Site Auto Show, OEM Debut & Industry Conference Credentialing
                 </p>
               </div>
-              <SectionPrintToggle
-                isIncluded={printSections.events}
-                onToggle={() => togglePrintSection("events")}
-              />
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* Auto Shows */}
+            <div className={`grid gap-6 ${isPrintMode ? "grid-cols-2" : "grid-cols-1 md:grid-cols-2"}`}>
               {manual?.auto_shows && manual.auto_shows.length > 0 && (
                 <div>
                   <div className="text-xs font-bold uppercase tracking-wider mb-2.5" style={{ color: "var(--mk-accent)" }}>
@@ -1840,7 +1869,6 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
                 </div>
               )}
 
-              {/* Industry Events & Trade Shows */}
               {manual?.industry_events && manual.industry_events.length > 0 && (
                 <div>
                   <div className="text-xs font-bold uppercase tracking-wider mb-2.5" style={{ color: "var(--mk-accent)" }}>
@@ -1858,7 +1886,6 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
               )}
             </div>
 
-            {/* Booth & Launch Coverage Description */}
             {manual?.event_coverage_description && (
               <div className="pt-3 border-t text-xs leading-relaxed" style={{ borderColor: "var(--mk-border)", color: "var(--mk-muted)" }}>
                 <span className="font-bold" style={{ color: "var(--mk-text)" }}>Coverage Scope: </span>
@@ -1866,13 +1893,12 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
               </div>
             )}
 
-            {/* Speaking & Panel Appearances */}
             {manual?.speaking_appearances && manual.speaking_appearances.length > 0 && (
               <div className="pt-3 border-t" style={{ borderColor: "var(--mk-border)" }}>
                 <div className="text-[11px] font-bold uppercase tracking-wider mb-2" style={{ color: "var(--mk-muted)" }}>
                   Speaking & Panel Appearances
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                <div className={`grid gap-2 text-xs ${isPrintMode ? "grid-cols-2" : "grid-cols-1 sm:grid-cols-2"}`}>
                   {manual.speaking_appearances.map((sp, idx) => (
                     <div key={idx} className="flex items-baseline gap-2">
                       <span className="font-bold" style={{ color: "var(--mk-text)" }}>{sp.event}</span>
@@ -1883,119 +1909,268 @@ export default function MediaKit({ currentUser, isPrintMode = false }) {
               </div>
             )}
           </section>
-        )}
+        );
+      }
 
-        {/* ===================================================================
-            7. WORKED WITH (PARTNERS, CASE STUDY, CTA)
-            =================================================================== */}
-        {(!isPrintMode || printSections.partners) && (
+      case "partners": {
+        const hasChips = hasPartners && activeBlocks.has("partners.chips");
+        const hasStudy = hasCaseStudy && activeBlocks.has("partners.caseStudy");
+        if (!hasChips && !hasStudy) return null;
+
+        return (
           <section
-            className={`p-6 sm:p-8 rounded-2xl border space-y-8 transition-all duration-200 ${
-              !printSections.partners ? "print-excluded opacity-65 border-dashed" : ""
-            }`}
+            key="partners"
+            className={`rounded-2xl border space-y-6 ${isPrintMode ? "p-4" : "p-6 sm:p-8"}`}
             style={{
               backgroundColor: "var(--mk-card)",
               borderColor: "var(--mk-border)",
             }}
           >
-            {/* Partner Chips */}
-            <div>
-              <div className="section-header flex items-center justify-between mb-4" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
-                <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
-                  Selected Brand Partners & Collaborators
-                </h2>
-                <SectionPrintToggle
-                  isIncluded={printSections.partners}
-                  onToggle={() => togglePrintSection("partners")}
-                />
+            {hasChips && (
+              <div>
+                <div className="section-header flex items-center justify-between mb-4" style={{ breakAfter: "avoid", pageBreakAfter: "avoid" }}>
+                  <h2 className="text-xs uppercase font-bold tracking-wider" style={{ color: "var(--mk-muted)" }}>
+                    Selected Brand Partners & Collaborators
+                  </h2>
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  {manual?.past_partners && manual.past_partners.length > 0 ? (
+                    manual.past_partners.map((partner, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-center gap-2.5 px-4 py-2 rounded-xl border text-xs font-bold shadow-sm"
+                        style={{
+                          backgroundColor: "var(--mk-bg)",
+                          borderColor: "var(--mk-border)",
+                          color: "var(--mk-text)",
+                        }}
+                      >
+                        {partner.logo_url && (
+                          <img
+                            src={partner.logo_url}
+                            alt={partner.name}
+                            className="w-5 h-5 object-contain rounded"
+                          />
+                        )}
+                        <span>{partner.name}</span>
+                      </div>
+                    ))
+                  ) : (
+                    <span className="text-xs" style={{ color: "var(--mk-muted)" }}>
+                      {emDash}
+                    </span>
+                  )}
+                </div>
               </div>
-            <div className="flex flex-wrap items-center gap-3">
-              {manual?.past_partners && manual.past_partners.length > 0 ? (
-                manual.past_partners.map((partner, idx) => (
-                  <div
-                    key={idx}
-                    className="flex items-center gap-2.5 px-4 py-2 rounded-xl border text-xs font-bold shadow-sm"
-                    style={{
-                      backgroundColor: "var(--mk-bg)",
-                      borderColor: "var(--mk-border)",
-                      color: "var(--mk-text)",
-                    }}
-                  >
-                    {partner.logo_url && (
-                      <img
-                        src={partner.logo_url}
-                        alt={partner.name}
-                        className="w-5 h-5 object-contain rounded"
-                      />
-                    )}
-                    <span>{partner.name}</span>
-                  </div>
-                ))
-              ) : (
-                <span className="text-xs" style={{ color: "var(--mk-muted)" }}>
-                  {emDash}
-                </span>
-              )}
-            </div>
-          </div>
+            )}
 
-          {/* Case Study Block */}
-          {manual?.case_study && (
-            <div
-              className="p-6 rounded-2xl border-l-4"
-              style={{
-                backgroundColor: "var(--mk-bg)",
-                borderLeftColor: "var(--mk-accent)",
-              }}
-            >
-              <div className="text-[10px] font-bold uppercase tracking-wider mb-1" style={{ color: "var(--mk-accent)" }}>
-                Featured Partnership Case Study
-              </div>
-              <h3 className="text-lg font-bold" style={{ color: "var(--mk-text)" }}>
-                {manual.case_study.title}
-              </h3>
-              <p className="text-xs sm:text-sm mt-2 leading-relaxed" style={{ color: "var(--mk-muted)" }}>
-                {manual.case_study.body}
-              </p>
-            </div>
-          )}
-
-          {/* Contact Details & CTA */}
-          <div
-            className="pt-6 border-t flex flex-col md:flex-row md:items-center justify-between gap-6"
-            style={{ borderColor: "var(--mk-border)" }}
-          >
-            <div>
-              <h4 className="text-base font-bold" style={{ color: "var(--mk-text)" }}>
-                Ready to collaborate?
-              </h4>
-              <p className="text-xs mt-1 max-w-xl" style={{ color: "var(--mk-muted)" }}>
-                {manual?.contact_details?.cta_text ||
-                  "Partner with The Electric Duo to showcase your brand to the most engaged EV audience."}
-              </p>
-            </div>
-
-            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 shrink-0">
-              <a
-                href={`mailto:${manual?.contact_details?.email || "partnerships@theelectricduo.com"}`}
-                className="px-5 py-2.5 rounded-xl font-bold text-xs shadow-lg transition-all"
+            {hasStudy && manual?.case_study && (
+              <div
+                className="p-6 rounded-2xl border-l-4"
                 style={{
-                  backgroundColor: "var(--mk-accent)",
-                  color: "var(--mk-bg)",
+                  backgroundColor: "var(--mk-bg)",
+                  borderLeftColor: "var(--mk-accent)",
                 }}
               >
-                Contact {manual?.contact_details?.name || "The Duo"}
-              </a>
-              <span className="text-xs font-mono font-semibold" style={{ color: "var(--mk-muted)" }}>
-                {manual?.contact_details?.email || "partnerships@theelectricduo.com"}
-              </span>
-            </div>
+                <div className="text-[10px] font-bold uppercase tracking-wider mb-1" style={{ color: "var(--mk-accent)" }}>
+                  Featured Partnership Case Study
+                </div>
+                <h3 className="text-lg font-bold" style={{ color: "var(--mk-text)" }}>
+                  {manual.case_study.title}
+                </h3>
+                <p className="text-xs sm:text-sm mt-2 leading-relaxed" style={{ color: "var(--mk-muted)" }}>
+                  {manual.case_study.body}
+                </p>
+              </div>
+            )}
+          </section>
+        );
+      }
+
+      default:
+        return null;
+    }
+  };
+
+  return (
+    <div
+      className={`min-h-screen font-sans antialiased selection:bg-cyan-500 selection:text-slate-950 mk-theme ${
+        isPrintMode ? "p-0" : "p-4 sm:p-8"
+      }`}
+      data-theme={isLight ? "light" : "dark"}
+      style={{
+        backgroundColor: "var(--mk-bg)",
+        color: "var(--mk-text)",
+      }}
+    >
+      <div className={`mx-auto ${isPrintMode ? "w-[720px] max-w-[720px] space-y-5" : "max-w-6xl space-y-8"}`}>
+        {/* ===================================================================
+            1. HEADER
+            =================================================================== */}
+        <header
+          className={`rounded-2xl border shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-6 ${
+            isPrintMode ? "p-4" : "p-6 sm:p-8"
+          }`}
+          style={{
+            backgroundColor: "var(--mk-card)",
+            borderColor: "var(--mk-border)",
+          }}
+        >
+          <div className="flex items-center gap-4 sm:gap-6">
+            {manual?.header_logo_url && manual?.use_logo_only ? (
+              <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-5">
+                <img
+                  src={manual.header_logo_url}
+                  alt="The Electric Duo"
+                  className="h-10 sm:h-12 w-auto max-w-xs sm:max-w-md object-contain"
+                />
+                <div>
+                  <span
+                    className="inline-block text-xs uppercase font-bold tracking-widest px-2.5 py-1 rounded-full border"
+                    style={{
+                      backgroundColor: "var(--mk-accent-soft)",
+                      color: "var(--mk-accent)",
+                      borderColor: "var(--mk-accent-line)",
+                    }}
+                  >
+                    Partnership Media Kit
+                  </span>
+                  <p className="text-sm mt-1" style={{ color: "var(--mk-muted)" }}>
+                    {currentQuarterLabel} · Data as of{" "}
+                    <span className="font-semibold" style={{ color: "var(--mk-text)" }}>
+                      {effectiveEndDate || emDash}
+                    </span>
+                  </p>
+                  {recipient && (
+                    <p className="text-xs font-semibold mt-1" style={{ color: "var(--mk-accent)" }}>
+                      Prepared for {recipient} · {new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" })}
+                    </p>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <>
+                {manual?.header_logo_url ? (
+                  <img
+                    src={manual.header_logo_url}
+                    alt="The Electric Duo"
+                    className="h-14 sm:h-16 w-auto max-w-xs rounded-xl object-contain p-1 border shadow-lg shrink-0"
+                    style={{
+                      backgroundColor: "var(--mk-card)",
+                      borderColor: "var(--mk-border)",
+                    }}
+                  />
+                ) : (
+                  <div
+                    className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl flex items-center justify-center font-black text-2xl sm:text-3xl shadow-lg shrink-0"
+                    style={{
+                      backgroundColor: "var(--mk-accent)",
+                      color: "var(--mk-bg)",
+                    }}
+                  >
+                    ED
+                  </div>
+                )}
+                <div>
+                  <div className="flex items-center gap-3">
+                    <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight" style={{ color: "var(--mk-text)" }}>
+                      The Electric Duo
+                    </h1>
+                    <span
+                      className="text-xs uppercase font-bold tracking-widest px-2.5 py-1 rounded-full border"
+                      style={{
+                        backgroundColor: "var(--mk-accent-soft)",
+                        color: "var(--mk-accent)",
+                        borderColor: "var(--mk-accent-line)",
+                      }}
+                    >
+                      Partnership Media Kit
+                    </span>
+                  </div>
+                  <p className="text-sm mt-1" style={{ color: "var(--mk-muted)" }}>
+                    {currentQuarterLabel} · Data as of{" "}
+                    <span className="font-semibold" style={{ color: "var(--mk-text)" }}>
+                      {effectiveEndDate || emDash}
+                    </span>
+                  </p>
+                  {recipient && (
+                    <p className="text-xs font-semibold mt-1" style={{ color: "var(--mk-accent)" }}>
+                      Prepared for {recipient} · {new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" })}
+                    </p>
+                  )}
+                </div>
+              </>
+            )}
           </div>
-        </section>
+
+          {!isPrintMode && (
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={handleRefreshNow}
+                disabled={isRefreshing}
+                className="flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all border shadow-sm cursor-pointer"
+                style={{
+                  backgroundColor: isRefreshing ? "var(--mk-accent-soft)" : "var(--mk-bg)",
+                  color: isRefreshing ? "var(--mk-accent)" : "var(--mk-text)",
+                  borderColor: "var(--mk-border)",
+                }}
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
+                <span>{isRefreshing ? refreshMessage || "Refreshing…" : "Refresh now"}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setEditModalOpen(true)}
+                className="flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all border shadow-sm cursor-pointer"
+                style={{
+                  backgroundColor: "var(--mk-bg)",
+                  color: "var(--mk-text)",
+                  borderColor: "var(--mk-border)",
+                }}
+              >
+                <Edit3 className="w-3.5 h-3.5" style={{ color: "var(--mk-accent)" }} />
+                <span>Edit off-platform data</span>
+              </button>
+            </div>
+          )}
+        </header>
+
+        {/* PRESET BAR (SCREEN ONLY) */}
+        {!isPrintMode && (
+          <MediaKitPresetBar
+            presets={presets}
+            activePresetId={activePresetId}
+            onSelectPreset={handleSelectPreset}
+            activeBlocks={activeBlocks}
+            onToggleBlock={handleToggleBlock}
+            onSelectAllSectionBlocks={handleSelectAllSectionBlocks}
+            sectionOrder={sectionOrder}
+            onReorderSection={handleReorderSection}
+            recipient={recipient}
+            onChangeRecipient={(val) => {
+              setRecipient(val);
+              setIsDirty(true);
+            }}
+            onSaveAs={handleSaveAs}
+            onUpdatePreset={handleUpdatePreset}
+            onDeletePreset={handleDeletePreset}
+            onDownloadPdf={handleDownloadPdf}
+            isDownloadingPdf={isDownloadingPdf}
+            guards={guards}
+            isDirty={isDirty}
+          />
         )}
+
+                {/* DYNAMIC ORDERED SECTIONS */}
+        {sectionOrder.map((sectionId) => renderSection(sectionId))}
+
+        {/* ALWAYS-ON CLOSING BLOCK: READY TO COLLABORATE? (CONTACT DETAILS) */}
+        {renderContactCta()}
       </div>
 
-      {/* ===================================================================
+{/* ===================================================================
           EDIT OFF-PLATFORM DATA MODAL
           =================================================================== */}
       {editModalOpen && (

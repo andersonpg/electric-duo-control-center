@@ -353,6 +353,18 @@ articleDb.exec(`
     data_json TEXT NOT NULL,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE TABLE IF NOT EXISTS media_kit_presets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    recipient TEXT DEFAULT NULL,
+    blocks_json TEXT NOT NULL,
+    order_json TEXT NOT NULL,
+    is_builtin INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_media_kit_presets_name ON media_kit_presets(name);
 `);
 
 function addColumnIfNotExists(targetDb, table, column, definition) {
@@ -498,6 +510,45 @@ try {
   }
 } catch (err) {
   console.warn("Could not seed media_kit_manual:", err.message);
+}
+
+// Seed built-in media_kit_presets if missing
+try {
+  const introBlocks = ["survey.stats", "reach.headline", "audience.buyingPower"];
+  const standardBlocks = [
+    "survey.stats", "reach.headline", "reach.perVideo", "reach.engagement",
+    "featuredIn.list", "audience.geo", "audience.buyingPower",
+    "pillars.bars", "pillars.whoWeReach", "recentWork.grid",
+    "duoBios.bios", "beyondChannel.clubs", "partners.chips"
+  ];
+  const fullBlocks = [
+    "survey.stats", "reach.headline", "reach.perVideo", "reach.engagement", "reach.trailing12m",
+    "featuredIn.list", "audience.geo", "audience.buyingPower", "audience.intent",
+    "pillars.bars", "pillars.whoWeReach", "recentWork.grid",
+    "duoBios.bios", "beyondChannel.clubs", "beyondChannel.socials",
+    "events.shows", "partners.chips", "partners.caseStudy"
+  ];
+  const defaultOrder = ["survey", "reach", "featuredIn", "whoIsWatching", "pillars", "recentWork", "duoBios", "beyondChannel", "events", "partners"];
+
+  const seedPresets = [
+    { name: "Intro", is_builtin: 1, blocks: introBlocks, order: defaultOrder },
+    { name: "Standard", is_builtin: 1, blocks: standardBlocks, order: defaultOrder },
+    { name: "Full", is_builtin: 1, blocks: fullBlocks, order: defaultOrder },
+  ];
+
+  const insertStmt = articleDb.prepare(`
+    INSERT INTO media_kit_presets (name, recipient, blocks_json, order_json, is_builtin)
+    VALUES (?, NULL, ?, ?, ?)
+  `);
+
+  for (const p of seedPresets) {
+    const existing = articleDb.prepare("SELECT id FROM media_kit_presets WHERE name = ?").get(p.name);
+    if (!existing) {
+      insertStmt.run(p.name, JSON.stringify(p.blocks), JSON.stringify(p.order), p.is_builtin);
+    }
+  }
+} catch (err) {
+  console.warn("Could not seed media_kit_presets:", err.message);
 }
 addColumnIfNotExists(articleDb, "content_categories", "benchmarks_updated_at", "DATETIME");
 addColumnIfNotExists(articleDb, "content_categories", "is_fallback", "INTEGER DEFAULT 0");

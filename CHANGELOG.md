@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.6.0] - 2026-09-15
+
+### Added
+- **Media Kit PDF Export & Tiered Disclosure Rebuild**:
+  - **High-Contrast Light Print Palette (`.mk-theme[data-theme="light"]`)**: Implemented a WCAG AA compliant light palette (`--mk-bg: #FFFFFF`, `--mk-card: #FFFFFF`, `--mk-accent: #0077A3` with 5.04:1 contrast ratio, `--mk-border: #D4DDE4`, `--mk-text: #0B1520`, `--mk-warn: #A15C00`). Drive theme directly from URL `?theme=light` rather than `@media print` stylesheets so browser preview matches output PDF byte-for-byte.
+  - **Fixed 720px Print Composition**: Enforced fixed 720px container (`w-[720px] max-w-[720px] mx-auto`) and explicit unprefixed column classes (`grid-cols-4`, `grid-cols-3`, `grid-cols-2`) in print mode, eliminating viewport breakpoint collapse where `md:` (768px) and `lg:` (1024px) failed on letter paper.
+  - **Fine-Grained Block Registry & Disclosure Tiers**: Defined 18 disclosure blocks mapped across 10 sections in `frontend/src/mediaKitSections.js`, organized into progressive disclosure tiers (Tier 1: Intro ~1 page, Tier 2: Standard ~2–3 pages, Tier 3: Full).
+  - **Named Presets with Persistence**: Created `media_kit_presets` SQLite table storing explicit block IDs (`blocks_json`) and custom section ordering (`order_json`), seeded with 3 built-in presets (`Intro`, `Standard`, `Full`). Built full backend CRUD API endpoints (`GET`, `POST`, `PUT`, `DELETE /api/media-kit/presets`).
+  - **Interactive Preset Toolbar (`MediaKitPresetBar.jsx`)**: Built a top toolbar with preset selector, custom recipient input, live page-count estimator, section order arrows, fine-grained block customization drawer with section select-all, and one-click preview and PDF download. Automatically migrated legacy `localStorage` settings into an "Imported" preset.
+  - **Invariant Contact CTA Closing Block**: Extracted the "Ready to collaborate?" contact CTA out of the partners section into an always-on closing block rendered at the bottom of every generated media kit regardless of section exclusions.
+  - **Dynamic Recipient Subline**: Added optional `"Prepared for {recipient} · {Month Year}"` subline under header driven by preset configuration.
+  - **Server-Side Puppeteer PDF Generation (`server/media-kit-pdf.js`)**: Implemented headless Chromium PDF generation via `POST /api/media-kit/pdf`. Uses ephemeral session authentication with 2-minute expiration, font and image decode verification, standardized margins (0.5in sides, 0.55in top, 0.6in bottom), serialized in-process queue with 60s hard-cap, running footer (`Page N of M`), and clean slugified filename attachments (`ElectricDuo-MediaKit-{Preset}-{YYYY-MM}.pdf`).
+
 ## [2.5.4] - 2026-09-14
 
 ### Added
