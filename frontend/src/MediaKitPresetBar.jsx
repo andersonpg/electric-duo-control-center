@@ -106,10 +106,21 @@ export default function MediaKitPresetBar({
   };
 
   const handleOpenPreview = () => {
-    const url = `/media-kit/print?theme=light&preset=${activePresetId || ""}${
-      recipient ? `&recipient=${encodeURIComponent(recipient)}` : ""
-    }`;
-    window.open(url, "_blank");
+    const params = new URLSearchParams();
+    params.set("theme", "light");
+    if (activePresetId && activePresetId !== "custom") {
+      params.set("preset", String(activePresetId));
+    }
+    if (recipient) {
+      params.set("recipient", recipient);
+    }
+    if (activeBlocks && activeBlocks.size > 0) {
+      params.set("blocks", Array.from(activeBlocks).join(","));
+    }
+    if (sectionOrder && sectionOrder.length > 0) {
+      params.set("order", sectionOrder.join(","));
+    }
+    window.open(`/media-kit/print?${params.toString()}`, "_blank");
   };
 
   return (

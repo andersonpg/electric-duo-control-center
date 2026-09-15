@@ -101,8 +101,14 @@ async function generateMediaKitPdf({ userId, presetId, recipient, blocks, order 
       const port = process.env.PORT || 3000;
       const params = new URLSearchParams();
       params.set("theme", "light");
-      if (presetId) params.set("preset", String(presetId));
+      if (presetId && presetId !== "custom") params.set("preset", String(presetId));
       if (presetRecipient) params.set("recipient", presetRecipient);
+      if (blocks && Array.isArray(blocks) && blocks.length > 0) {
+        params.set("blocks", blocks.join(","));
+      }
+      if (order && Array.isArray(order) && order.length > 0) {
+        params.set("order", order.join(","));
+      }
 
       const targetUrl = `http://127.0.0.1:${port}/media-kit/print?${params.toString()}`;
 

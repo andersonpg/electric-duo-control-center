@@ -9,6 +9,8 @@ export default function MediaKitPrint({ currentUser }) {
   const theme = searchParams.get("theme") || "light";
   const presetId = searchParams.get("preset");
   const recipient = searchParams.get("recipient");
+  const blocks = searchParams.get("blocks");
+  const order = searchParams.get("order");
 
   return (
     <div className={`min-h-screen ${theme === "light" ? "bg-white" : "bg-[#0B1520]"}`}>
@@ -24,6 +26,8 @@ export default function MediaKitPrint({ currentUser }) {
         printTheme={theme}
         presetIdFromUrl={presetId}
         recipientFromUrl={recipient}
+        blocksFromUrl={blocks}
+        orderFromUrl={order}
       />
     </div>
   );

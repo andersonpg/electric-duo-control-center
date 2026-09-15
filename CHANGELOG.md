@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.6.1] - 2026-09-15
+
+### Fixed
+- **Media Kit Custom Inclusion & Order Preservation in Print Preview and PDF**:
+  - Fixed query string forwarding in `MediaKitPresetBar.jsx` (`handleOpenPreview`) and fallback print URLs to pass `blocks` and `order` parameters representing active block selections and section order.
+  - Updated `MediaKitPrint.jsx` to parse and forward `blocksFromUrl` and `orderFromUrl` directly into `MediaKit`.
+  - Fixed asynchronous preset fetching in `MediaKit.jsx` to prevent `fetchPresets()` from calling `applyPreset()` and clobbering active block customizations when URL block parameters are present.
+  - Updated `server/media-kit-pdf.js` to serialize `blocks` and `order` into the Puppeteer navigation URL, ensuring server-side generated PDFs respect custom block exclusions and section ordering.
+
 ## [2.6.0] - 2026-09-15
 
 ### Added

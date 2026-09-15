@@ -37,7 +37,19 @@ export default function MediaKit({
   printTheme = null,
   presetIdFromUrl = null,
   recipientFromUrl = null,
+  blocksFromUrl = null,
+  orderFromUrl = null,
 }) {
+  const searchParams =
+    typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search)
+      : new URLSearchParams();
+
+  const urlBlocksParam = blocksFromUrl || searchParams.get("blocks");
+  const urlOrderParam = orderFromUrl || searchParams.get("order");
+  const urlPresetId = presetIdFromUrl || searchParams.get("preset");
+  const urlRecipient = recipientFromUrl || searchParams.get("recipient");
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [snapshot, setSnapshot] = useState(null);
@@ -46,11 +58,33 @@ export default function MediaKit({
 
   // Preset & Block Registry State
   const [presets, setPresets] = useState([]);
-  const [activePresetId, setActivePresetId] = useState(presetIdFromUrl ? Number(presetIdFromUrl) : null);
-  const [activeBlocks, setActiveBlocks] = useState(() => new Set(MEDIA_KIT_BLOCKS.map((b) => b.id)));
-  const [sectionOrder, setSectionOrder] = useState(SECTION_DEFAULT_ORDER);
-  const [recipient, setRecipient] = useState(recipientFromUrl || "");
-  const [isDirty, setIsDirty] = useState(false);
+  const [activePresetId, setActivePresetId] = useState(urlPresetId ? Number(urlPresetId) || urlPresetId : null);
+  const [activeBlocks, setActiveBlocks] = useState(() => {
+    if (urlBlocksParam) {
+      const parsed = Array.isArray(urlBlocksParam)
+        ? urlBlocksParam
+        : String(urlBlocksParam)
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+      if (parsed.length > 0) return new Set(parsed);
+    }
+    return new Set(MEDIA_KIT_BLOCKS.map((b) => b.id));
+  });
+  const [sectionOrder, setSectionOrder] = useState(() => {
+    if (urlOrderParam) {
+      const parsed = Array.isArray(urlOrderParam)
+        ? urlOrderParam
+        : String(urlOrderParam)
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+      if (parsed.length > 0) return parsed;
+    }
+    return SECTION_DEFAULT_ORDER;
+  });
+  const [recipient, setRecipient] = useState(urlRecipient || "");
+  const [isDirty, setIsDirty] = useState(Boolean(urlBlocksParam || urlOrderParam));
   const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
 
   // Refresh status state
@@ -193,22 +227,34 @@ export default function MediaKit({
           }
         } catch (e) {}
 
-        const urlId = presetIdFromUrl ? Number(presetIdFromUrl) : null;
+        const urlId = urlPresetId ? Number(urlPresetId) : null;
         let chosen = null;
         if (urlId) {
           chosen = json.presets.find((p) => p.id === urlId);
         }
-        if (!chosen) {
+        if (!chosen && !urlBlocksParam && !urlOrderParam) {
           const savedId = localStorage.getItem("media_kit_active_preset_id");
           if (savedId) {
             chosen = json.presets.find((p) => p.id === Number(savedId));
           }
         }
-        if (!chosen) {
+        if (!chosen && !urlBlocksParam && !urlOrderParam) {
           chosen = json.presets.find((p) => p.name === "Full") || json.presets[0];
         }
 
-        if (chosen) {
+        if (urlBlocksParam || urlOrderParam) {
+          if (chosen) {
+            setActivePresetId(chosen.id);
+            if (urlRecipient) {
+              setRecipient(urlRecipient);
+            } else if (chosen.recipient != null) {
+              setRecipient(chosen.recipient || "");
+            }
+          } else if (urlPresetId) {
+            setActivePresetId(urlPresetId);
+          }
+          setIsDirty(true);
+        } else if (chosen) {
           applyPreset(chosen);
         }
       }
@@ -363,11 +409,26 @@ export default function MediaKit({
         }),
       });
 
+      const openFallbackPrint = () => {
+        const params = new URLSearchParams();
+        params.set("theme", "light");
+        if (activePresetId && activePresetId !== "custom") {
+          params.set("preset", String(activePresetId));
+        }
+        if (recipient) {
+          params.set("recipient", recipient);
+        }
+        if (activeBlocks && activeBlocks.size > 0) {
+          params.set("blocks", Array.from(activeBlocks).join(","));
+        }
+        if (sectionOrder && sectionOrder.length > 0) {
+          params.set("order", sectionOrder.join(","));
+        }
+        window.open(`/media-kit/print?${params.toString()}`, "_blank");
+      };
+
       if (!res.ok) {
-        const url = `/media-kit/print?theme=light&preset=${activePresetId || ""}${
-          recipient ? `&recipient=${encodeURIComponent(recipient)}` : ""
-        }`;
-        window.open(url, "_blank");
+        openFallbackPrint();
         return;
       }
 
@@ -387,10 +448,21 @@ export default function MediaKit({
       URL.revokeObjectURL(blobUrl);
     } catch (err) {
       console.warn("PDF generation error, opening preview tab:", err);
-      const url = `/media-kit/print?theme=light&preset=${activePresetId || ""}${
-        recipient ? `&recipient=${encodeURIComponent(recipient)}` : ""
-      }`;
-      window.open(url, "_blank");
+      const params = new URLSearchParams();
+      params.set("theme", "light");
+      if (activePresetId && activePresetId !== "custom") {
+        params.set("preset", String(activePresetId));
+      }
+      if (recipient) {
+        params.set("recipient", recipient);
+      }
+      if (activeBlocks && activeBlocks.size > 0) {
+        params.set("blocks", Array.from(activeBlocks).join(","));
+      }
+      if (sectionOrder && sectionOrder.length > 0) {
+        params.set("order", sectionOrder.join(","));
+      }
+      window.open(`/media-kit/print?${params.toString()}`, "_blank");
     } finally {
       setIsDownloadingPdf(false);
     }
