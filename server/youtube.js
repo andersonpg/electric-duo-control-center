@@ -924,6 +924,235 @@ async function updateYoutubeVideoDescription(videoId, newDescription) {
   return updateRes.data;
 }
 
+function parseDurationSec(durationStr) {
+  if (!durationStr || typeof durationStr !== "string") return null;
+  const match = durationStr.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!match) {
+    const parts = durationStr.split(":").map((p) => parseInt(p, 10));
+    if (parts.length === 2 && !parts.some(isNaN)) return parts[0] * 60 + parts[1];
+    if (parts.length === 3 && !parts.some(isNaN)) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    return null;
+  }
+  const h = parseInt(match[1] || "0", 10);
+  const m = parseInt(match[2] || "0", 10);
+  const s = parseInt(match[3] || "0", 10);
+  return h * 3600 + m * 60 + s;
+}
+
+function escapeCsvCell(val) {
+  if (val === null || val === undefined) return '""';
+  const str = String(val).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  return `"${str.replace(/"/g, '""')}"`;
+}
+
+// Scrape channel playlists and their videos as fallback
+async function scrapePlaylistsMapping() {
+  const channelUrl = "https://www.youtube.com/@TheElectricDuo/playlists";
+  const res = await axios.get(channelUrl, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    },
+    timeout: 10000,
+  });
+  const match = res.data.match(/var ytInitialData = ({.*?});<\/script>/);
+  if (!match) throw new Error("Could not parse YouTube channel playlists page.");
+  const data = JSON.parse(match[1]);
+  const tabs = data.contents?.twoColumnBrowseResultsRenderer?.tabs || [];
+  const plTab = tabs.find((t) => t.tabRenderer?.title === "Playlists");
+  const contents = plTab?.tabRenderer?.content?.sectionListRenderer?.contents || [];
+  const grid = contents[0]?.itemSectionRenderer?.contents[0]?.gridRenderer;
+  const playlists = [];
+  if (grid?.items) {
+    grid.items.forEach((it) => {
+      const vm = it.lockupViewModel;
+      if (vm && vm.contentId) {
+        const title = vm.metadata?.lockupMetadataViewModel?.title?.content;
+        playlists.push({ id: vm.contentId, title: title || "Untitled Playlist" });
+      }
+    });
+  }
+
+  const videoToPlaylists = new Map();
+  for (let i = 0; i < playlists.length; i += 6) {
+    const chunk = playlists.slice(i, i + 6);
+    await Promise.all(
+      chunk.map(async (pl) => {
+        try {
+          const plRes = await axios.get(`https://www.youtube.com/playlist?list=${pl.id}`, {
+            headers: {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            },
+            timeout: 8000,
+          });
+          const str = plRes.data;
+          const vIds = [...new Set((str.match(/\/watch\?v=([a-zA-Z0-9_-]{11})/g) || []).map((m) => m.split("=")[1]))];
+          vIds.forEach((vId) => {
+            if (!videoToPlaylists.has(vId)) videoToPlaylists.set(vId, new Set());
+            videoToPlaylists.get(vId).add(pl.title);
+          });
+        } catch (err) {
+          console.warn(`[Export CSV] Error scraping playlist ${pl.title}:`, err.message);
+        }
+      })
+    );
+  }
+
+  return videoToPlaylists;
+}
+
+// Fetch playlists mapping via YouTube Data API
+async function fetchPlaylistsMappingViaApi(youtube, channelId) {
+  const videoToPlaylists = new Map();
+  let playlistPageToken = null;
+  const playlists = [];
+
+  do {
+    const res = await youtube.playlists.list({
+      part: "snippet",
+      channelId: channelId,
+      maxResults: 50,
+      pageToken: playlistPageToken || undefined,
+    });
+    for (const item of res.data.items || []) {
+      playlists.push({
+        id: item.id,
+        title: item.snippet?.title || "Untitled Playlist",
+      });
+    }
+    playlistPageToken = res.data.nextPageToken;
+  } while (playlistPageToken);
+
+  for (const pl of playlists) {
+    let itemPageToken = null;
+    do {
+      const itemRes = await youtube.playlistItems.list({
+        part: "snippet,contentDetails",
+        playlistId: pl.id,
+        maxResults: 50,
+        pageToken: itemPageToken || undefined,
+      });
+      for (const item of itemRes.data.items || []) {
+        const vId = item.contentDetails?.videoId || item.snippet?.resourceId?.videoId;
+        if (vId) {
+          if (!videoToPlaylists.has(vId)) videoToPlaylists.set(vId, new Set());
+          videoToPlaylists.get(vId).add(pl.title);
+        }
+      }
+      itemPageToken = itemRes.data.nextPageToken;
+    } while (itemPageToken);
+  }
+
+  return videoToPlaylists;
+}
+
+async function getChannelPlaylistsMapping() {
+  const channelId = getYoutubeChannelId();
+  try {
+    const youtube = getYoutubeClient();
+    if (youtube) {
+      return await fetchPlaylistsMappingViaApi(youtube, channelId);
+    }
+  } catch (err) {
+    console.warn("[Export CSV] YouTube API unavailable for playlists, falling back to scraper:", err.message);
+  }
+
+  try {
+    return await scrapePlaylistsMapping();
+  } catch (err) {
+    console.warn("[Export CSV] Scraper failed for playlists:", err.message);
+  }
+
+  return new Map();
+}
+
+async function exportLongFormVideosCsv() {
+  // 1. Get playlist mapping (videoId -> Set of playlist titles)
+  const videoToPlaylists = await getChannelPlaylistsMapping();
+
+  // 2. Retrieve published videos from catalog
+  const rows = db.prepare(`
+    SELECT youtube_id, title, published_at, view_count, description, duration, privacy_status
+    FROM videos
+    WHERE (privacy_status IS NULL OR privacy_status = 'public')
+    ORDER BY published_at DESC
+  `).all();
+
+  // Filter for length over 4 minutes (> 240 seconds)
+  const filteredVideos = rows.filter((v) => {
+    const sec = parseDurationSec(v.duration);
+    return sec !== null && sec > 240;
+  });
+
+  // 3. Try to refresh live views and real descriptions from YouTube API if available
+  try {
+    const youtube = getYoutubeClient();
+    if (youtube) {
+      const vIds = filteredVideos.map((v) => v.youtube_id);
+      for (let i = 0; i < vIds.length; i += 50) {
+        const chunk = vIds.slice(i, i + 50);
+        const vRes = await youtube.videos.list({
+          part: "snippet,statistics",
+          id: chunk.join(","),
+        });
+        for (const item of vRes.data.items || []) {
+          const vId = item.id;
+          const vObj = filteredVideos.find((v) => v.youtube_id === vId);
+          if (vObj) {
+            const views = item.statistics?.viewCount != null ? parseInt(item.statistics.viewCount, 10) : null;
+            const desc = item.snippet?.description || null;
+            if (views !== null) vObj.view_count = views;
+            if (desc) vObj.description = desc;
+            if (item.snippet?.title) vObj.title = item.snippet.title;
+            if (item.snippet?.publishedAt) vObj.published_at = item.snippet.publishedAt;
+
+            if (views !== null && desc) {
+              db.prepare("UPDATE videos SET view_count = ?, description = ?, description_is_placeholder = 0 WHERE youtube_id = ?").run(views, desc, vId);
+            } else if (views !== null) {
+              db.prepare("UPDATE videos SET view_count = ? WHERE youtube_id = ?").run(views, vId);
+            } else if (desc) {
+              db.prepare("UPDATE videos SET description = ?, description_is_placeholder = 0 WHERE youtube_id = ?").run(desc, vId);
+            }
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("[Export CSV] YouTube API batch stats refresh skipped:", err.message);
+  }
+
+  // 4. Construct CSV rows with exact headers:
+  // url, title, published date, views, description, playlists
+  const headers = ["url", "title", "published date", "views", "description", "playlists"];
+  const csvLines = [headers.map(escapeCsvCell).join(",")];
+
+  for (const v of filteredVideos) {
+    const url = `https://www.youtube.com/watch?v=${v.youtube_id}`;
+    const title = v.title || "";
+    const publishedDate = v.published_at
+      ? (v.published_at.length >= 10 ? v.published_at.substring(0, 10) : v.published_at)
+      : "";
+    const views = v.view_count != null ? v.view_count : 0;
+    const description = v.description || "";
+    const playlists = videoToPlaylists.has(v.youtube_id)
+      ? Array.from(videoToPlaylists.get(v.youtube_id)).sort().join(", ")
+      : "";
+
+    csvLines.push([
+      escapeCsvCell(url),
+      escapeCsvCell(title),
+      escapeCsvCell(publishedDate),
+      escapeCsvCell(views),
+      escapeCsvCell(description),
+      escapeCsvCell(playlists),
+    ].join(","));
+  }
+
+  return {
+    csv: csvLines.join("\r\n"),
+    count: filteredVideos.length,
+  };
+}
+
 module.exports = {
   syncCatalog,
   purgeNonPublicVideos,
@@ -937,5 +1166,6 @@ module.exports = {
   updateYoutubeVideoTitle,
   getYoutubeVideoSnippet,
   updateYoutubeVideoDescription,
+  exportLongFormVideosCsv,
 };
 

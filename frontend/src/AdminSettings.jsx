@@ -37,6 +37,7 @@ import {
   DownloadCloud,
   ShieldCheck,
   BookOpen,
+  FileSpreadsheet,
 } from "lucide-react";
 
 export default function AdminSettings({ currentUser }) {
@@ -89,6 +90,8 @@ export default function AdminSettings({ currentUser }) {
   const [purgeNonPublicResult, setPurgeNonPublicResult] = useState(null);
   const [isSyncingDurations, setIsSyncingDurations] = useState(false);
   const [syncDurationResult, setSyncDurationResult] = useState(null);
+  const [isExportingCsv, setIsExportingCsv] = useState(false);
+  const [exportCsvResult, setExportCsvResult] = useState(null);
 
   // Category Manager State
   const [isCategoryManagerOpen, setIsCategoryManagerOpen] = useState(false);
@@ -489,6 +492,52 @@ export default function AdminSettings({ currentUser }) {
       setSyncDurationResult("Error: " + err.message);
     } finally {
       setIsSyncingDurations(false);
+    }
+  };
+
+  const handleExportLongFormCsv = async () => {
+    setIsExportingCsv(true);
+    setExportCsvResult(null);
+
+    try {
+      const res = await fetch("/api/catalog/export-longform-csv", {
+        credentials: "same-origin",
+      });
+
+      if (!res.ok) {
+        let errMsg = "Failed to export CSV.";
+        try {
+          const errData = await res.json();
+          if (errData?.error) errMsg = errData.error;
+        } catch {
+          // not json
+        }
+        throw new Error(errMsg);
+      }
+
+      const totalCount = res.headers.get("X-Total-Count");
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const dateStr = new Date().toISOString().slice(0, 10);
+      a.download = `electric-duo-videos-over-4min-${dateStr}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+
+      const countMsg = totalCount ? ` (${totalCount} videos)` : "";
+      setExportCsvResult({
+        ok: true,
+        message: `Successfully retrieved and exported published videos over 4 minutes to CSV${countMsg}.`,
+      });
+      showToast(`Exported ${totalCount || "all"} published videos (>4m) to CSV.`);
+    } catch (err) {
+      setExportCsvResult({ ok: false, error: err.message });
+      showToast("CSV export error: " + err.message, "error");
+    } finally {
+      setIsExportingCsv(false);
     }
   };
 
@@ -2457,6 +2506,46 @@ export default function AdminSettings({ currentUser }) {
                 <CheckCircle2 className="w-4 h-4 shrink-0" />
               )}
               <span>{syncDurationResult}</span>
+            </div>
+          )}
+
+          {/* 5. Export Published Videos (> 4 Mins) to CSV Card */}
+          <div className="bg-slate-950/70 border border-slate-800 p-5 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <div className="text-xs font-bold text-white flex items-center gap-2">
+                <FileSpreadsheet className="w-4 h-4 text-cyan-400" />
+                <span>Export Long-Form Catalog to CSV (&gt; 4 mins)</span>
+              </div>
+              <div className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                Retrieve all published videos over 4 minutes in length and export their URL, title, published date, views, description, and mapped playlists into a downloadable CSV file.
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleExportLongFormCsv}
+              disabled={isExportingCsv}
+              className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-bold text-xs uppercase tracking-wider shrink-0 shadow-md shadow-cyan-500/20 disabled:opacity-50 transition-all"
+            >
+              <Download className={`w-3.5 h-3.5 ${isExportingCsv ? "animate-spin" : ""}`} />
+              <span>{isExportingCsv ? "Exporting CSV…" : "Export Videos CSV"}</span>
+            </button>
+          </div>
+
+          {exportCsvResult && (
+            <div
+              className={`p-4 rounded-xl text-xs font-medium border flex items-center gap-2 ${
+                exportCsvResult.ok
+                  ? "bg-emerald-950/60 border-emerald-500/30 text-emerald-300"
+                  : "bg-red-950/60 border-red-500/30 text-red-300"
+              }`}
+            >
+              {exportCsvResult.ok ? (
+                <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+              ) : (
+                <AlertTriangle className="w-4 h-4 shrink-0 text-red-400" />
+              )}
+              <span>{exportCsvResult.message || exportCsvResult.error}</span>
             </div>
           )}
         </div>

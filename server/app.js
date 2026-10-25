@@ -2329,6 +2329,26 @@ app.post("/api/catalog/sync-durations", auth.requireAuth(), async (req, res, nex
   }
 });
 
+// Export published long-form videos (> 4 minutes) to CSV
+const handleExportLongFormCsv = async (req, res, next) => {
+  try {
+    const { exportLongFormVideosCsv } = require("./youtube");
+    const { csv, count } = await exportLongFormVideosCsv();
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const filename = `electric-duo-videos-over-4min-${dateStr}.csv`;
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("X-Total-Count", String(count));
+    res.send(csv);
+  } catch (error) {
+    next(error);
+  }
+};
+
+app.get("/api/catalog/export-longform-csv", auth.requireAuth(), handleExportLongFormCsv);
+app.get("/api/admin/catalog/export-longform-csv", auth.requireAuth(), handleExportLongFormCsv);
+
 // 5. Available AI Models (Returns cached or live from Google AI Studio)
 app.get("/api/models", auth.requireAuth(), async (req, res) => {
   try {

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.6.2] - 2026-10-25
+
+### Added
+- **Long-Form Video Catalog CSV Export (Admin Settings → Catalog Maintenance)**:
+  - Added backend export function `exportLongFormVideosCsv` in `server/youtube.js` that retrieves all published videos over 4 minutes in length (`> 240 seconds`).
+  - Added full playlist resolution mapping each video to its containing channel playlists (`videoToPlaylists`), utilizing the YouTube Data API v3 when available with resilient fallback to zero-quota channel playlist scraping.
+  - Implemented live YouTube Data API statistics and description enrichment when API quota permits, updating the local database cache.
+  - Formatted RFC 4180-compliant CSV output with exact headers: `url`, `title`, `published date`, `views`, `description`, `playlists`.
+  - Added authenticated endpoints `GET /api/catalog/export-longform-csv` and `GET /api/admin/catalog/export-longform-csv` returning `text/csv; charset=utf-8` attachments with `X-Total-Count` header.
+  - Added "Export Long-Form Catalog to CSV (> 4 mins)" card in `AdminSettings.jsx` with real-time export progress, automatic browser file download, and confirmation toast.
+
 ## [2.6.1] - 2026-09-15
 
 ### Fixed
